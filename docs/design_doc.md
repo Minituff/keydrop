@@ -187,10 +187,17 @@ log, not for access control.
   or two characters at each edge that mix in the neighbouring bytes stay
   visible. It's a streaming masker that holds back bytes only while they
   could still be the start of a secret, so interactive output isn't
-  delayed. When one secret is a prefix of another, it waits until the
-  longer one can no longer match, and the longest match wins. Values
-  shorter than 4 characters aren't masked, since that would mangle normal
-  output.
+  delayed. Every byte of every occurrence is masked: occurrences that
+  overlap (one secret a prefix of another, or the end of one the start of
+  the next) merge into one placeholder naming each, like
+  `[keydrop:A,B]`, and the result is the same however the output is split
+  into writes. A span that could still grow is held until it can't, up to
+  64 KiB; past that (the same secret repeated back to back without end) it
+  is replaced up to there and the rest still masked as it arrives.
+  Patterns are indexed by their first two bytes, so the cost per byte
+  barely grows with the number of secrets (`go test -bench . ./internal/mask`).
+  Values shorter than 4 characters aren't masked, since that would mangle
+  normal output.
 - **What masking can promise:** accident prevention for honest tools. It
   doesn't catch hex, JSON-escaped, case-changed, truncated or split
   output, or anything the command sends to a file or the network.

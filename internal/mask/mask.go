@@ -11,7 +11,9 @@ import (
 	"encoding/base64"
 	"io"
 	"net/url"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -19,15 +21,28 @@ import (
 // value would mangle ordinary output.
 const MinLength = 4
 
+// maxHeld bounds how much output a Writer holds back. Only a chain of
+// overlapping occurrences that keeps growing (the same secret repeated, say)
+// reaches it; the chain is then replaced up to there, and the rest of it is
+// still masked as it arrives.
+const maxHeld = 64 << 10
+
 type pattern struct {
 	match []byte
-	repl  []byte
+	label string
 }
 
 // Masker holds the patterns for a set of secrets. Share one between stdout
 // and stderr writers.
 type Masker struct {
 	patterns []pattern
+	// The patterns are indexed by their first two bytes (every pattern has
+	// at least MinLength), so each output position looks at the few that
+	// could start there instead of all of them: starts[k]..starts[k+1] in
+	// order are the pattern indexes for key k, longest first.
+	starts []int32
+	order  []int32
+	first  [256]bool // some pattern starts with this byte
 }
 
 // Add registers value under label. It also masks common encodings of the
@@ -38,7 +53,6 @@ func (m *Masker) Add(label string, value []byte) bool {
 	if len(value) < MinLength {
 		return false
 	}
-	repl := []byte("[keydrop:" + label + "]")
 	variants := [][]byte{
 		value,
 		[]byte(base64.StdEncoding.EncodeToString(value)),
@@ -57,11 +71,58 @@ func (m *Masker) Add(label string, value []byte) bool {
 		if len(v) < MinLength || m.has(v) {
 			continue
 		}
-		m.patterns = append(m.patterns, pattern{match: v, repl: repl})
+		m.patterns = append(m.patterns, pattern{match: v, label: label})
 	}
 	// Longest first, so a longer match wins over one of its substrings.
 	sort.SliceStable(m.patterns, func(i, j int) bool { return len(m.patterns[i].match) > len(m.patterns[j].match) })
+	m.index()
 	return true
+}
+
+func key2(b []byte) int { return int(b[0])<<8 | int(b[1]) }
+
+// index rebuilds the first-two-bytes index.
+func (m *Masker) index() {
+	m.starts = make([]int32, 1<<16+1)
+	for _, p := range m.patterns {
+		m.starts[key2(p.match)+1]++
+		m.first[p.match[0]] = true
+	}
+	for k := 1; k < len(m.starts); k++ {
+		m.starts[k] += m.starts[k-1]
+	}
+	m.order = make([]int32, len(m.patterns))
+	next := slices.Clone(m.starts[:1<<16])
+	for i, p := range m.patterns { // stays longest first within a key
+		k := key2(p.match)
+		m.order[next[k]] = int32(i)
+		next[k]++
+	}
+}
+
+// at looks at the output from one position, rest. It returns the longest
+// pattern that rest starts with, if any. Unless final, it first reports
+// maybe if rest is shorter than a pattern it's the start of, so more output
+// could still make a (longer) match here.
+func (m *Masker) at(rest []byte, final bool) (match *pattern, maybe bool) {
+	if !m.first[rest[0]] {
+		return nil, false
+	}
+	if len(rest) == 1 {
+		return nil, !final // every pattern is longer than one byte
+	}
+	k := key2(rest)
+	for _, i := range m.order[m.starts[k]:m.starts[k+1]] {
+		p := &m.patterns[i]
+		if len(rest) < len(p.match) {
+			if !final && bytes.HasPrefix(p.match, rest) {
+				return nil, true
+			}
+		} else if bytes.HasPrefix(rest, p.match) {
+			return p, false // longest first: nothing longer can follow
+		}
+	}
+	return nil, false
 }
 
 // base64Core is the part of the base64 encoding of value that doesn't
@@ -118,6 +179,9 @@ type Writer struct {
 	w   io.Writer
 	mu  sync.Mutex
 	buf []byte
+	// covered is how many bytes at the start of buf belong to an
+	// occurrence whose placeholder is already written.
+	covered int
 }
 
 // Write masks p and writes what's safe to write now. It always reports
@@ -139,34 +203,92 @@ func (w *Writer) Flush() error {
 	return w.drain(true)
 }
 
+// span is a stretch of output covered by one or more overlapping
+// occurrences of secrets.
+type span struct {
+	a, b    int
+	labels  []string
+	carried bool // continues one already replaced in an earlier write
+}
+
+func (sp *span) placeholder() []byte {
+	if sp.carried {
+		return nil
+	}
+	return []byte("[keydrop:" + strings.Join(sp.labels, ",") + "]")
+}
+
+// drain writes out what's decided. Every byte of every occurrence of a
+// pattern is masked: occurrences that overlap are merged into one span and
+// replaced by one placeholder naming each secret involved. Output is held
+// back from the first position that could still turn out to start an
+// occurrence, and from the start of a span that reaches past it, since a
+// later occurrence could extend that span.
 func (w *Writer) drain(final bool) error {
-	var out []byte
-	i := 0
-scan:
-	for i < len(w.buf) {
-		rest := w.buf[i:]
-		if !final {
-			for _, p := range w.m.patterns {
-				if len(rest) < len(p.match) && bytes.HasPrefix(p.match, rest) {
-					// Could be the start of a secret, or of a longer one
-					// than a pattern that already matches here: wait for
-					// more before deciding.
-					break scan
+	buf := w.buf
+	n := len(buf)
+	hold := n
+	var spans []span
+	if w.covered > 0 {
+		spans = append(spans, span{a: 0, b: w.covered, carried: true})
+	}
+	for i := 0; i < n; i++ {
+		p, maybe := w.m.at(buf[i:], final)
+		if maybe {
+			hold = i
+			break
+		}
+		if p == nil {
+			continue
+		}
+		end := i + len(p.match)
+		// Spans are found in order of start, so a new occurrence can only
+		// overlap the last one.
+		if k := len(spans) - 1; k >= 0 && i < spans[k].b {
+			if end > spans[k].b {
+				spans[k].b = end
+				if !slices.Contains(spans[k].labels, p.label) {
+					spans[k].labels = append(spans[k].labels, p.label)
 				}
 			}
+			continue
 		}
-		// Patterns are longest first, so the first match is the longest.
-		for _, p := range w.m.patterns {
-			if bytes.HasPrefix(rest, p.match) {
-				out = append(out, p.repl...)
-				i += len(p.match)
-				continue scan
-			}
-		}
-		out = append(out, w.buf[i])
-		i++
+		spans = append(spans, span{a: i, b: end, labels: []string{p.label}})
 	}
-	w.buf = append(w.buf[:0], w.buf[i:]...)
+
+	cut := hold // everything before cut is written now
+	covered := 0
+	var out []byte
+	pos := 0
+	for k := range spans {
+		sp := &spans[k]
+		if sp.a >= cut {
+			break
+		}
+		if sp.b > cut {
+			if n-sp.a <= maxHeld {
+				cut = sp.a // wait and see how far it reaches
+				break
+			}
+			// Held too long: replace it up to cut now, and remember that
+			// the bytes after cut are part of it.
+			out = append(out, buf[pos:sp.a]...)
+			out = append(out, sp.placeholder()...)
+			covered = sp.b - cut
+			pos = cut
+			break
+		}
+		out = append(out, buf[pos:sp.a]...)
+		out = append(out, sp.placeholder()...)
+		pos = sp.b
+	}
+	if pos < cut {
+		out = append(out, buf[pos:cut]...)
+	}
+	if cut > 0 {
+		w.buf = append(w.buf[:0], buf[cut:]...)
+		w.covered = covered
+	}
 	if len(out) == 0 {
 		return nil
 	}
