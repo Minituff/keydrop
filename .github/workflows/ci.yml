@@ -43,10 +43,26 @@ jobs:
           fi
           docker rm -f kd
 
+  # The real binary as server and CLI: setup, pairing, run, restart,
+  # rotate-tls, and the upgrade from the previous data format. Full history,
+  # because that test builds an older commit.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false # zero deps: no go.sum to key a cache on
+      - run: go vet -tags e2e ./e2e/...
+      - run: go test -tags e2e -count=1 -v ./e2e/...
+
   # Pushes to dev also publish ghcr.io/<repo>:dev and :dev-<sha>, after the
   # tests pass. Deployments pin the digest, never the moving :dev tag.
   dev-image:
-    needs: test
+    needs: [test, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
