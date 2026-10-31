@@ -66,13 +66,17 @@ type Secret struct {
 	Expires     *time.Time `json:"expires,omitempty"`
 	Value       []byte     `json:"value,omitempty"`
 	Previous    []byte     `json:"previous,omitempty"`
-	Pending     bool       `json:"pending,omitempty"` // requested by an agent, waiting for a value
-	RequestedBy string     `json:"requested_by,omitempty"`
-	New         bool       `json:"new,omitempty"` // value changed and no agent has acknowledged it yet
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	LastReadAt  *time.Time `json:"last_read_at,omitempty"`
-	LastReadBy  string     `json:"last_read_by,omitempty"`
+	// PreviousVariable is Previous's own kind. Kind belongs to each value,
+	// so rolling back after a kind change can't turn an old secret value
+	// into a variable that's listed, unmasked and read without a log.
+	PreviousVariable bool       `json:"previous_variable,omitempty"`
+	Pending          bool       `json:"pending,omitempty"` // requested by an agent, waiting for a value
+	RequestedBy      string     `json:"requested_by,omitempty"`
+	New              bool       `json:"new,omitempty"` // value changed and no agent has acknowledged it yet
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	LastReadAt       *time.Time `json:"last_read_at,omitempty"`
+	LastReadBy       string     `json:"last_read_by,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -408,6 +412,7 @@ func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
 	}
 	if len(sec.Value) > 0 {
 		sec.Previous = s.reseal(sec.Value, ns, name, "value", "previous")
+		sec.PreviousVariable = sec.Variable
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
 	sec.Pending, sec.New, sec.UpdatedAt = false, true, now
@@ -496,31 +501,34 @@ func (s *Store) Rollback(ns, name string) error {
 	cur := s.reseal(sec.Value, ns, name, "value", "previous")
 	sec.Value = s.reseal(sec.Previous, ns, name, "previous", "value")
 	sec.Previous = cur
+	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
 	sec.New, sec.UpdatedAt = true, s.now().UTC()
 	return s.save()
 }
 
-// Reveal decrypts a value and, for a secret, records who read it.
-func (s *Store) Reveal(ns, name, by string) ([]byte, error) {
+// Reveal decrypts a value and, for a secret, records who read it. variable
+// is the kind read under the same lock as the value, so callers deciding
+// whether to audit or mask can't be fooled by a kind change in between.
+func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
-		return nil, ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	if len(sec.Value) == 0 {
-		return nil, ErrNoValue
+		return nil, sec.Variable, ErrNoValue
 	}
 	pt, err := s.open(sec.Value, aad(ns, name, "value"))
 	if err != nil {
-		return nil, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
+		return nil, false, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
 	}
 	if sec.Variable {
-		return pt, nil
+		return pt, true, nil
 	}
 	now := s.now().UTC()
 	sec.LastReadAt, sec.LastReadBy = &now, by
-	return pt, s.save()
+	return pt, false, s.save()
 }
 
 // VariableValue decrypts a variable's value. It refuses secrets, so code

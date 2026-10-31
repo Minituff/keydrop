@@ -84,3 +84,16 @@ func TestChildEnv(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestPrintable(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://x.test":           "https://x.test",
+		"a\nlab/FAKE=1":            `"a\nlab/FAKE=1"`,
+		"\x1b[2Jcleared":           `"\x1b[2Jcleared"`,
+		"zone id with spaces ok ü": "zone id with spaces ok ü",
+	} {
+		if got := printable(in); got != want {
+			t.Errorf("printable(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

@@ -145,7 +145,7 @@ func TestSetupLoginAndCSRF(t *testing.T) {
 			t.Fatalf("value shown on %s", p)
 		}
 	}
-	if v, _ := h.st.Reveal("lab", "CF", "t"); string(v) != "the-real-value-42" {
+	if v, _, _ := h.st.Reveal("lab", "CF", "t"); string(v) != "the-real-value-42" {
 		t.Fatalf("whitespace not trimmed: %q", v)
 	}
 
@@ -460,13 +460,18 @@ func TestVariables(t *testing.T) {
 		t.Fatal("secret read not logged")
 	}
 
-	// Agents can store variables; the kind sticks on overwrite unless changed.
+	// Agents can store variables, but the kind is never inherited: a value
+	// written over a variable without "variable" is a secret (a generated
+	// password mustn't end up listed), and the change is logged.
 	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/DB_USER", tok, map[string]any{"value": "keydrop", "variable": true}); code != 200 {
 		t.Fatalf("put variable: %d", code)
 	}
-	h.api("PUT", "/api/v1/secrets/lab/DB_USER", tok, map[string]any{"value": "keydrop2", "overwrite": true})
-	if sec, _ := h.st.GetSecret("lab", "DB_USER"); !sec.Variable {
-		t.Fatal("overwrite turned a variable into a secret")
+	h.api("PUT", "/api/v1/secrets/lab/DB_USER", tok, map[string]any{"value": "fake-generated-pw", "overwrite": true})
+	if sec, _ := h.st.GetSecret("lab", "DB_USER"); sec.Variable {
+		t.Fatal("a value written over a variable stayed a variable")
+	}
+	if ev := h.srv.audit.Recent(1); len(ev) != 1 || ev[0].Action != "secret.kind" {
+		t.Fatalf("API kind change not logged: %+v", ev)
 	}
 
 	// Switching kind in the UI is logged.
@@ -502,11 +507,21 @@ func TestChangePassword(t *testing.T) {
 	if c := change("a long enough password", "a brand new password", "a different one!!"); c != http.StatusBadRequest {
 		t.Fatalf("mismatch: %d", c)
 	}
+	u, _ := url.Parse(h.ts.URL)
+	oldCookies := h.web.Jar.Cookies(u)
 	if c := change("a long enough password", "a brand new password", "a brand new password"); c != http.StatusSeeOther {
 		t.Fatalf("change: %d", c)
 	}
 	if code, _ := h.get("/"); code != http.StatusOK {
-		t.Fatal("this session was logged out")
+		t.Fatal("this browser didn't get a new session")
+	}
+	// The session the change was made from is replaced too, in case it's
+	// the one that leaked.
+	oldJar, _ := cookiejar.New(nil)
+	oldJar.SetCookies(u, oldCookies)
+	old := &http.Client{Jar: oldJar, CheckRedirect: other.CheckRedirect}
+	if resp, _ := old.Get(h.ts.URL + "/"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatal("the old session cookie still works")
 	}
 	if resp, _ := other.Get(h.ts.URL + "/"); resp.StatusCode != http.StatusSeeOther {
 		t.Fatal("other session still logged in")

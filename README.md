@@ -205,7 +205,7 @@ isn't granted returns 404, exactly like a missing secret.
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata |
 | `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged) |
 | `POST /api/v1/secrets/{ns}/{name}/ack` | Clear the *new* flag |
-| `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","overwrite"}` (write tokens) |
+| `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}` |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days |
 | `GET /healthz` | No auth |

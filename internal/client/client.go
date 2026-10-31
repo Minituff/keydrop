@@ -243,7 +243,7 @@ type PutOptions struct {
 	Description *string `json:"description,omitempty"`
 	Usage       *string `json:"usage,omitempty"`
 	Expires     *string `json:"expires,omitempty"`
-	Variable    *bool   `json:"variable,omitempty"`
+	Variable    bool    `json:"variable"` // always sent: omitting it would mean "secret" anyway
 	Overwrite   bool    `json:"overwrite"`
 }
 

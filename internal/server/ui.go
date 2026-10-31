@@ -440,7 +440,8 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		s.renderDashboard(w, r, se, http.StatusBadRequest, "The value is empty.")
 		return
 	}
-	if old, ok := s.store.GetSecret(ns, name); ok && old.HasValue() && r.PostFormValue("overwrite") != "yes" {
+	old, exists := s.store.GetSecret(ns, name)
+	if exists && old.HasValue() && r.PostFormValue("overwrite") != "yes" {
 		s.renderDashboard(w, r, se, http.StatusConflict, ns+"/"+name+" already exists. Tick \"Replace it\" or open it to replace the value.")
 		return
 	}
@@ -449,6 +450,9 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, "")
+	if exists && old.Variable != meta.Variable {
+		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(meta.Variable))
+	}
 	http.Redirect(w, r, "/secret/"+url.PathEscape(ns)+"/"+url.PathEscape(name)+"?msg=saved", http.StatusSeeOther)
 }
 
@@ -487,7 +491,7 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 // never lands in a URL or browser history, and every view is logged.
 func (s *Server) handleReveal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
-	val, err := s.store.Reveal(ns, name, "admin (web)")
+	val, variable, err := s.store.Reveal(ns, name, "admin (web)")
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
@@ -500,7 +504,7 @@ func (s *Server) handleReveal(w http.ResponseWriter, r *http.Request, _ string, 
 		s.renderSecret(w, r, se, http.StatusInternalServerError, "Couldn't decrypt the value. Check keydrop's log.")
 		return
 	}
-	if sec, _ := s.store.GetSecret(ns, name); !sec.Variable {
+	if !variable {
 		s.event(r, "admin", "secret.reveal", ns+"/"+name, "web UI")
 	}
 	s.renderSecretWith(w, r, se, http.StatusOK, "", string(val))
@@ -547,7 +551,7 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 		return
 	}
 	if old.Variable != meta.Variable {
-		s.event(r, "admin", "secret.kind", ns+"/"+name, "now a "+map[bool]string{true: "variable", false: "secret"}[meta.Variable])
+		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(meta.Variable))
 	}
 	s.event(r, "admin", "secret.details", ns+"/"+name, "")
 	s.back(w, r, "details")
@@ -555,11 +559,15 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 
 func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
+	old, _ := s.store.GetSecret(ns, name)
 	if err := s.store.Rollback(ns, name); err != nil {
 		s.renderSecret(w, r, se, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.event(r, "admin", "secret.rollback", ns+"/"+name, "")
+	if now, _ := s.store.GetSecret(ns, name); now.Variable != old.Variable {
+		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(now.Variable))
+	}
 	s.back(w, r, "rolledback")
 }
 
@@ -693,7 +701,7 @@ func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, 
 // handlePassword changes the admin password. It needs the current one (an
 // unattended logged-in phone shouldn't be enough), and it logs out every
 // other session, in case the old password is why you're changing it.
-func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, sid string, se *session) {
+func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	ip, now := s.clientIP(r), s.now()
 	if s.limiter.Allow(ip, now) != nil {
 		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
@@ -702,6 +710,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, sid stri
 	hash, _, _, err := s.store.Admin()
 	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("current")) {
 		s.limiter.Fail(ip, now)
+		s.event(r, "admin", "admin.password.fail", "", "wrong current password")
 		s.renderSettings(w, r, se, http.StatusUnauthorized, "The current password is wrong.")
 		return
 	}
@@ -724,13 +733,12 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, sid stri
 		return
 	}
 	s.limiter.Succeed(ip)
+	// End every session, this one included, and start a fresh one: if the
+	// leak being reacted to is this session's own cookie, it must die too.
 	s.mu.Lock()
-	for id := range s.sessions {
-		if id != sid {
-			delete(s.sessions, id)
-		}
-	}
+	clear(s.sessions)
 	s.mu.Unlock()
+	s.newSession(w)
 	s.event(r, "admin", "admin.password", "", "")
 	http.Redirect(w, r, "/settings?msg=password", http.StatusSeeOther)
 }
@@ -746,6 +754,7 @@ func (s *Server) handleTOTPOff(w http.ResponseWriter, r *http.Request, _ string,
 	hash, _, _, err := s.store.Admin()
 	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("password")) {
 		s.limiter.Fail(ip, now)
+		s.event(r, "admin", "admin.password.fail", "", "turning off the authenticator")
 		s.renderSettings(w, r, se, http.StatusUnauthorized, "Wrong password.")
 		return
 	}
@@ -756,4 +765,11 @@ func (s *Server) handleTOTPOff(w http.ResponseWriter, r *http.Request, _ string,
 	}
 	s.event(r, "admin", "admin.totp.off", "", "")
 	http.Redirect(w, r, "/settings?msg=totpoff", http.StatusSeeOther)
+}
+
+func kindChange(variable bool) string {
+	if variable {
+		return "now a variable"
+	}
+	return "now a secret"
 }

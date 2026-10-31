@@ -12,9 +12,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/minituff/keydrop/internal/client"
 	"github.com/minituff/keydrop/internal/mask"
@@ -75,7 +77,7 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 	}
 	line := s.Ref
 	if s.Value != nil { // only variables carry a value
-		line += "=" + *s.Value
+		line += "=" + printable(*s.Value)
 	}
 	if len(tags) > 0 {
 		line += "  [" + strings.Join(tags, ", ") + "]"
@@ -119,7 +121,10 @@ func cmdWhoami(args []string) error {
 func cmdList(kind string, args []string) error {
 	fs := flag.NewFlagSet(kind, flag.ExitOnError)
 	onlyNew := fs.Bool("new", false, "only new ones")
-	pending := fs.Bool("pending", false, "only requested secrets still waiting for a value")
+	pending := new(bool)
+	if kind == "secret" {
+		pending = fs.Bool("pending", false, "only requested secrets still waiting for a value")
+	}
 	ns := fs.String("namespace", "", "only this namespace")
 	parse(fs, args)
 	c, err := newClient()
@@ -476,6 +481,9 @@ func cmdGet(args []string) error {
 		if err != nil {
 			return err
 		}
+		if sec.Kind == "variable" && sec.Value == nil {
+			return fmt.Errorf("%s has no value yet", sec.Ref)
+		}
 		if sec.Value == nil {
 			return fmt.Errorf("%s is a secret, so it isn't printed: use keydrop run -e %s, or get --to-file for a file", sec.Ref, sec.Name)
 		}
@@ -572,10 +580,7 @@ func cmdPut(args []string) error {
 	if v == "" {
 		return errors.New("empty value")
 	}
-	o := client.PutOptions{Overwrite: *overwrite}
-	if *asVar {
-		o.Variable = asVar
-	}
+	o := client.PutOptions{Overwrite: *overwrite, Variable: *asVar}
 	if *desc != "" {
 		o.Description = desc
 	}
@@ -639,7 +644,7 @@ func cmdImport(args []string) error {
 	asVars := fs.Bool("vars", false, "import everything as variables (not secret); default is secrets")
 	pos := parse(fs, args)
 	if len(pos) != 1 {
-		return errors.New("usage: keydrop import FILE [--namespace NS] [--dry-run]")
+		return errors.New("usage: keydrop import FILE [--namespace NS] [--vars] [--dry-run]")
 	}
 	f, err := os.Open(pos[0])
 	if err != nil {
@@ -685,10 +690,7 @@ func cmdImport(args []string) error {
 		if desc == "" {
 			desc = "Imported from " + filepath.Base(pos[0])
 		}
-		o := client.PutOptions{Description: &desc, Overwrite: *overwrite}
-		if *asVars {
-			o.Variable = asVars
-		}
+		o := client.PutOptions{Description: &desc, Overwrite: *overwrite, Variable: *asVars}
 		err := c.Put(ref, e.value, o)
 		var ae *client.APIError
 		if errors.As(err, &ae) && ae.Status == 409 {
@@ -745,4 +747,14 @@ func cmdLogin(args []string) error {
 	}
 	fmt.Printf("Logged in as %s (namespaces: %s). Saved to %s\n", w.Name, strings.Join(w.Namespaces, ", "), dir)
 	return nil
+}
+
+// printable quotes a variable's value in a list if it holds control
+// characters, so a value with a newline or a terminal escape can't fake
+// extra lines in an agent's output.
+func printable(v string) string {
+	if strings.IndexFunc(v, unicode.IsControl) >= 0 {
+		return strconv.Quote(v)
+	}
+	return v
 }

@@ -156,6 +156,12 @@ every read logged, no way to just look). So an entry is either a
   other way round.
 - Marking a secret as a variable is the admin's call, made in the UI or by
   a write token, and logged.
+- **Kind belongs to each value, and defaults to secret.** A write that
+  doesn't say "variable" stores a secret, even over an existing variable,
+  so a generated password can't land in a list. The previous value keeps
+  its own kind, so rolling back after a kind change can't bring back an
+  old secret as a variable. The API reads the kind under the same lock as
+  the value, so a kind change mid-read can't skip the audit log.
 
 ### Telling the agent about new keys
 - **Push (the human adds a key):** the secret is marked *new* until an agent

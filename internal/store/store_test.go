@@ -32,7 +32,7 @@ func TestRoundTripAndAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := s2.Reveal("lab", "CF", "test")
+	v, _, err := s2.Reveal("lab", "CF", "test")
 	if err != nil || string(v) != "super-secret-123" {
 		t.Fatalf("reveal: %q %v", v, err)
 	}
@@ -50,7 +50,7 @@ func TestCiphertextBoundToName(t *testing.T) {
 	s.mu.Lock()
 	s.st.Secrets["b/TWO"].Value = s.st.Secrets["a/ONE"].Value
 	s.mu.Unlock()
-	if _, err := s.Reveal("b", "TWO", "x"); err == nil {
+	if _, _, err := s.Reveal("b", "TWO", "x"); err == nil {
 		t.Fatal("swapped ciphertext decrypted")
 	}
 }
@@ -60,7 +60,7 @@ func TestRollbackAndRequest(t *testing.T) {
 	if err := s.Request("lab", "GH", "need a PAT", "", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Reveal("lab", "GH", "x"); err != ErrNoValue {
+	if _, _, err := s.Reveal("lab", "GH", "x"); err != ErrNoValue {
 		t.Fatalf("want ErrNoValue, got %v", err)
 	}
 	s.PutValue("lab", "GH", []byte("v1-value"), nil)
@@ -72,11 +72,11 @@ func TestRollbackAndRequest(t *testing.T) {
 	}
 	s.PutValue("lab", "GH", []byte("v2-value"), nil)
 	s.Rollback("lab", "GH")
-	if v, _ := s.Reveal("lab", "GH", "x"); string(v) != "v1-value" {
+	if v, _, _ := s.Reveal("lab", "GH", "x"); string(v) != "v1-value" {
 		t.Fatalf("rollback gave %q", v)
 	}
 	s.Rollback("lab", "GH")
-	if v, _ := s.Reveal("lab", "GH", "x"); string(v) != "v2-value" {
+	if v, _, _ := s.Reveal("lab", "GH", "x"); string(v) != "v2-value" {
 		t.Fatalf("roll forward gave %q", v)
 	}
 }
@@ -154,5 +154,31 @@ func TestVariableValue(t *testing.T) {
 	s.PutValue("lab", "API_URL", []byte("https://y.test"), nil)
 	if sec, _ := s.GetSecret("lab", "API_URL"); !sec.Variable {
 		t.Fatal("replacing the value changed the kind")
+	}
+}
+
+// Kind belongs to each value: a secret overwritten by a variable comes back
+// as a secret on rollback, never as a listed, unlogged variable.
+func TestRollbackKeepsKind(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "GITHUB_PAT", []byte("fake-real-pat"), &Meta{})
+	s.PutValue("lab", "GITHUB_PAT", []byte("junk"), &Meta{Variable: true})
+	if err := s.Rollback("lab", "GITHUB_PAT"); err != nil {
+		t.Fatal(err)
+	}
+	sec, _ := s.GetSecret("lab", "GITHUB_PAT")
+	if sec.Variable {
+		t.Fatal("rollback restored a secret value as a variable")
+	}
+	if v, err := s.VariableValue("lab", "GITHUB_PAT"); err != ErrNotVariable {
+		t.Fatalf("secret readable as a variable: %q %v", v, err)
+	}
+	if v, variable, _ := s.Reveal("lab", "GITHUB_PAT", "x"); variable || string(v) != "fake-real-pat" {
+		t.Fatalf("reveal after rollback: %q variable=%v", v, variable)
+	}
+	// And forward again: the junk value is a variable once more.
+	s.Rollback("lab", "GITHUB_PAT")
+	if sec, _ := s.GetSecret("lab", "GITHUB_PAT"); !sec.Variable {
+		t.Fatal("second rollback lost the variable kind")
 	}
 }

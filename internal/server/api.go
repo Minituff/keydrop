@@ -123,7 +123,7 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 	if !ok {
 		return
 	}
-	val, err := s.store.Reveal(sec.Namespace, sec.Name, t.Name)
+	val, variable, err := s.store.Reveal(sec.Namespace, sec.Name, t.Name)
 	switch {
 	case errors.Is(err, store.ErrNoValue):
 		apiError(w, http.StatusConflict, sec.Ref()+" has no value yet")
@@ -132,10 +132,12 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !sec.Variable { // variables aren't secret, so their reads aren't logged
+	kind := "variable"
+	if !variable { // variables aren't secret, so their reads aren't logged
+		kind = "secret"
 		s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "kind": sec.Kind(), "value": string(val)})
+	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "kind": kind, "value": string(val)})
 }
 
 func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
@@ -156,7 +158,7 @@ type putBody struct {
 	Description *string `json:"description"`
 	Usage       *string `json:"usage"`
 	Expires     *string `json:"expires"`
-	Variable    *bool   `json:"variable"`
+	Variable    bool    `json:"variable"` // omitted means secret, even when replacing a variable
 	Overwrite   bool    `json:"overwrite"`
 }
 
@@ -182,10 +184,10 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
 		return
 	}
-	meta := store.Meta{Description: old.Description, Usage: old.Usage, Expires: old.Expires, Variable: old.Variable}
-	if b.Variable != nil {
-		meta.Variable = *b.Variable
-	}
+	// The kind is never inherited: a value is a variable only when this
+	// request says so, so a generated password written over a variable
+	// doesn't become one.
+	meta := store.Meta{Description: old.Description, Usage: old.Usage, Expires: old.Expires, Variable: b.Variable}
 	if b.Description != nil {
 		meta.Description = *b.Description
 	}
@@ -205,6 +207,9 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	}
 	s.event(r, actor(t), "secret.set", ns+"/"+name, "")
+	if exists && old.Variable != meta.Variable {
+		s.event(r, actor(t), "secret.kind", ns+"/"+name, kindChange(meta.Variable))
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"ref": ns + "/" + name})
 }
 
