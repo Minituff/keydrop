@@ -293,7 +293,9 @@ code. The full list is in the README.
 
 ## Build and release
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a
-  Docker build on every push and pull request.
+  Docker build on every push and pull request. Pushes to `dev` then
+  publish `ghcr.io/minituff/keydrop:dev` and `:dev-<sha>` (amd64), for a
+  test deployment that pins the digest.
 - Release (`release.yml`, on a `v*` tag): cross-built CLI binaries with
   `SHA256SUMS` on the GitHub release, and a multi-arch image (amd64, arm64)
   on GHCR with SBOM and provenance attestations. GitHub-hosted runners

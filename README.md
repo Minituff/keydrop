@@ -251,7 +251,8 @@ docker build -t keydrop .
 
 Tags `v*` publish CLI binaries with `SHA256SUMS` to the GitHub release, and a
 multi-arch image (with SBOM and provenance) to GHCR, from GitHub-hosted
-runners.
+runners. Pushes to `dev` publish an amd64 image tagged `dev` and
+`dev-<sha>` once the tests pass; pin it by digest, not by the moving tag.
 
 ## Roadmap
 
