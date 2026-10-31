@@ -345,6 +345,8 @@ runners. Pushes to `dev` publish an amd64 image tagged `dev` and
 digest, not by the moving tag. Every image includes the CLI for all six
 platforms (about 24 MB compressed); CI installs it from a running image
 with `install.sh` and checks the version before anything is published.
+Nothing is published unless the tests passed on that commit. Workflow
+actions are pinned to commit SHAs and base images to digests.
 
 ## Roadmap
 

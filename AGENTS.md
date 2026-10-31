@@ -127,9 +127,24 @@ before the repo goes public.
 
 CI fails if the tree contains any of the maintainer's own addresses,
 domains or host names (`scripts/leak-check.sh`; the list is the
-`KEYDROP_LEAK_PATTERNS` repository secret, so it isn't in the repo). Use
+`KEYDROP_LEAK_PATTERNS` repository secret, so it isn't in the repo). It
+fails closed: a pattern grep can't compile, or a grep/git error, fails the
+check (`scripts/leak-check-test.sh` tests that). Without the secret (forks,
+local runs) it skips with a warning that nothing was checked. Use
 generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
 with a GitHub noreply address.
+
+## Supply chain
+
+- Actions are pinned to a full commit SHA with the version as a comment
+  (`uses: actions/checkout@<sha> # v7.0.1`); base images in the
+  `Dockerfile` by digest, tag kept for readers. To update, resolve the new
+  tag (`git ls-remote --tags`, or the registry's manifest digest for the
+  multi-arch index) and change SHA and comment together. Never go back to
+  a bare tag.
+- Workflow permissions are per job, with nothing at the top level
+  (`permissions: {}` in `release.yml`). Anything that publishes `needs:` a
+  job that ran the tests on the same commit.
 
 ### Before going public
 
