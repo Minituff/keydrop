@@ -123,5 +123,19 @@ CI fails if the tree contains any of the maintainer's own addresses,
 domains or host names (`scripts/leak-check.sh`; the list is the
 `KEYDROP_LEAK_PATTERNS` repository secret, so it isn't in the repo). Use
 generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
-with a GitHub noreply address. Before going public: run the `leak-history`
-workflow, then squash.
+with a GitHub noreply address.
+
+### Before going public
+
+In this order; the maintainer does the last two steps:
+
+1. A thorough security review of the whole codebase, with findings fixed.
+2. Check the web UI in a real browser, on a phone and a desktop.
+3. Merge `dev` into `main`; CI green on `main`.
+4. Run the `leak-history` workflow (it only appears once on the default
+   branch) and clean up anything it finds.
+5. Squash the history into one commit, in place (the repo has no forks
+   or open PRs to break), and force-push.
+6. `git grep PRIVATE:` is empty: each such line removed or made generic.
+7. Make the repository and its container package public.
+8. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
