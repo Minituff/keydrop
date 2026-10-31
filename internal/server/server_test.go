@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +174,109 @@ func TestLoginLockout(t *testing.T) {
 	resp, _ := anon.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}, "totp": {"000000"}})
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("not locked out: %d", resp.StatusCode)
+	}
+}
+
+// Parallel wrong passwords are each counted before any is checked, so they
+// can't all get a guess in.
+func TestLoginConcurrent(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	var wg sync.WaitGroup
+	var checked atomic.Int32
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.PostForm(h.ts.URL+"/login", url.Values{"password": {"nope"}, "totp": {"000000"}})
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusUnauthorized {
+					checked.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if checked.Load() != 5 {
+		t.Fatalf("%d of 30 parallel guesses were checked, want 5", checked.Load())
+	}
+}
+
+// Failures from many addresses use up the global limit, but a browser that
+// has logged in before can still log in.
+func TestLoginLockoutSparesKnownBrowser(t *testing.T) {
+	h := newHarness(t)
+	// Password-only, so the test isn't tied to TOTP steps; setup leaves the
+	// harness browser with a device cookie.
+	h.post("/setup", url.Values{"code": {h.srv.setupCode}, "password": {"a long enough password"}, "password2": {"a long enough password"}, "mfa": {"none"}})
+	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")}
+	try := func(ip, password string) int {
+		req, _ := http.NewRequest("POST", h.ts.URL+"/login", strings.NewReader(url.Values{"password": {password}}.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("X-Forwarded-For", ip)
+		resp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := 0; i < 25; i++ {
+		try(fmt.Sprintf("10.0.1.%d", i), "nope")
+	}
+	if c := try("10.0.2.1", "a long enough password"); c != http.StatusTooManyRequests {
+		t.Fatalf("global limit not applied: %d", c)
+	}
+	if resp := h.post("/login", url.Values{"password": {"a long enough password"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("known browser locked out: %d", resp.StatusCode)
+	}
+	if h.srv.deviceID(&http.Request{Header: http.Header{"Cookie": {"keydrop-device=AAAA"}}}) != "" {
+		t.Fatal("forged device cookie accepted")
+	}
+}
+
+// A proxy that adds its own X-Forwarded-For line (rather than appending to
+// the client's) must not let the client's line pick the address.
+func TestForwardedForAllLines(t *testing.T) {
+	h := newHarness(t)
+	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.168.1.10/32")}
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "192.168.1.10:5555"
+	r.Header.Add("X-Forwarded-For", "10.0.0.5") // forged by the client
+	r.Header.Add("X-Forwarded-For", "10.0.0.66")
+	if got := h.srv.clientIP(r); got != "10.0.0.66" {
+		t.Fatalf("clientIP = %s, want the proxy's own line", got)
+	}
+	r.Header.Set("X-Forwarded-For", "10.0.0.5, 10.0.0.66")
+	if got := h.srv.clientIP(r); got != "10.0.0.66" {
+		t.Fatalf("clientIP = %s", got)
+	}
+	r.RemoteAddr = "10.0.0.7:1" // not a proxy: the header is ignored
+	if got := h.srv.clientIP(r); got != "10.0.0.7" {
+		t.Fatalf("clientIP = %s", got)
+	}
+}
+
+// Filling the pairing list from a few addresses can't keep a new address
+// out: the busiest address's oldest request makes way.
+func TestPairingFairShare(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	for i := 0; i < maxPairings; i++ {
+		ip := fmt.Sprintf("10.0.3.%d", i/maxPairingsPerIP)
+		if code, _ := h.apiFrom(ip, "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
+			t.Fatalf("filling %d from %s: %d", i, ip, code)
+		}
+	}
+	if code, _ := h.apiFrom("10.0.4.1", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
+		t.Fatalf("newcomer refused when the list is full: %d", code)
+	}
+	h.srv.mu.Lock()
+	n := len(h.srv.pairings)
+	h.srv.mu.Unlock()
+	if n != maxPairings {
+		t.Fatalf("%d waiting, want %d", n, maxPairings)
 	}
 }
 
@@ -340,10 +445,13 @@ func TestPasswordOnlyAndTOTPSettings(t *testing.T) {
 	if seed == nil {
 		t.Fatal("no pending seed")
 	}
-	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "totp": {"000000"}}); resp.StatusCode != http.StatusBadRequest || h.st.TOTPEnabled() {
+	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "password": {"a long enough password"}, "totp": {"000000"}}); resp.StatusCode != http.StatusBadRequest || h.st.TOTPEnabled() {
 		t.Fatalf("wrong code turned it on: %d", resp.StatusCode)
 	}
-	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "totp": {totpNow(seed, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !h.st.TOTPEnabled() {
+	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "totp": {totpNow(seed, time.Now())}}); resp.StatusCode != http.StatusUnauthorized || h.st.TOTPEnabled() {
+		t.Fatalf("turned on without the password: %d", resp.StatusCode)
+	}
+	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "password": {"a long enough password"}, "totp": {totpNow(seed, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !h.st.TOTPEnabled() {
 		t.Fatalf("turn on: %d", resp.StatusCode)
 	}
 	if c := login(""); c != http.StatusUnauthorized {
@@ -687,12 +795,12 @@ func TestPairing(t *testing.T) {
 		t.Fatal("denied request still pollable")
 	}
 
-	// IPv6: the cap counts the /64, and the pre-fill drops the zone.
-	for i := 1; i <= 3; i++ {
+	// IPv6: the group cap counts the /64, and the pre-fill drops the zone.
+	for i := 1; i <= maxPairingsPerGroup; i++ {
 		h.apiFrom(fmt.Sprintf("2001:db8::%d", i), "POST", "/api/v1/pair", "", "", map[string]string{})
 	}
 	if code, _ := h.apiFrom("2001:db8::ff", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusTooManyRequests {
-		t.Fatalf("fourth request from one /64: %d", code)
+		t.Fatalf("request past the cap for one /64: %d", code)
 	}
 	if got := sourcePrefill("fe80::1%eth0"); got != "fe80::1" {
 		t.Fatalf("pre-fill %q", got)

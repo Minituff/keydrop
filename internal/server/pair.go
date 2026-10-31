@@ -21,9 +21,10 @@ import (
 // sources), and the agent collects its token. Requests live in memory only
 // and expire quickly, so a restart just means pairing again.
 const (
-	pairTTL          = 10 * time.Minute
-	maxPairings      = 10 // waiting at once, across all clients
-	maxPairingsPerIP = 3
+	pairTTL             = 10 * time.Minute
+	maxPairings         = 50 // waiting at once, across all clients
+	maxPairingsPerIP    = 3  // per exact address
+	maxPairingsPerGroup = 8  // per IPv6 /64 (the same as per address for IPv4)
 )
 
 type pairing struct {
@@ -68,8 +69,10 @@ func (s *Server) revokeUncollected(now time.Time) {
 	}
 }
 
-// sourceGroup is what the per-address cap counts: the address, or its /64
-// for IPv6, since one machine usually has a whole /64 to pick from.
+// sourceGroup is what the per-group cap counts: the address, or its /64
+// for IPv6, since one machine usually has a whole /64 to pick from. A LAN
+// usually shares one /64 too, so the group cap is higher than the cap per
+// exact address.
 func sourceGroup(ip string) string {
 	a, err := netip.ParseAddr(ip)
 	if err != nil {
@@ -146,6 +149,44 @@ func suggestName(host string) string {
 	return name
 }
 
+// makePairingRoomLocked reports whether ip may add a pairing request. Each
+// address and /64 has its own cap. When the whole list is full, the oldest
+// waiting request from the busiest group makes way, as long as that group
+// has more than ip's own: so one noisy neighbour can't keep everyone else
+// out, and filling the list takes many addresses. Needs s.pairMu.
+func (s *Server) makePairingRoomLocked(ip string) bool {
+	group := sourceGroup(ip)
+	fromIP, perGroup := 0, map[string]int{}
+	for _, p := range s.pairings {
+		if p.IP == ip {
+			fromIP++
+		}
+		perGroup[sourceGroup(p.IP)]++
+	}
+	if fromIP >= maxPairingsPerIP || perGroup[group] >= maxPairingsPerGroup {
+		return false
+	}
+	if len(s.pairings) < maxPairings {
+		return true
+	}
+	var victim *pairing
+	for _, p := range s.pairings {
+		g := sourceGroup(p.IP)
+		if p.approved || perGroup[g] <= perGroup[group]+1 {
+			continue
+		}
+		if victim == nil || perGroup[g] > perGroup[sourceGroup(victim.IP)] ||
+			(perGroup[g] == perGroup[sourceGroup(victim.IP)] && p.Created.Before(victim.Created)) {
+			victim = p
+		}
+	}
+	if victim == nil {
+		return false
+	}
+	delete(s.pairings, victim.ID)
+	return true
+}
+
 // apiPairStart is unauthenticated: anyone who can reach keydrop may ask to
 // pair, and only the admin can approve. The caps keep a noisy client from
 // filling the list.
@@ -158,15 +199,9 @@ func (s *Server) apiPairStart(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 	s.pairMu.Lock()
 	s.expirePairingsLocked()
-	fromIP, group := 0, sourceGroup(ip)
-	for _, p := range s.pairings {
-		if sourceGroup(p.IP) == group {
-			fromIP++
-		}
-	}
-	if len(s.pairings) >= maxPairings || fromIP >= maxPairingsPerIP {
+	if !s.makePairingRoomLocked(ip) {
 		s.pairMu.Unlock()
-		apiError(w, http.StatusTooManyRequests, "too many pairing requests are waiting; approve or deny them, or wait 10 minutes")
+		apiError(w, http.StatusTooManyRequests, "too many pairing requests are waiting from this address; approve or deny them, or wait 10 minutes")
 		return
 	}
 	poll := randomString(32)

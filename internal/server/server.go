@@ -3,9 +3,12 @@
 package server
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"log"
 	"net"
 	"net/http"
@@ -71,6 +74,7 @@ type Server struct {
 	setupLimiter *auth.Limiter
 	mux          *http.ServeMux
 	now          func() time.Time
+	deviceKey    []byte // signs device cookies (see deviceID)
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -90,7 +94,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		cfg: cfg, store: st, audit: al,
 		limiter: auth.NewLimiter(), setupLimiter: auth.NewLimiter(),
 		mux: http.NewServeMux(), now: time.Now, sessions: map[string]*session{},
-		pairings: map[string]*pairing{},
+		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()
@@ -202,7 +206,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // clientIP is the remote address, or the first untrusted hop in
-// X-Forwarded-For when the request came through a trusted proxy.
+// X-Forwarded-For when the request came through a trusted proxy. Every
+// X-Forwarded-For line counts: a proxy that adds its own line rather than
+// appending to the client's must not let the client's line decide.
 func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -212,7 +218,7 @@ func (s *Server) clientIP(r *http.Request) string {
 	if err != nil || !s.trusted(addr) {
 		return host
 	}
-	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		hop := strings.TrimSpace(hops[i])
 		a, err := netip.ParseAddr(hop)
@@ -283,6 +289,68 @@ func (s *Server) endSession(w http.ResponseWriter, id string) {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode})
+}
+
+// ---- device cookies ----
+
+// A device cookie marks a browser that has logged in before. It grants
+// nothing: it only lets that browser keep trying to log in while someone
+// else on the network has used up the global failed-login limit. It's
+// signed with a key derived from the master key, so it survives restarts.
+const deviceTTL = 365 * 24 * time.Hour
+
+func (s *Server) deviceCookieName() string {
+	if s.cfg.CookieSecure {
+		return "__Host-keydrop-device"
+	}
+	return "keydrop-device"
+}
+
+func (s *Server) deviceMAC(b []byte) []byte {
+	m := hmac.New(sha256.New, s.deviceKey)
+	m.Write(b)
+	return m.Sum(nil)
+}
+
+// deviceID returns the ID in a valid, unexpired device cookie, or "".
+func (s *Server) deviceID(r *http.Request) string {
+	c, err := r.Cookie(s.deviceCookieName())
+	if err != nil {
+		return ""
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil || len(raw) != 16+8+32 || !hmac.Equal(s.deviceMAC(raw[:24]), raw[24:]) {
+		return ""
+	}
+	if s.now().Unix() > int64(binary.BigEndian.Uint64(raw[16:24])) {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:16])
+}
+
+// setDeviceCookie marks this browser as one that has logged in.
+func (s *Server) setDeviceCookie(w http.ResponseWriter) {
+	raw := make([]byte, 24, 56)
+	if _, err := rand.Read(raw[:16]); err != nil {
+		panic(err)
+	}
+	binary.BigEndian.PutUint64(raw[16:], uint64(s.now().Add(deviceTTL).Unix()))
+	raw = append(raw, s.deviceMAC(raw)...)
+	http.SetCookie(w, &http.Cookie{
+		Name: s.deviceCookieName(), Value: base64.RawURLEncoding.EncodeToString(raw), Path: "/",
+		HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
+		MaxAge: int(deviceTTL / time.Second),
+	})
+}
+
+// tryLogin reserves a password attempt. A browser that has logged in
+// before is counted on its own and exempt from the global limit, so others
+// failing can't lock it out; anyone else is counted by address.
+func (s *Server) tryLogin(r *http.Request) (*auth.Attempt, error) {
+	if dev := s.deviceID(r); dev != "" {
+		return s.limiter.Try("device:"+dev, true, s.now())
+	}
+	return s.limiter.Try("ip:"+s.clientIP(r), false, s.now())
 }
 
 type adminHandler func(w http.ResponseWriter, r *http.Request, sid string, se *session)

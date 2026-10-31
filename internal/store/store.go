@@ -7,6 +7,7 @@ package store
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -206,11 +207,12 @@ type state struct {
 // Store is safe for concurrent use. Every mutation is written to disk before
 // the method returns.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	aead cipher.AEAD
-	st   state
-	now  func() time.Time
+	mu     sync.Mutex
+	path   string
+	aead   cipher.AEAD
+	master []byte
+	st     state
+	now    func() time.Time
 }
 
 // ParseKey accepts a 32-byte master key as base64 (standard or URL) or hex.
@@ -249,7 +251,7 @@ func Open(dir string, key []byte) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, now: time.Now}
+	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
 	data, err := os.ReadFile(s.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -278,6 +280,17 @@ func Open(dir string, key []byte) (*Store, error) {
 		s.st.Tokens = map[string]*Token{}
 	}
 	return s, nil
+}
+
+// DeriveKey returns a 32-byte key for purpose, derived from the master key
+// with HKDF. Each purpose gets an independent key, none of them the
+// encryption key itself.
+func (s *Store) DeriveKey(purpose string) []byte {
+	k, err := hkdf.Key(sha256.New, s.master, nil, "keydrop "+purpose, 32)
+	if err != nil {
+		panic(err) // only for impossible lengths
+	}
+	return k
 }
 
 // seal encrypts with the AAD bound to where the ciphertext lives, so a value

@@ -130,12 +130,19 @@ func CheckTOTP(seed []byte, code string, now time.Time) (int64, bool) {
 // ErrLocked is returned while a client (or the whole login) is locked out.
 var ErrLocked = errors.New("too many failed attempts, try again later")
 
-// Limiter locks a client out after PerClient failures within Window, and
-// locks out everyone after Global failures within Window. The global limit
-// is what actually protects a LAN-only app from a distributed guesser.
+// Limiter counts failed attempts per client within Window, and across all
+// clients. Every attempt is reserved before the password is checked and
+// counted as a failure unless the caller reports success, so concurrent
+// requests can't all slip past the check.
+//
+// A client is locked after PerClient failures. The Global limit is what
+// stops a guesser using many addresses, but it would also let anyone on the
+// network lock everyone out, so callers can exempt clients they already
+// trust (a browser that logged in before) from it: those are only limited
+// on their own failures.
 type Limiter struct {
 	PerClient int
-	Global    int
+	Global    int // 0: no global limit
 	Window    time.Duration
 
 	mu      sync.Mutex
@@ -156,30 +163,58 @@ func prune(ts []time.Time, cutoff time.Time) []time.Time {
 	return ts[i:]
 }
 
-// Allow reports whether client may attempt a login now.
-func (l *Limiter) Allow(client string, now time.Time) error {
+// Attempt is one reserved try. It counts as a failure unless Succeed is
+// called.
+type Attempt struct {
+	l      *Limiter
+	client string
+	at     time.Time
+	global bool
+	done   bool
+}
+
+// Try reserves an attempt for client, or returns ErrLocked. exempt skips
+// the global limit (and doesn't count towards it).
+func (l *Limiter) Try(client string, exempt bool, now time.Time) (*Attempt, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	cutoff := now.Add(-l.Window)
 	l.global = prune(l.global, cutoff)
-	l.clients[client] = prune(l.clients[client], cutoff)
-	if len(l.global) >= l.Global || len(l.clients[client]) >= l.PerClient {
-		return ErrLocked
+	if len(l.clients) > 10000 { // forget idle clients now and then
+		for c, ts := range l.clients {
+			if len(prune(ts, cutoff)) == 0 {
+				delete(l.clients, c)
+			}
+		}
 	}
-	return nil
+	mine := prune(l.clients[client], cutoff)
+	if len(mine) >= l.PerClient || (!exempt && l.Global > 0 && len(l.global) >= l.Global) {
+		l.clients[client] = mine
+		return nil, ErrLocked
+	}
+	l.clients[client] = append(mine, now)
+	if !exempt {
+		l.global = append(l.global, now)
+	}
+	return &Attempt{l: l, client: client, at: now, global: !exempt}, nil
 }
 
-// Fail records a failed attempt.
-func (l *Limiter) Fail(client string, now time.Time) {
+// Succeed takes the attempt back and clears the client's failures.
+func (a *Attempt) Succeed() {
+	l := a.l
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.global = append(l.global, now)
-	l.clients[client] = append(l.clients[client], now)
-}
-
-// Succeed clears a client's failures.
-func (l *Limiter) Succeed(client string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.clients, client)
+	if a.done {
+		return
+	}
+	a.done = true
+	delete(l.clients, a.client)
+	if a.global {
+		for i := len(l.global) - 1; i >= 0; i-- {
+			if l.global[i].Equal(a.at) {
+				l.global = append(l.global[:i], l.global[i+1:]...)
+				break
+			}
+		}
+	}
 }

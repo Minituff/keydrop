@@ -81,7 +81,7 @@ replacement for Vault or Infisical in a team.
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses. |
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
-| Login limits | 5 failures per client and 20 overall per 15 minutes. |
+| Login limits | 5 failures per client and 20 overall per 15 minutes; each attempt is counted before the password is checked, so parallel guesses don't get extra tries. A browser that has logged in before carries a signed device cookie and is exempt from the overall limit, so failures from elsewhere on the network can't lock the owner out. |
 | Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
 | Headers | Strict CSP (no scripts at all), `X-Frame-Options: DENY`, `no-referrer`, `no-store`. |
 | Transport | TLS by default with a self-signed certificate. The CLI pins its SHA-256 fingerprint, so there's no public CA and no DNS dependency. |
@@ -253,7 +253,7 @@ allowed sources gets 403.
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}` |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days |
-| `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address (IPv6: per /64), 10 overall |
+| `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |
 | `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself) |

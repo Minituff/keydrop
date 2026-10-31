@@ -136,8 +136,10 @@ which are the places keydrop exists to keep secrets out of. So a machine
    it to a 0600 file.
 
 - **Unauthenticated, so bounded.** Anyone who can reach keydrop can ask to
-  pair, so requests are capped (3 waiting per address or IPv6 /64, 10
-  overall) and
+  pair, so requests are capped (3 waiting per address, 8 per IPv6 /64,
+  50 overall). When the list is full, the oldest unapproved request from
+  the busiest address (or /64) makes way, so one noisy host can't keep
+  everyone else from pairing. Requests
   expire after 10 minutes. They're held in memory only: a restart drops
   them, and the agent asks again.
 - **The token goes back only to the address that asked**, and only once.
@@ -259,13 +261,20 @@ every read logged, no way to just look). So an entry is either a
   it), and it logs out every other session, so changing the password
   after a suspected leak actually locks the other person out.
 - Failed logins: 5 per client and 20 overall per 15 minutes. The global
-  limit is what stops a distributed guesser.
+  limit is what stops a distributed guesser. Each attempt is reserved
+  before the password is checked and refunded on success, so parallel
+  requests can't get extra guesses. A successful login sets a device
+  cookie (random ID, expiry, HMAC with a key derived from the master key;
+  1 year); a browser presenting a valid one is limited per device and is
+  exempt from the global limit, so a host on the LAN failing on purpose
+  can't lock the owner out.
 - First run prints a one-time **setup code** in the container log: 6
   characters from an alphabet without 0/O/1/I, with a link that fills it
   in. Its only job is to stop someone else on the network claiming the
   empty install first, so it's short enough to type on a phone: 30 bits,
   with wrong guesses rate-limited (5 per client, 20 overall per 15
-  minutes). It's new on every restart until setup finishes, and works
+  minutes). If someone uses up the overall limit, restarting keydrop
+  clears it and prints a new code. It's new on every restart until setup finishes, and works
   once. The authenticator key is only shown after the code is accepted,
   so a bystander can't copy the second factor.
 - The authenticator step shows a QR code (for setting up from a computer;
@@ -287,7 +296,12 @@ every read logged, no way to just look). So an entry is either a
 - `KEYDROP_TRUSTED_PROXIES` limits who may set `X-Forwarded-For`, so the
   login limiter, allowed sources and pairing see real client IPs. List
   only the proxy's own address: any host in a trusted range can claim to
-  be any address.
+  be any address. All `X-Forwarded-For` lines are joined and read from
+  the right, skipping trusted proxies, so a proxy that adds its own line
+  instead of appending can't be fooled by a line the client sent.
+- Turning the authenticator on or off, and changing the password, all
+  need the current password, so an unattended logged-in browser isn't
+  enough.
 - **Not designed for the internet.** Reach it over a LAN or a VPN such as
   Tailscale or WireGuard.
 

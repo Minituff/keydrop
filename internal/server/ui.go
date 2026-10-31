@@ -165,18 +165,21 @@ func (s *Server) otpView(seed []byte) page {
 	return p
 }
 
-// checkSetupCode compares a setup code, rate-limiting wrong guesses.
+// checkSetupCode compares a setup code, rate-limiting wrong guesses. The
+// limit is global as well as per client, since the code is short; a
+// restart clears it (and makes a new code), and whoever is setting up can
+// read the log, so they can restart.
 func (s *Server) checkSetupCode(r *http.Request, code string) (ok, locked bool) {
-	ip, now := s.clientIP(r), s.now()
-	if s.setupLimiter.Allow(ip, now) != nil {
+	att, err := s.setupLimiter.Try(s.clientIP(r), false, s.now())
+	if err != nil {
 		return false, true
 	}
 	s.setupMu.Lock()
 	want := s.setupCode
 	s.setupMu.Unlock()
 	ok = want != "" && subtle.ConstantTimeCompare([]byte(normalizeCode(code)), []byte(want)) == 1
-	if !ok {
-		s.setupLimiter.Fail(ip, now)
+	if ok {
+		att.Succeed()
 	}
 	return ok, false
 }
@@ -184,7 +187,7 @@ func (s *Server) checkSetupCode(r *http.Request, code string) (ok, locked bool) 
 func (s *Server) renderSetupCode(w http.ResponseWriter, r *http.Request, locked bool) {
 	if locked {
 		s.render(w, r, "setup", http.StatusTooManyRequests, nil, page{"Title": "Set up", "Step": "code",
-			"Error": "Too many wrong codes. Wait 15 minutes, or restart keydrop to get a new code."})
+			"Error": "Too many wrong codes. Wait 15 minutes, or restart keydrop: that clears the limit and prints a new code."})
 		return
 	}
 	s.render(w, r, "setup", http.StatusForbidden, nil, page{"Title": "Set up", "Step": "code",
@@ -278,6 +281,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		detail = "password only"
 	}
 	s.event(r, "admin", "admin.setup", "", detail)
+	s.setDeviceCookie(w)
 	s.newSession(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -295,13 +299,13 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := s.clientIP(r)
 	now := s.now()
 	if crossSite(r) {
 		http.Error(w, "cross-site request refused", http.StatusForbidden)
 		return
 	}
-	if err := s.limiter.Allow(ip, now); err != nil {
+	att, err := s.tryLogin(r)
+	if err != nil {
 		s.event(r, "admin", "login.locked", "", "")
 		s.renderLogin(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
 		return
@@ -316,7 +320,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !ok {
-		s.limiter.Fail(ip, now)
 		s.event(r, "admin", "login.fail", "", "")
 		msg := "Wrong password."
 		if seed != nil {
@@ -325,8 +328,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, r, http.StatusUnauthorized, msg)
 		return
 	}
-	s.limiter.Succeed(ip)
+	att.Succeed()
 	s.event(r, "admin", "login", "", "")
+	s.setDeviceCookie(w)
 	s.newSession(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -688,12 +692,40 @@ func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request, _ strin
 	s.renderSettings(w, r, se, http.StatusOK, "")
 }
 
+// confirmPassword checks the admin password typed into a settings form,
+// against the same limiter as login, so a stolen session can't be used to
+// guess it. It renders the error itself and returns false on failure.
+func (s *Server) confirmPassword(w http.ResponseWriter, r *http.Request, se *session, field, why string) bool {
+	att, err := s.tryLogin(r)
+	if err != nil {
+		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
+		return false
+	}
+	hash, _, _, err := s.store.Admin()
+	if err != nil || !auth.CheckPassword(hash, r.PostFormValue(field)) {
+		s.event(r, "admin", "admin.password.fail", "", why)
+		msg := "Wrong password."
+		if field == "current" {
+			msg = "The current password is wrong."
+		}
+		s.renderSettings(w, r, se, http.StatusUnauthorized, msg)
+		return false
+	}
+	att.Succeed()
+	return true
+}
+
+// handleTOTPOn needs the password as well as a code, like turning it off,
+// so an unattended logged-in phone can't bind someone else's authenticator.
 func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	s.mu.Lock()
 	seed := se.newTOTP
 	s.mu.Unlock()
 	if seed == nil || s.store.TOTPEnabled() {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	if !s.confirmPassword(w, r, se, "password", "turning on the authenticator") {
 		return
 	}
 	step, ok := auth.CheckTOTP(seed, r.PostFormValue("totp"), s.now())
@@ -718,16 +750,7 @@ func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, 
 // unattended logged-in phone shouldn't be enough), and it logs out every
 // other session, in case the old password is why you're changing it.
 func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	ip, now := s.clientIP(r), s.now()
-	if s.limiter.Allow(ip, now) != nil {
-		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
-		return
-	}
-	hash, _, _, err := s.store.Admin()
-	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("current")) {
-		s.limiter.Fail(ip, now)
-		s.event(r, "admin", "admin.password.fail", "", "wrong current password")
-		s.renderSettings(w, r, se, http.StatusUnauthorized, "The current password is wrong.")
+	if !s.confirmPassword(w, r, se, "current", "wrong current password") {
 		return
 	}
 	pw := r.PostFormValue("password")
@@ -748,7 +771,6 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, _ string
 		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save. Check keydrop's log.")
 		return
 	}
-	s.limiter.Succeed(ip)
 	// End every session, this one included, and start a fresh one: if the
 	// leak being reacted to is this session's own cookie, it must die too.
 	s.mu.Lock()
@@ -762,16 +784,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, _ string
 // handleTOTPOff needs the password again, so an unattended logged-in phone
 // can't quietly weaken the login.
 func (s *Server) handleTOTPOff(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	ip, now := s.clientIP(r), s.now()
-	if s.limiter.Allow(ip, now) != nil {
-		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
-		return
-	}
-	hash, _, _, err := s.store.Admin()
-	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("password")) {
-		s.limiter.Fail(ip, now)
-		s.event(r, "admin", "admin.password.fail", "", "turning off the authenticator")
-		s.renderSettings(w, r, se, http.StatusUnauthorized, "Wrong password.")
+	if !s.confirmPassword(w, r, se, "password", "turning off the authenticator") {
 		return
 	}
 	if err := s.store.SetTOTP(nil); err != nil {
