@@ -138,6 +138,8 @@ anything that sat in plaintext for long.
 
 See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
 Codex, with a session-start inbox hook and a guard against `--raw`.
+[docs/design_doc.md](docs/design_doc.md) explains how keydrop is built and
+why.
 
 ## Configuration
 
@@ -207,3 +209,7 @@ runners.
   tool that returns values would put them straight into the transcript.
 - Optional per-secret allowlists inside a namespace
 - Version history beyond one previous value
+
+## License
+
+[MIT](LICENSE)
