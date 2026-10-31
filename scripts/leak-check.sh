@@ -19,7 +19,13 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 pf=$tmp/patterns
-printf '%s\n' "$KEYDROP_LEAK_PATTERNS" | grep -v '^[[:space:]]*$' >"$pf" || true
+# One pattern per line. Surrounding whitespace (a trailing space, a CRLF
+# line end from pasting the secret) is trimmed, so a line still matches what
+# it looks like it matches; blank lines are ignored, since an empty pattern
+# would match everything.
+printf '%s\n' "$KEYDROP_LEAK_PATTERNS" |
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+  grep -v '^$' >"$pf" || true
 if [ ! -s "$pf" ]; then
   echo "::error::KEYDROP_LEAK_PATTERNS has no patterns"
   exit 2
