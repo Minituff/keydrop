@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1>Agents</h1>
+<p>Each agent has its own token, and can only see secrets in the namespaces it's granted.</p>
+<ul class="list">
+{{range .Tokens}}
+  <li><div>
+    <strong>{{.Name}}</strong> {{if .Write}}<span class="badge">can write</span>{{end}}
+    <span class="desc">namespaces: {{join .Namespaces ", "}}</span>
+    <small>created {{fmtTime .CreatedAt}} · last used {{since .LastUsedAt}}</small>
+    <form method="post" action="/tokens/{{.Name}}/revoke" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label class="check"><input type="checkbox" name="confirm" value="yes" required> sure</label>
+      <button class="danger small">Revoke</button>
+    </form>
+  </div></li>
+{{else}}
+  <li class="muted">No agents yet.</li>
+{{end}}
+</ul>
+
+<h2>Add an agent</h2>
+<form method="post" action="/tokens" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Name
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="homelab-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label>Namespaces <small>(comma-separated)</small>
+    <input name="namespaces" required placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label class="check"><input type="checkbox" name="write" value="yes"> Can create and replace secrets in these namespaces</label>
+  <button>Create token</button>
+</form>
+{{end}}

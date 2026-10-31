@@ -1,0 +1,33 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{.Title}} · keydrop</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">🔑 keydrop</a>
+  {{if .CSRF}}<nav>
+    <a href="/">Secrets</a>
+    <a href="/tokens">Agents</a>
+    <a href="/audit">Log</a>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Log out</button></form>
+  </nav>{{end}}
+</header>
+<main>
+{{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}
+
+
+{{define "valuefield"}}
+<label>Value <small>(can't be shown again after saving)</small>
+  <textarea name="value" rows="3" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+<label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+{{end}}

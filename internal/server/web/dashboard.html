@@ -1,0 +1,60 @@
+{{define "content"}}
+{{if .Pending}}
+<section>
+<h1>Requested by agents</h1>
+{{range .Pending}}
+<div class="card request">
+  <p><strong>{{.Ref}}</strong> <span class="badge">asked by {{.RequestedBy}}</span></p>
+  {{if .Description}}<p class="desc">{{.Description}}</p>{{end}}
+  <form method="post" action="/secret/{{.Namespace}}/{{.Name}}/value">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    {{template "valuefield"}}
+    <button>Save</button>
+  </form>
+</div>
+{{end}}
+</section>
+{{end}}
+
+<section>
+<h1>Add a secret</h1>
+<form method="post" action="/secrets" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="row">
+    <label>Namespace
+      <input name="namespace" list="namespaces" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" autocapitalize="off" autocorrect="off" spellcheck="false" value="{{.DefaultNS}}"></label>
+    <label>Name
+      <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="cloudflare-dns" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  </div>
+  <datalist id="namespaces">{{range .Namespaces}}<option value="{{.}}">{{end}}</datalist>
+  {{template "valuefield"}}
+  <label>What is it for, and what should the agent do with it?
+    <textarea name="description" rows="3" placeholder="DNS edit token for example.com. Replace the old one in the Traefik stack."></textarea></label>
+  <label>How it's used <small>(optional)</small>
+    <input name="usage" placeholder="Authorization: Bearer {}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label>Expires <small>(optional)</small>
+    <input type="date" name="expires"></label>
+  <label class="check"><input type="checkbox" name="overwrite" value="yes"> Replace it if it already exists</label>
+  <button>Save</button>
+</form>
+</section>
+
+{{range .Groups}}
+<section>
+<h2>{{.Namespace}}</h2>
+<ul class="list">
+{{range .Secrets}}
+  <li><a href="/secret/{{.Namespace}}/{{.Name}}">
+    <strong>{{.Name}}</strong>
+    {{if .New}}<span class="badge new">new</span>{{end}}
+    {{with expiry .Expires}}<span class="badge {{.Class}}">{{.Text}}</span>{{end}}
+    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
+    <small>read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}</small>
+  </a></li>
+{{end}}
+</ul>
+</section>
+{{else}}
+<p class="muted">No secrets yet.</p>
+{{end}}
+{{end}}

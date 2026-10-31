@@ -1,0 +1,75 @@
+# Using keydrop from an AI agent
+
+The CLI is the whole integration: an agent runs shell commands, so it runs
+`keydrop`. This page covers instructions to give the agent, plus optional
+hooks for Claude Code.
+
+## Instructions to give the agent
+
+Paste something like this into `CLAUDE.md` / `AGENTS.md`:
+
+```markdown
+## Secrets (keydrop)
+API keys live in keydrop, not in files or chat. You can use them but you
+never need to see them.
+- Never ask the user to paste a secret into chat. If you need one, run
+  `keydrop request NAME --desc "what it's for, which scopes, how long it should
+  last"`, send the user the link it prints, then `keydrop wait NAME`.
+- Use secrets only through `keydrop run`:
+  `keydrop run --env TOKEN=NAME -- curl -H "Authorization: Bearer $TOKEN" …`
+  (inside `sh -c`, single-quote the script so the child expands `$TOKEN`).
+- `keydrop list` / `keydrop info NAME` show what exists and what each key is
+  for. Follow the description: it says what to do with the key.
+- New keys show up in `keydrop inbox`. Deal with them, then `keydrop ack NAME`.
+- Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
+  prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
+  Don't try to recover the value.
+```
+
+## Claude Code hooks
+
+In `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "keydrop inbox --quiet" } ] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [ { "type": "command", "command": "keydrop-guard" } ] }
+    ]
+  }
+}
+```
+
+- **SessionStart:** whatever `keydrop inbox` prints becomes context at the
+  start of the session. The agent sees "1 new secret: homelab/cloudflare-dns,
+  'DNS edit token, replace the old one in the Traefik stack'" without being
+  asked. `--quiet` prints nothing when there's nothing new.
+- **PreToolUse guard:** a small script that blocks commands that would print
+  a value. For example, `keydrop-guard`:
+
+  ```sh
+  #!/bin/sh
+  # Reads the tool call JSON on stdin; exit 2 blocks it and shows stderr to Claude.
+  cmd=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["tool_input"].get("command",""))')
+  case "$cmd" in
+    *"keydrop get"*"--raw"*|*"keydrop"*"--no-mask"*)
+      echo "Blocked: this would print a secret value. Use keydrop run instead." >&2; exit 2 ;;
+  esac
+  exit 0
+  ```
+
+The guard is a guard-rail for honest mistakes, not a security boundary (see
+the threat model in the README).
+
+## Health checks
+
+```sh
+keydrop expiring --days 14 --check || notify "keys expiring soon: $(keydrop expiring --days 14)"
+```
+
+Only names and dates are printed, so this is safe to send to a chat channel.

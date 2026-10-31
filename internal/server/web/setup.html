@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>Set up keydrop</h1>
+<p>This page works once. Choose an admin password and add keydrop to your authenticator app.</p>
+<form method="post" action="/setup" class="card">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <label>Password <small>(at least 12 characters)</small>
+    <input type="password" name="password" autocomplete="new-password" required minlength="12"></label>
+  <label>Password again
+    <input type="password" name="password2" autocomplete="new-password" required minlength="12"></label>
+  <h2>Authenticator</h2>
+  <p><a class="button" href="{{.OTPURI}}">Add to authenticator app</a></p>
+  <p>Or enter this key by hand:</p>
+  <p><code class="secret">{{.OTPSecret}}</code></p>
+  <label>6-digit code from the app
+    <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+  <button>Finish setup</button>
+</form>
+{{end}}
