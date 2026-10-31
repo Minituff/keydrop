@@ -17,9 +17,13 @@
 {{end}}
 
 <section>
-<h1>Add a secret</h1>
+<h1>Add</h1>
 <form method="post" action="/secrets" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <fieldset class="kind">
+    <label class="check"><input type="radio" name="kind" value="secret" checked> <span><strong>Secret</strong> <small>an API key or password: hidden from agents, masked, every read logged</small></span></label>
+    <label class="check"><input type="radio" name="kind" value="variable"> <span><strong>Variable</strong> <small>not secret (a URL, a username, an ID): agents can print it</small></span></label>
+  </fieldset>
   <div class="row">
     <label>Namespace
       <input name="namespace" list="namespaces" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" autocapitalize="off" autocorrect="off" spellcheck="false" value="{{.DefaultNS}}"></label>
@@ -39,6 +43,7 @@
 </form>
 </section>
 
+<h1>Secrets</h1>
 {{range .Groups}}
 <section>
 <h2>{{.Namespace}}</h2>
@@ -56,5 +61,24 @@
 </section>
 {{else}}
 <p class="muted">No secrets yet.</p>
+{{end}}
+
+<h1>Variables</h1>
+{{range .Vars}}
+<section>
+<h2>{{.Namespace}}</h2>
+<ul class="list">
+{{range .Vars}}
+  <li><a href="/secret/{{.Namespace}}/{{.Name}}">
+    <strong>{{.Name}}</strong>
+    {{if .New}}<span class="badge new">new</span>{{end}}
+    <code class="value">{{.Value}}</code>
+    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
+  </a></li>
+{{end}}
+</ul>
+</section>
+{{else}}
+<p class="muted">No variables yet.</p>
 {{end}}
 {{end}}

@@ -17,9 +17,6 @@ services:
       KEYDROP_TLS_HOSTS: secrets.example.com,192.168.1.50
       # If a reverse proxy sits in front, let it pass the real client IP:
       # KEYDROP_TRUSTED_PROXIES: 192.168.1.10
-      # Tell a chat channel when secrets are added or requested (names only, never values):
-      # KEYDROP_WEBHOOK_URL: https://discord.com/api/webhooks/…
-      # KEYDROP_WEBHOOK_FORMAT: discord
     secrets:
       - keydrop_master_key
     volumes:

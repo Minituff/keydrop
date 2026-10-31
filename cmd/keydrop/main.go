@@ -13,19 +13,22 @@ var version = "dev"
 const usage = `keydrop — a secret drop for homelab agents.
 
 Agent commands (use a token from the admin UI; see "keydrop login"):
-  run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets in its environment, output
-                                         masked (-e NAME sets $NAME; VAR=REF renames it)
-  list [--new] [--pending]              list secrets this token can see (no values)
-  info REF                              show one secret's details (no value)
+  run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
+                                         secrets masked (-e NAME sets $NAME; VAR=REF renames)
+  secrets [--new] [--pending]           list secrets this token can see (no values)
+  vars [--new]                          list variables (non-secret settings) with values
+  info REF                              show one entry's details (a secret's value never)
   inbox                                 secrets that are new since an agent last acked them
   ack REF...                            mark secrets as dealt with
   request REF --desc TEXT [--usage U]   ask the human for a secret; prints a link
   wait REF [--timeout 30m]              wait until a requested secret has a value
   expiring [--days 14] [--check]        secrets expiring soon (--check: exit 1 if any)
+  get NAME                              print a variable (refuses secrets)
   get REF --to-file PATH                write a value to a 0600 file
-  get REF --raw                         print a value (avoid: it ends up in logs)
-  put REF [--desc …] [--overwrite]      store a value read from stdin (write tokens)
-  import FILE [--namespace NS]          upload a KEY=VALUE env file (write tokens)
+  get REF --raw                         print a secret (avoid: it ends up in logs)
+  put REF [--var] [--desc …]            store a value read from stdin (write tokens;
+                                         --var: a variable, not a secret)
+  import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (write tokens)
   login --url URL [--pin sha256:…]      save the server URL and a token
   whoami                                show the token's name and namespaces
 
@@ -58,8 +61,10 @@ func main() {
 		if err == nil {
 			os.Exit(code)
 		}
-	case "list":
-		err = cmdList(args)
+	case "secrets":
+		err = cmdList("secret", args)
+	case "vars":
+		err = cmdList("variable", args)
 	case "info":
 		err = cmdInfo(args)
 	case "inbox":

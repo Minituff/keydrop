@@ -8,15 +8,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/minituff/keydrop/internal/notify"
 	"github.com/minituff/keydrop/internal/store"
 )
 
-// APISecret is the metadata agents see. It never includes the value.
+// APISecret is the metadata agents see. It includes the value only for a
+// variable; a secret's value comes only from the reveal endpoint.
 type APISecret struct {
 	Ref         string     `json:"ref"`
 	Namespace   string     `json:"namespace"`
 	Name        string     `json:"name"`
+	Kind        string     `json:"kind"`
+	Value       *string    `json:"value,omitempty"`
 	Description string     `json:"description,omitempty"`
 	Usage       string     `json:"usage,omitempty"`
 	Expires     *time.Time `json:"expires,omitempty"`
@@ -29,13 +31,20 @@ type APISecret struct {
 	LastReadBy  string     `json:"last_read_by,omitempty"`
 }
 
-func toAPI(s store.Secret) APISecret {
-	return APISecret{
-		Ref: s.Ref(), Namespace: s.Namespace, Name: s.Name, Description: s.Description,
-		Usage: s.Usage, Expires: s.Expires, HasValue: s.HasValue(), Pending: s.Pending,
-		RequestedBy: s.RequestedBy, New: s.New, UpdatedAt: s.UpdatedAt,
-		LastReadAt: s.LastReadAt, LastReadBy: s.LastReadBy,
+func (s *Server) toAPI(sec store.Secret) APISecret {
+	a := APISecret{
+		Ref: sec.Ref(), Namespace: sec.Namespace, Name: sec.Name, Kind: sec.Kind(),
+		Description: sec.Description, Usage: sec.Usage, Expires: sec.Expires,
+		HasValue: sec.HasValue(), Pending: sec.Pending, RequestedBy: sec.RequestedBy,
+		New: sec.New, UpdatedAt: sec.UpdatedAt, LastReadAt: sec.LastReadAt, LastReadBy: sec.LastReadBy,
 	}
+	if sec.Variable && sec.HasValue() {
+		if v, err := s.store.VariableValue(sec.Namespace, sec.Name); err == nil {
+			str := string(v)
+			a.Value = &str
+		}
+	}
+	return a
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -96,14 +105,14 @@ func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) 
 			(!onlyNew || sec.New) &&
 			(!onlyPending || sec.Pending)
 	}) {
-		out = append(out, toAPI(sec))
+		out = append(out, s.toAPI(sec))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) apiGet(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if sec, ok := s.lookup(w, r, t); ok {
-		writeJSON(w, http.StatusOK, toAPI(sec))
+		writeJSON(w, http.StatusOK, s.toAPI(sec))
 	}
 }
 
@@ -123,8 +132,10 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
-	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "value": string(val)})
+	if !sec.Variable { // variables aren't secret, so their reads aren't logged
+		s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "kind": sec.Kind(), "value": string(val)})
 }
 
 func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
@@ -145,6 +156,7 @@ type putBody struct {
 	Description *string `json:"description"`
 	Usage       *string `json:"usage"`
 	Expires     *string `json:"expires"`
+	Variable    *bool   `json:"variable"`
 	Overwrite   bool    `json:"overwrite"`
 }
 
@@ -170,7 +182,10 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
 		return
 	}
-	meta := store.Meta{Description: old.Description, Usage: old.Usage, Expires: old.Expires}
+	meta := store.Meta{Description: old.Description, Usage: old.Usage, Expires: old.Expires, Variable: old.Variable}
+	if b.Variable != nil {
+		meta.Variable = *b.Variable
+	}
 	if b.Description != nil {
 		meta.Description = *b.Description
 	}
@@ -190,7 +205,6 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	}
 	s.event(r, actor(t), "secret.set", ns+"/"+name, "")
-	s.cfg.Notifier.Send(notify.Event{Event: "secret.set", Namespace: ns, Name: name, Description: meta.Description, By: t.Name, URL: s.secretURL(ns, name)})
 	writeJSON(w, http.StatusOK, map[string]string{"ref": ns + "/" + name})
 }
 
@@ -226,7 +240,6 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	}
 	u := s.secretURL(b.Namespace, b.Name)
 	s.event(r, actor(t), "secret.request", b.Namespace+"/"+b.Name, "")
-	s.cfg.Notifier.Send(notify.Event{Event: "secret.requested", Namespace: b.Namespace, Name: b.Name, Description: b.Description, By: t.Name, URL: u})
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
@@ -240,7 +253,7 @@ func (s *Server) apiExpiring(w http.ResponseWriter, r *http.Request, t store.Tok
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool {
 		return t.Allows(sec.Namespace) && sec.Expires != nil && sec.Expires.Before(cutoff)
 	}) {
-		out = append(out, toAPI(sec))
+		out = append(out, s.toAPI(sec))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

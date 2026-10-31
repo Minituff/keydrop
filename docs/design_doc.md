@@ -74,7 +74,6 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
 | `internal/audit` | JSONL audit log plus an in-memory ring for the UI. |
-| `internal/notify` | Webhooks (JSON, Discord, ntfy). |
 
 ## Design decisions
 
@@ -134,15 +133,36 @@ unless writing is allowed.
   characters aren't masked, since that would mangle normal output.
 - `run` removes `KEYDROP_TOKEN` from the child's environment, forwards
   signals, and exits with the child's exit code.
-- There's deliberately no plain `get`. `get --to-file` (0600) covers
-  config files. `get --raw` exists for the rare pipe, and is easy to block
-  with an agent hook.
+- A plain `get` only prints variables. For a secret it refuses and points
+  at `run -e`. `get --to-file` (0600) covers config files. `get --raw`
+  exists for the rare pipe, and is easy to block with an agent hook.
+
+### Variables
+Not everything an agent needs is secret: an API base URL, an account ID, a
+zone name. Keeping those in a `.env` next to keydrop means two places to
+look, and storing them as secrets makes them awkward (masked in output,
+every read logged, no way to just look). So an entry is either a
+**secret** or a **variable**, chosen when it's added and changeable later.
+
+- Secrets and variables share one keyspace per namespace, so `run -e`
+  takes either and one command can mix them.
+- A variable's value is shown in the web page and returned in API lists.
+  Reading one isn't recorded (no "last read", no audit entry), and `run`
+  doesn't mask it.
+- Variables are still encrypted at rest and still namespaced: a token sees
+  only the variables in its own namespaces.
+- The web page and the CLI list them separately (`keydrop secrets`,
+  `keydrop vars`), so a list of settings never mixes in key names and the
+  other way round.
+- Marking a secret as a variable is the admin's call, made in the UI or by
+  a write token, and logged.
 
 ### Telling the agent about new keys
 - **Push (the human adds a key):** the secret is marked *new* until an agent
   runs `keydrop ack`. `keydrop inbox` lists new secrets with their
-  descriptions, and is designed to run from a session-start hook. An
-  optional webhook fires as well.
+  descriptions, and is designed to run from a session-start hook. There
+  are no webhooks or chat notifications: telling a person about anything
+  is the job of whatever runs the agents, not of keydrop.
 - **Pull (the agent needs a key):** `keydrop request NAME --desc …` creates
   an empty placeholder and returns a link to it. The agent sends the link
   to the human, who opens it on their phone and pastes the value.
@@ -167,6 +187,10 @@ unless writing is allowed.
   owner can reasonably choose password only. It can be turned on later in
   Settings, and turning it off needs the password again. TOTP codes can't
   be replayed.
+- The password can be changed in Settings. It needs the current password
+  (counted against the login limiter, so a stolen session can't guess
+  it), and it logs out every other session, so changing the password
+  after a suspected leak actually locks the other person out.
 - Failed logins: 5 per client and 20 overall per 15 minutes. The global
   limit is what stops a distributed guesser.
 - First run prints a one-time **setup code** in the container log: 6
@@ -222,9 +246,9 @@ code. The full list is in the README.
 v0.1 (MVP), not yet released:
 
 - **Done:** server, web UI, admin password + optional TOTP, namespaced agent
-  tokens, `run` with masking, `list`/`info`/`inbox`/`ack`,
+  tokens, `run` with masking, variables, `secrets`/`vars`/`info`/`inbox`/`ack`,
   `request`/`wait`, `get --to-file`, `put`, `import`, `expiring`,
-  webhooks, audit log, TLS with pinning, Dockerfile, CI and release
+  change password, audit log, TLS with pinning, Dockerfile, CI and release
   workflows, unit tests.
 - **Tested so far:** unit tests, plus an end-to-end run of the server and
   CLI on Linux. That run covered namespace isolation, a wrong pin being
@@ -244,7 +268,7 @@ v0.1 (MVP), not yet released:
    - Passkeys (WebAuthn) for admin login.
    - Trusted proxy-header auth (Authelia, Authentik), deliberately left
      out of v1 because a misconfigured proxy would bypass the login.
-   - An MCP server exposing **metadata only** (`list`, `inbox`, `request`).
+   - An MCP server exposing **metadata only** (`secrets`, `vars`, `inbox`, `request`).
      A tool that returns values would put them in the transcript.
    - `--stdin-to CMD` (for example `docker login --password-stdin`).
    - Optional per-secret allowlists inside a namespace.

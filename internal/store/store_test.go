@@ -136,3 +136,23 @@ func TestNames(t *testing.T) {
 		t.Errorf("request with old-style name: got %v", err)
 	}
 }
+
+func TestVariableValue(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "API_URL", []byte("https://x.test"), &Meta{Variable: true})
+	s.PutValue("lab", "API_KEY", []byte("fake-key-123"), nil)
+	if v, err := s.VariableValue("lab", "API_URL"); err != nil || string(v) != "https://x.test" {
+		t.Fatalf("variable: %q %v", v, err)
+	}
+	if v, err := s.VariableValue("lab", "API_KEY"); err != ErrNotVariable || v != nil {
+		t.Fatalf("secret through VariableValue: %q %v", v, err)
+	}
+	s.Reveal("lab", "API_URL", "agent")
+	if sec, _ := s.GetSecret("lab", "API_URL"); sec.LastReadAt != nil {
+		t.Fatal("variable read recorded")
+	}
+	s.PutValue("lab", "API_URL", []byte("https://y.test"), nil)
+	if sec, _ := s.GetSecret("lab", "API_URL"); !sec.Variable {
+		t.Fatal("replacing the value changed the kind")
+	}
+}

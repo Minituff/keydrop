@@ -19,8 +19,11 @@ never need to see them.
   command: `keydrop run -e GITHUB_PAT -- sh -c 'curl -H "Authorization: Bearer $GITHUB_PAT" …'`
   (single-quote the script so the child expands the variable, not your
   shell). `-e VAR=NAME` sets it under another name.
-- `keydrop list` / `keydrop info NAME` show what exists and what each key is
-  for. Follow the description: it says what to do with the key.
+- `keydrop secrets` / `keydrop info NAME` show what exists and what each key
+  is for. Follow the description: it says what to do with the key.
+- Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
+  lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
+  takes them like secrets.
 - New keys show up in `keydrop inbox`. Deal with them, then `keydrop ack NAME`.
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.

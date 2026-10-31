@@ -16,14 +16,13 @@ import (
 
 	"github.com/minituff/keydrop/internal/audit"
 	"github.com/minituff/keydrop/internal/auth"
-	"github.com/minituff/keydrop/internal/notify"
 	"github.com/minituff/keydrop/internal/store"
 )
 
 // Config is everything the server needs that isn't in the store.
 type Config struct {
 	// PublicURL is the base URL people use in a browser, for links in
-	// webhooks and request replies, e.g. https://secrets.example.com.
+	// request replies and the log, e.g. https://secrets.example.com.
 	PublicURL string
 	// CookieSecure marks the session cookie Secure. Leave it on unless the UI
 	// is reached over plain HTTP.
@@ -32,7 +31,6 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 	// ResetAdmin forces setup mode even if an admin exists.
 	ResetAdmin bool
-	Notifier   *notify.Notifier
 }
 
 const (
@@ -148,6 +146,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/totp/start", s.admin(s.handleTOTPStart))
 	m.HandleFunc("POST /settings/totp/on", s.admin(s.handleTOTPOn))
 	m.HandleFunc("POST /settings/totp/off", s.admin(s.handleTOTPOff))
+	m.HandleFunc("POST /settings/password", s.admin(s.handlePassword))
 
 	m.HandleFunc("GET /api/v1/whoami", s.agent(s.apiWhoami))
 	m.HandleFunc("GET /api/v1/secrets", s.agent(s.apiList))

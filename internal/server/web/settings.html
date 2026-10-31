@@ -25,4 +25,17 @@
   <button>Set up an authenticator</button>
 </form>
 {{end}}
+
+<h2>Password</h2>
+<form method="post" action="/settings/password" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Current password
+    <input type="password" name="current" autocomplete="current-password" required></label>
+  <label>New password <small>(at least 12 characters)</small>
+    <input type="password" name="password" autocomplete="new-password" minlength="12" required></label>
+  <label>New password again
+    <input type="password" name="password2" autocomplete="new-password" minlength="12" required></label>
+  <button>Change password</button>
+</form>
+<p class="muted">Other browsers that are logged in get logged out.</p>
 {{end}}

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/minituff/keydrop/internal/audit"
-	"github.com/minituff/keydrop/internal/notify"
 	"github.com/minituff/keydrop/internal/server"
 	"github.com/minituff/keydrop/internal/store"
 )
@@ -159,10 +158,6 @@ func cmdServer(args []string) error {
 		CookieSecure:   envBool("KEYDROP_COOKIE_SECURE", true),
 		TrustedProxies: proxies,
 		ResetAdmin:     envBool("KEYDROP_RESET_ADMIN", false),
-		Notifier: &notify.Notifier{
-			URL:    env("KEYDROP_WEBHOOK_URL", ""),
-			Format: env("KEYDROP_WEBHOOK_FORMAT", "json"),
-		},
 	}, st, al)
 
 	hs := &http.Server{

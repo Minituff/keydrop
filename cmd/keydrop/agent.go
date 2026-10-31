@@ -74,6 +74,9 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 		}
 	}
 	line := s.Ref
+	if s.Value != nil { // only variables carry a value
+		line += "=" + *s.Value
+	}
 	if len(tags) > 0 {
 		line += "  [" + strings.Join(tags, ", ") + "]"
 	}
@@ -111,9 +114,11 @@ func cmdWhoami(args []string) error {
 	return nil
 }
 
-func cmdList(args []string) error {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	onlyNew := fs.Bool("new", false, "only new secrets")
+// cmdList lists secrets ("secrets") or variables ("vars"), never both, so
+// an agent asking for settings doesn't get a list of keys mixed in.
+func cmdList(kind string, args []string) error {
+	fs := flag.NewFlagSet(kind, flag.ExitOnError)
+	onlyNew := fs.Bool("new", false, "only new ones")
 	pending := fs.Bool("pending", false, "only requested secrets still waiting for a value")
 	ns := fs.String("namespace", "", "only this namespace")
 	parse(fs, args)
@@ -131,9 +136,15 @@ func cmdList(args []string) error {
 	if *ns != "" {
 		q.Set("namespace", *ns)
 	}
-	list, err := c.List(q)
+	all, err := c.List(q)
 	if err != nil {
 		return err
+	}
+	var list []client.Secret
+	for _, s := range all {
+		if s.Kind == kind {
+			list = append(list, s)
+		}
 	}
 	if len(list) == 0 {
 		fmt.Println("(none)")
@@ -392,7 +403,7 @@ func cmdRun(args []string) (int, error) {
 	values := map[string]string{}
 	var m mask.Masker
 	for ref := range refs {
-		v, err := c.Reveal(ref, purpose)
+		v, variable, err := c.Reveal(ref, purpose)
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", ref, err)
 		}
@@ -400,6 +411,9 @@ func cmdRun(args []string) (int, error) {
 			return 0, fmt.Errorf("%s: the value contains a NUL byte, which can't go in an environment variable; use get --to-file", ref)
 		}
 		values[ref] = v
+		if variable {
+			continue // not secret, so not masked
+		}
 		if !m.Add(ref, []byte(v)) && !*noMask {
 			fmt.Fprintf(os.Stderr, "keydrop: warning: %s is shorter than %d characters and won't be masked\n", ref, mask.MinLength)
 		}
@@ -449,23 +463,37 @@ func cmdGet(args []string) error {
 	force := fs.Bool("force", false, "overwrite --to-file if it exists")
 	raw := fs.Bool("raw", false, "print the value to stdout")
 	pos := parse(fs, args)
-	if len(pos) != 1 || (*toFile == "") == !*raw {
-		return errors.New("usage: keydrop get REF --to-file PATH   (or --raw to print it, which leaks it into logs)")
+	if len(pos) != 1 || (*toFile != "" && *raw) {
+		return errors.New("usage: keydrop get NAME   (variables; secrets need --to-file PATH, or --raw, which leaks it into logs)")
 	}
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
+	if *toFile == "" && !*raw {
+		// Metadata only, so asking for a secret this way isn't logged as a read.
+		sec, err := c.Get(pos[0])
+		if err != nil {
+			return err
+		}
+		if sec.Value == nil {
+			return fmt.Errorf("%s is a secret, so it isn't printed: use keydrop run -e %s, or get --to-file for a file", sec.Ref, sec.Name)
+		}
+		fmt.Println(*sec.Value)
+		return nil
+	}
 	purpose := "get --raw"
 	if *toFile != "" {
 		purpose = "get --to-file"
 	}
-	v, err := c.Reveal(pos[0], purpose)
+	v, variable, err := c.Reveal(pos[0], purpose)
 	if err != nil {
 		return err
 	}
 	if *raw {
-		fmt.Fprintln(os.Stderr, "keydrop: printing a secret; it's now in this terminal's output")
+		if !variable {
+			fmt.Fprintln(os.Stderr, "keydrop: printing a secret; it's now in this terminal's output")
+		}
 		fmt.Print(v)
 		return nil
 	}
@@ -519,9 +547,10 @@ func cmdPut(args []string) error {
 	expires := fs.String("expires", "", "expiry date, e.g. 2027-01-23")
 	overwrite := fs.Bool("overwrite", false, "replace an existing value")
 	keepWS := fs.Bool("keep-ws", false, "keep leading/trailing whitespace")
+	asVar := fs.Bool("var", false, "store it as a variable (not secret: agents can print it)")
 	pos := parse(fs, args)
 	if len(pos) != 1 {
-		return errors.New("usage: keydrop put REF [--desc TEXT] < value   (the value comes from stdin, never the command line)")
+		return errors.New("usage: keydrop put REF [--var] [--desc TEXT] < value   (the value comes from stdin, never the command line)")
 	}
 	var v string
 	if isTerminal(os.Stdin) {
@@ -544,6 +573,9 @@ func cmdPut(args []string) error {
 		return errors.New("empty value")
 	}
 	o := client.PutOptions{Overwrite: *overwrite}
+	if *asVar {
+		o.Variable = asVar
+	}
 	if *desc != "" {
 		o.Description = desc
 	}
@@ -604,6 +636,7 @@ func cmdImport(args []string) error {
 	ns := fs.String("namespace", "", "namespace to import into (default: the token's only namespace)")
 	overwrite := fs.Bool("overwrite", false, "replace secrets that already have a value")
 	dry := fs.Bool("dry-run", false, "show what would be imported (names only)")
+	asVars := fs.Bool("vars", false, "import everything as variables (not secret); default is secrets")
 	pos := parse(fs, args)
 	if len(pos) != 1 {
 		return errors.New("usage: keydrop import FILE [--namespace NS] [--dry-run]")
@@ -652,7 +685,11 @@ func cmdImport(args []string) error {
 		if desc == "" {
 			desc = "Imported from " + filepath.Base(pos[0])
 		}
-		err := c.Put(ref, e.value, client.PutOptions{Description: &desc, Overwrite: *overwrite})
+		o := client.PutOptions{Description: &desc, Overwrite: *overwrite}
+		if *asVars {
+			o.Variable = asVars
+		}
+		err := c.Put(ref, e.value, o)
 		var ae *client.APIError
 		if errors.As(err, &ae) && ae.Status == 409 {
 			fmt.Printf("skip %s: already exists (use --overwrite)\n", ref)

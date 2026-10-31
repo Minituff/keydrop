@@ -52,18 +52,22 @@ replacement for Vault or Infisical in a team.
 - **Agent CLI.** `keydrop run -e NAME` puts a secret into one command's
   environment under its own name and masks it in the command's output.
   Secret names are env-var style (`CLOUDFLARE_API_TOKEN`), so nothing needs
-  translating. `list`, `info` and `inbox` show descriptions, never values.
+  translating. `secrets`, `info` and `inbox` show descriptions, never values.
+- **Variables for settings that aren't secret.** A URL, an account ID or a
+  zone name can be stored as a *variable* next to the secrets. Variables
+  are shown in full in the web page and to agents (`keydrop vars`,
+  `keydrop get NAME`), aren't masked, and reading one isn't logged. They go
+  into `run -e` exactly like secrets, so one command can take both. The
+  web page lists secrets and variables separately.
 - **Agents know what to do with a new key.** Secrets you add are marked
   *new* until an agent acknowledges them, and `keydrop inbox` (run by a
   session-start hook) shows them with your description. An agent can also
   **ask** for a key: `keydrop request` creates an empty placeholder and returns a
   link for you to fill in, and `keydrop wait` blocks until you do.
-- **Webhooks** (Discord, ntfy or plain JSON) when secrets are added or
-  requested. They carry names and descriptions, never values.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
-- **An audit log** of every login, change and read (which agent, which
-  secret, which command).
+- **An audit log** of every login, change and secret read (which agent,
+  which secret, which command).
 
 ### Security design
 
@@ -106,7 +110,8 @@ read, which is deliberate.
 
 Lost the admin password or authenticator? Restart with
 `KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove the variable.
-Secrets and tokens are kept.
+Secrets and tokens are kept. To change the password while logged in, use
+**Settings → Password**; that logs out every other browser.
 
 ## Quick start (agent)
 
@@ -121,6 +126,8 @@ Secrets and tokens are kept.
 3. Use it:
    ```sh
    keydrop inbox                                   # anything new for me?
+   keydrop secrets                                 # what keys exist (no values)
+   keydrop vars                                    # non-secret settings, with values
    keydrop run -e CLOUDFLARE_API_TOKEN -- terraform apply   # sets $CLOUDFLARE_API_TOKEN
    keydrop run -e TOKEN=CLOUDFLARE_API_TOKEN -- sh -c 'curl -H "Authorization: Bearer $TOKEN" …'
    keydrop ack CLOUDFLARE_API_TOKEN                # dealt with it
@@ -138,15 +145,19 @@ Secret names look like environment variables: capital letters, digits and
 `_`, not starting with a digit. The web page upper-cases what you type; the
 CLI and API don't, and refuse a lower-case name.
 
-For a file (a kubeconfig, a PEM): `keydrop get NAME --to-file PATH` writes it
-with mode 600. `keydrop get NAME --raw` prints a value, which defeats the point;
-it exists for the rare pipe that needs it.
+`keydrop get NAME` prints a variable and refuses a secret. For a file (a
+kubeconfig, a PEM): `keydrop get NAME --to-file PATH` writes it with mode
+600. `keydrop get NAME --raw` prints a secret, which defeats the point; it
+exists for the rare pipe that needs it.
+
+To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
 
 To migrate an existing `.env` (needs a token with write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
 lines above a key become its description, and each key keeps its name
 (keys that aren't upper-case are skipped). Values are never printed. Rotate
-anything that sat in plaintext for long.
+anything that sat in plaintext for long. `--vars` imports every key as a
+variable instead, for a file of plain settings.
 
 See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
 Codex, with a session-start inbox hook and a guard against `--raw`.
@@ -160,13 +171,11 @@ why.
 | `KEYDROP_MASTER_KEY_FILE` | — | File holding the master key (preferred). Or `KEYDROP_MASTER_KEY` with the value itself. |
 | `KEYDROP_DATA_DIR` | `/data` | State, audit log and the generated certificate. |
 | `KEYDROP_LISTEN` | `:8443` | Listen address. |
-| `KEYDROP_PUBLIC_URL` | — | Base URL used in links (webhooks, `request`). |
+| `KEYDROP_PUBLIC_URL` | — | Base URL used in links (`request`, the setup log line). |
 | `KEYDROP_TLS` | `auto` | `auto` (self-signed, kept in the data dir), `files` (`KEYDROP_TLS_CERT` + `KEYDROP_TLS_KEY`), or `off` (only behind a TLS-terminating proxy). |
 | `KEYDROP_TLS_HOSTS` | — | Extra DNS names/IPs for the self-signed certificate. |
 | `KEYDROP_COOKIE_SECURE` | `true` | Set `false` only if the page is reached over plain HTTP. |
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits apply per real client. |
-| `KEYDROP_WEBHOOK_URL` | — | Called when a secret is set or requested. |
-| `KEYDROP_WEBHOOK_FORMAT` | `json` | `json`, `discord` or `ntfy`. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
@@ -192,7 +201,7 @@ isn't granted returns 404, exactly like a missing secret.
 | | |
 |---|---|
 | `GET /api/v1/whoami` | Token name, namespaces, write flag |
-| `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list |
+| `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`) |
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata |
 | `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged) |
 | `POST /api/v1/secrets/{ns}/{name}/ack` | Clear the *new* flag |
@@ -217,7 +226,7 @@ runners.
 ## Roadmap
 
 - Passkeys (WebAuthn) for admin login
-- An MCP server exposing **metadata only** (`list`, `inbox`, `request`). A
+- An MCP server exposing **metadata only** (`secrets`, `vars`, `inbox`, `request`). A
   tool that returns values would put them straight into the transcript.
 - Optional per-secret allowlists inside a namespace
 - Version history beyond one previous value

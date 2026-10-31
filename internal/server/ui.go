@@ -14,7 +14,6 @@ import (
 
 	"github.com/minituff/keydrop/internal/audit"
 	"github.com/minituff/keydrop/internal/auth"
-	"github.com/minituff/keydrop/internal/notify"
 	"github.com/minituff/keydrop/internal/qr"
 	"github.com/minituff/keydrop/internal/store"
 )
@@ -90,6 +89,7 @@ var flashes = map[string]string{
 	"revoked":    "Token revoked.",
 	"totpon":     "Authenticator turned on. Logging in now needs a code.",
 	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
+	"password":   "Password changed. Any other logged-in browsers were logged out.",
 }
 
 type page map[string]any
@@ -339,6 +339,17 @@ type group struct {
 	Secrets   []store.Secret
 }
 
+// varRow is a variable with its value, which the dashboard shows in full.
+type varRow struct {
+	store.Secret
+	Value string
+}
+
+type varGroup struct {
+	Namespace string
+	Vars      []varRow
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	s.renderDashboard(w, r, se, http.StatusOK, "")
 }
@@ -346,15 +357,23 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, _ strin
 func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
 	var pending []store.Secret
 	var groups []group
+	var vars []varGroup
 	for _, sec := range s.store.ListSecrets(nil) {
-		if sec.Pending {
+		switch {
+		case sec.Pending:
 			pending = append(pending, sec)
-			continue
+		case sec.Variable:
+			if len(vars) == 0 || vars[len(vars)-1].Namespace != sec.Namespace {
+				vars = append(vars, varGroup{Namespace: sec.Namespace})
+			}
+			v, _ := s.store.VariableValue(sec.Namespace, sec.Name)
+			vars[len(vars)-1].Vars = append(vars[len(vars)-1].Vars, varRow{sec, string(v)})
+		default:
+			if len(groups) == 0 || groups[len(groups)-1].Namespace != sec.Namespace {
+				groups = append(groups, group{Namespace: sec.Namespace})
+			}
+			groups[len(groups)-1].Secrets = append(groups[len(groups)-1].Secrets, sec)
 		}
-		if len(groups) == 0 || groups[len(groups)-1].Namespace != sec.Namespace {
-			groups = append(groups, group{Namespace: sec.Namespace})
-		}
-		groups[len(groups)-1].Secrets = append(groups[len(groups)-1].Secrets, sec)
 	}
 	nss := s.store.Namespaces()
 	def := ""
@@ -362,7 +381,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *ses
 		def = nss[0]
 	}
 	s.render(w, r, "dashboard", status, se, page{
-		"Title": "Secrets", "Pending": pending, "Groups": groups,
+		"Title": "Secrets", "Pending": pending, "Groups": groups, "Vars": vars,
 		"Namespaces": nss, "DefaultNS": def, "Error": errMsg,
 	})
 }
@@ -397,6 +416,7 @@ func formMeta(r *http.Request) (store.Meta, error) {
 		Description: strings.TrimSpace(r.PostFormValue("description")),
 		Usage:       strings.TrimSpace(r.PostFormValue("usage")),
 		Expires:     exp,
+		Variable:    r.PostFormValue("kind") == "variable",
 	}, err
 }
 
@@ -429,7 +449,6 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, "")
-	s.cfg.Notifier.Send(notify.Event{Event: "secret.set", Namespace: ns, Name: name, Description: meta.Description, By: "admin", URL: s.secretURL(ns, name)})
 	http.Redirect(w, r, "/secret/"+url.PathEscape(ns)+"/"+url.PathEscape(name)+"?msg=saved", http.StatusSeeOther)
 }
 
@@ -447,6 +466,10 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 	if !ok {
 		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
 		return
+	}
+	if sec.Variable && sec.HasValue() {
+		v, _ := s.store.VariableValue(ns, name)
+		value = string(v)
 	}
 	var readers []string
 	for _, t := range s.store.ListTokens() {
@@ -477,7 +500,9 @@ func (s *Server) handleReveal(w http.ResponseWriter, r *http.Request, _ string, 
 		s.renderSecret(w, r, se, http.StatusInternalServerError, "Couldn't decrypt the value. Check keydrop's log.")
 		return
 	}
-	s.event(r, "admin", "secret.reveal", ns+"/"+name, "web UI")
+	if sec, _ := s.store.GetSecret(ns, name); !sec.Variable {
+		s.event(r, "admin", "secret.reveal", ns+"/"+name, "web UI")
+	}
 	s.renderSecretWith(w, r, se, http.StatusOK, "", string(val))
 }
 
@@ -506,7 +531,6 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 		detail = "fulfilled request from " + sec.RequestedBy
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, detail)
-	s.cfg.Notifier.Send(notify.Event{Event: "secret.set", Namespace: ns, Name: name, Description: sec.Description, By: "admin", URL: s.secretURL(ns, name)})
 	s.back(w, r, "saved")
 }
 
@@ -517,9 +541,13 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 		return
 	}
 	ns, name := r.PathValue("ns"), r.PathValue("name")
+	old, _ := s.store.GetSecret(ns, name)
 	if err := s.store.UpdateMeta(ns, name, meta); err != nil {
 		s.renderSecret(w, r, se, http.StatusNotFound, err.Error())
 		return
+	}
+	if old.Variable != meta.Variable {
+		s.event(r, "admin", "secret.kind", ns+"/"+name, "now a "+map[bool]string{true: "variable", false: "secret"}[meta.Variable])
 	}
 	s.event(r, "admin", "secret.details", ns+"/"+name, "")
 	s.back(w, r, "details")
@@ -660,6 +688,51 @@ func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, 
 	s.mu.Unlock()
 	s.event(r, "admin", "admin.totp.on", "", "")
 	http.Redirect(w, r, "/settings?msg=totpon", http.StatusSeeOther)
+}
+
+// handlePassword changes the admin password. It needs the current one (an
+// unattended logged-in phone shouldn't be enough), and it logs out every
+// other session, in case the old password is why you're changing it.
+func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, sid string, se *session) {
+	ip, now := s.clientIP(r), s.now()
+	if s.limiter.Allow(ip, now) != nil {
+		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
+		return
+	}
+	hash, _, _, err := s.store.Admin()
+	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("current")) {
+		s.limiter.Fail(ip, now)
+		s.renderSettings(w, r, se, http.StatusUnauthorized, "The current password is wrong.")
+		return
+	}
+	pw := r.PostFormValue("password")
+	switch {
+	case len([]rune(pw)) < auth.MinPasswordLength:
+		s.renderSettings(w, r, se, http.StatusBadRequest, fmt.Sprintf("The new password needs at least %d characters.", auth.MinPasswordLength))
+		return
+	case pw != r.PostFormValue("password2"):
+		s.renderSettings(w, r, se, http.StatusBadRequest, "The new passwords don't match.")
+		return
+	}
+	newHash, err := auth.HashPassword(pw)
+	if err == nil {
+		err = s.store.SetPassword(newHash)
+	}
+	if err != nil {
+		log.Printf("change password: %v", err)
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save. Check keydrop's log.")
+		return
+	}
+	s.limiter.Succeed(ip)
+	s.mu.Lock()
+	for id := range s.sessions {
+		if id != sid {
+			delete(s.sessions, id)
+		}
+	}
+	s.mu.Unlock()
+	s.event(r, "admin", "admin.password", "", "")
+	http.Redirect(w, r, "/settings?msg=password", http.StatusSeeOther)
 }
 
 // handleTOTPOff needs the password again, so an unattended logged-in phone

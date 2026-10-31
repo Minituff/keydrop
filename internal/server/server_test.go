@@ -403,3 +403,119 @@ func TestSecretNames(t *testing.T) {
 		t.Errorf("API put with lower-case name: %d %s", code, raw)
 	}
 }
+
+func TestVariables(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	csrf := h.csrf()
+	h.post("/secrets", url.Values{"csrf": {csrf}, "namespace": {"lab"}, "name": {"API_URL"}, "kind": {"variable"}, "value": {"https://api.example.test"}})
+	h.post("/secrets", url.Values{"csrf": {csrf}, "namespace": {"lab"}, "name": {"API_KEY"}, "value": {"fake-secret-value-77"}})
+
+	// The page shows variables' values in their own section, never secrets'.
+	_, body := h.get("/")
+	if !strings.Contains(body, "https://api.example.test") || strings.Contains(body, "fake-secret-value-77") {
+		t.Fatal("dashboard: variable value missing or secret value shown")
+	}
+	if i, j := strings.Index(body, "<h1>Variables</h1>"), strings.Index(body, "https://api.example.test"); i < 0 || j < i {
+		t.Fatal("variable not under the Variables heading")
+	}
+	if _, body := h.get("/secret/lab/API_URL"); !strings.Contains(body, "https://api.example.test") {
+		t.Fatal("variable page doesn't show the value")
+	}
+
+	// The API lists a variable's value, never a secret's.
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true)
+	_, _, raw := h.api("GET", "/api/v1/secrets", tok, nil)
+	var list []APISecret
+	json.Unmarshal(raw, &list)
+	for _, s := range list {
+		switch s.Name {
+		case "API_URL":
+			if s.Kind != "variable" || s.Value == nil || *s.Value != "https://api.example.test" {
+				t.Errorf("variable in list: %+v", s)
+			}
+		case "API_KEY":
+			if s.Kind != "secret" || s.Value != nil {
+				t.Errorf("secret in list: %+v", s)
+			}
+		}
+	}
+	if strings.Contains(string(raw), "fake-secret-value-77") {
+		t.Fatal("secret value in list response")
+	}
+
+	// Reading a variable isn't logged; reading a secret is.
+	before := len(h.srv.audit.Recent(100))
+	if _, m, _ := h.api("POST", "/api/v1/secrets/lab/API_URL/reveal", tok, nil); m["kind"] != "variable" {
+		t.Fatalf("variable reveal: %v", m)
+	}
+	if n := len(h.srv.audit.Recent(100)); n != before {
+		t.Fatal("variable read was logged")
+	}
+	if sec, _ := h.st.GetSecret("lab", "API_URL"); sec.LastReadAt != nil {
+		t.Fatal("variable read recorded")
+	}
+	h.api("POST", "/api/v1/secrets/lab/API_KEY/reveal", tok, nil)
+	if n := len(h.srv.audit.Recent(100)); n != before+1 {
+		t.Fatal("secret read not logged")
+	}
+
+	// Agents can store variables; the kind sticks on overwrite unless changed.
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/DB_USER", tok, map[string]any{"value": "keydrop", "variable": true}); code != 200 {
+		t.Fatalf("put variable: %d", code)
+	}
+	h.api("PUT", "/api/v1/secrets/lab/DB_USER", tok, map[string]any{"value": "keydrop2", "overwrite": true})
+	if sec, _ := h.st.GetSecret("lab", "DB_USER"); !sec.Variable {
+		t.Fatal("overwrite turned a variable into a secret")
+	}
+
+	// Switching kind in the UI is logged.
+	h.post("/secret/lab/API_URL/meta", url.Values{"csrf": {csrf}, "kind": {"secret"}})
+	if sec, _ := h.st.GetSecret("lab", "API_URL"); sec.Variable {
+		t.Fatal("kind not changed")
+	}
+	if _, body := h.get("/audit"); !strings.Contains(body, "secret.kind") {
+		t.Fatal("kind change not logged")
+	}
+}
+
+func TestChangePassword(t *testing.T) {
+	h := newHarness(t)
+	h.post("/setup", url.Values{"code": {h.srv.setupCode}, "password": {"a long enough password"}, "password2": {"a long enough password"}, "mfa": {"none"}})
+	jar, _ := cookiejar.New(nil)
+	other := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	other.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}})
+	if resp, _ := other.Get(h.ts.URL + "/"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("second session: %d", resp.StatusCode)
+	}
+
+	csrf := h.csrf()
+	change := func(cur, pw, pw2 string) int {
+		return h.post("/settings/password", url.Values{"csrf": {csrf}, "current": {cur}, "password": {pw}, "password2": {pw2}}).StatusCode
+	}
+	if c := change("wrong password!!", "a brand new password", "a brand new password"); c != http.StatusUnauthorized {
+		t.Fatalf("wrong current password: %d", c)
+	}
+	if c := change("a long enough password", "short", "short"); c != http.StatusBadRequest {
+		t.Fatalf("short password: %d", c)
+	}
+	if c := change("a long enough password", "a brand new password", "a different one!!"); c != http.StatusBadRequest {
+		t.Fatalf("mismatch: %d", c)
+	}
+	if c := change("a long enough password", "a brand new password", "a brand new password"); c != http.StatusSeeOther {
+		t.Fatalf("change: %d", c)
+	}
+	if code, _ := h.get("/"); code != http.StatusOK {
+		t.Fatal("this session was logged out")
+	}
+	if resp, _ := other.Get(h.ts.URL + "/"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatal("other session still logged in")
+	}
+	fresh := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if resp, _ := fresh.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}}); resp.StatusCode == http.StatusSeeOther {
+		t.Fatal("old password still works")
+	}
+	if resp, _ := fresh.PostForm(h.ts.URL+"/login", url.Values{"password": {"a brand new password"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("new password: %d", resp.StatusCode)
+	}
+}

@@ -24,12 +24,13 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("not found")
-	ErrExists     = errors.New("already exists")
-	ErrNoValue    = errors.New("secret has no value yet")
-	ErrNoPrevious = errors.New("no previous value to roll back to")
-	ErrBadName    = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
-	ErrBadSecret  = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
+	ErrNotFound    = errors.New("not found")
+	ErrExists      = errors.New("already exists")
+	ErrNoValue     = errors.New("secret has no value yet")
+	ErrNoPrevious  = errors.New("no previous value to roll back to")
+	ErrNotVariable = errors.New("not a variable")
+	ErrBadName     = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
+	ErrBadSecret   = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
 )
 
 const (
@@ -52,10 +53,14 @@ func ValidName(s string) bool { return nameRE.MatchString(s) }
 // own name with nothing to translate.
 func ValidSecretName(s string) bool { return secretRE.MatchString(s) }
 
-// Secret is one stored secret. Value and Previous are ciphertext.
+// Secret is one stored secret or variable. Value and Previous are
+// ciphertext. A variable is a non-secret setting (a URL, a username): agents
+// may print it, it isn't masked, and reading it isn't recorded. Secrets and
+// variables share one set of names, so -e NAME is never ambiguous.
 type Secret struct {
 	Namespace   string     `json:"namespace"`
 	Name        string     `json:"name"`
+	Variable    bool       `json:"variable,omitempty"`
 	Description string     `json:"description,omitempty"`
 	Usage       string     `json:"usage,omitempty"`
 	Expires     *time.Time `json:"expires,omitempty"`
@@ -76,11 +81,20 @@ func (s Secret) Ref() string { return s.Namespace + "/" + s.Name }
 // HasValue reports whether a value has been set.
 func (s Secret) HasValue() bool { return len(s.Value) > 0 }
 
-// Meta is the human-written description of a secret.
+// Kind is "variable" or "secret", for display.
+func (s Secret) Kind() string {
+	if s.Variable {
+		return "variable"
+	}
+	return "secret"
+}
+
+// Meta is the human-written description of a secret, and its kind.
 type Meta struct {
 	Description string
 	Usage       string
 	Expires     *time.Time
+	Variable    bool
 }
 
 // Token is an agent's credential. Only the SHA-256 of the token is stored;
@@ -281,6 +295,18 @@ func (s *Store) SetAdmin(passwordHash string, totpSecret []byte) error {
 	return s.save()
 }
 
+// SetPassword replaces the admin password hash, leaving the authenticator
+// as it is.
+func (s *Store) SetPassword(passwordHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st.Admin.PasswordHash == "" {
+		return ErrNotFound
+	}
+	s.st.Admin.PasswordHash = passwordHash
+	return s.save()
+}
+
 // SetTOTP turns the authenticator on with a new seed, or off with nil. The
 // last used step is kept, so old codes stay unusable.
 func (s *Store) SetTOTP(seed []byte) error {
@@ -403,7 +429,7 @@ func (s *Store) reseal(ct []byte, ns, name, from, to string) []byte {
 }
 
 func applyMeta(sec *Secret, m Meta) {
-	sec.Description, sec.Usage, sec.Expires = m.Description, m.Usage, m.Expires
+	sec.Description, sec.Usage, sec.Expires, sec.Variable = m.Description, m.Usage, m.Expires, m.Variable
 }
 
 // UpdateMeta changes description, usage and expiry without touching the value.
@@ -474,7 +500,7 @@ func (s *Store) Rollback(ns, name string) error {
 	return s.save()
 }
 
-// Reveal decrypts a value and records who read it.
+// Reveal decrypts a value and, for a secret, records who read it.
 func (s *Store) Reveal(ns, name, by string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -489,9 +515,30 @@ func (s *Store) Reveal(ns, name, by string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
 	}
+	if sec.Variable {
+		return pt, nil
+	}
 	now := s.now().UTC()
 	sec.LastReadAt, sec.LastReadBy = &now, by
 	return pt, s.save()
+}
+
+// VariableValue decrypts a variable's value. It refuses secrets, so code
+// listing variables can't return a secret's value by mistake (or by a race
+// with a kind change).
+func (s *Store) VariableValue(ns, name string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sec, ok := s.st.Secrets[key(ns, name)]
+	switch {
+	case !ok:
+		return nil, ErrNotFound
+	case !sec.Variable:
+		return nil, ErrNotVariable
+	case len(sec.Value) == 0:
+		return nil, ErrNoValue
+	}
+	return s.open(sec.Value, aad(ns, name, "value"))
 }
 
 // Ack clears the "new" flag once an agent has dealt with a secret.

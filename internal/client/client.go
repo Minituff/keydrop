@@ -213,18 +213,20 @@ func (c *Client) Get(ref string) (*Secret, error) {
 	return &s, c.do("GET", secretPath(ns, name), nil, &s)
 }
 
-// Reveal returns a secret's value. purpose is recorded in the audit log.
-func (c *Client) Reveal(ref, purpose string) (string, error) {
+// Reveal returns a value, and whether it's a variable (which isn't
+// masked). purpose is recorded in the audit log for a secret.
+func (c *Client) Reveal(ref, purpose string) (value string, variable bool, err error) {
 	ns, name, err := c.Resolve(ref)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	var out struct{ Value string }
+	var out struct{ Value, Kind string }
 	p := secretPath(ns, name) + "/reveal"
 	if purpose != "" {
 		p += "?purpose=" + url.QueryEscape(purpose)
 	}
-	return out.Value, c.do("POST", p, nil, &out)
+	err = c.do("POST", p, nil, &out)
+	return out.Value, out.Kind == "variable", err
 }
 
 // Ack clears a secret's "new" flag.
@@ -241,6 +243,7 @@ type PutOptions struct {
 	Description *string `json:"description,omitempty"`
 	Usage       *string `json:"usage,omitempty"`
 	Expires     *string `json:"expires,omitempty"`
+	Variable    *bool   `json:"variable,omitempty"`
 	Overwrite   bool    `json:"overwrite"`
 }
 

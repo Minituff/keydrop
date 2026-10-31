@@ -10,14 +10,17 @@ isn't worth it.
 
 ## Security invariants — don't break these
 
-- **Values are only shown on purpose, and every view is logged.** In the
-  web UI a value appears only after the admin presses "Show value" (a POST
-  with the CSRF token), never in a list, a URL or a redirect. Agents get
-  values only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a token.
-  Both are audit-logged, and those are the only two ways a value leaves the
-  server.
+- **Secret values are only shown on purpose, and every view is logged.** In
+  the web UI a secret appears only after the admin presses "Show value" (a
+  POST with the CSRF token), never in a list, a URL or a redirect. Agents
+  get secrets only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a
+  token. Both are audit-logged, and those are the only two ways a secret
+  leaves the server. **Variables** (`Secret.Variable`) are the deliberate
+  exception: their values appear in lists and API responses, reads aren't
+  logged, and `run` doesn't mask them. Any code that shows a value must
+  check the kind, via `store.VariableValue`, which refuses secrets.
 - **Never log, print or return a value or token** anywhere else: not in
-  logs, errors, audit entries, webhooks, templates or test output. Errors
+  logs, errors, audit entries, templates or test output. Errors
   name the secret (`ns/name`), never its contents.
 - **Namespace isolation.** A secret in a namespace the token isn't granted
   returns **404**, identical to a missing secret, so names don't leak. Every
@@ -57,7 +60,7 @@ GitHub Actions are the exception; keep them to well-known actions
 | `internal/client` | API client used by the CLI (with certificate pinning). |
 | `internal/mask` | Streaming output masker. |
 | `internal/qr` | QR encoder for the authenticator setup (stdlib only). |
-| `internal/audit`, `internal/notify` | Audit log, webhooks. |
+| `internal/audit` | Audit log. |
 
 ## Build and test
 
