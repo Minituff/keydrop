@@ -908,3 +908,30 @@ func TestPairingUncollected(t *testing.T) {
 		t.Fatal("collected token revoked")
 	}
 }
+
+// Unauthenticated requests can't grow the audit log one event per request.
+func TestNoisyEventsThrottled(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	before := len(h.srv.audit.Recent(1000))
+	for i := 0; i < 50; i++ {
+		h.api("GET", "/api/v1/secrets", "kd_wrong", nil)
+	}
+	got := h.srv.audit.Recent(1000)
+	if n := len(got) - before; n != 1 {
+		t.Fatalf("50 bad tokens from one address made %d events", n)
+	}
+	// A minute later the next one is logged, with the count of the rest.
+	h.srv.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	h.api("GET", "/api/v1/secrets", "kd_wrong", nil)
+	if e := h.srv.audit.Recent(1)[0]; e.Action != "api.badtoken" || !strings.Contains(e.Detail, "+49 more") {
+		t.Fatalf("summary event: %+v", e)
+	}
+	// ?purpose= is capped.
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, false, nil)
+	h.st.PutValue("lab", "K", []byte("purpose-cap-value"), nil)
+	h.api("POST", "/api/v1/secrets/lab/K/reveal?purpose="+strings.Repeat("x", 100000), tok, nil)
+	if e := h.srv.audit.Recent(1)[0]; e.Action != "secret.read" || len(e.Detail) > 200 {
+		t.Fatalf("purpose not capped: %s %d", e.Action, len(e.Detail))
+	}
+}

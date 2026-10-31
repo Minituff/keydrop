@@ -73,7 +73,7 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/client` | API client used by the CLI, including certificate pinning. |
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
-| `internal/audit` | JSONL audit log plus an in-memory ring for the UI. |
+| `internal/audit` | JSONL audit log plus an in-memory ring for the UI. Fields capped at 200 bytes, rotated at 10 MiB (one old file kept), and only the last 512 KiB read at start. |
 
 ## Design decisions
 
@@ -245,6 +245,16 @@ every read logged, no way to just look). So an entry is either a
   can change its description (another gets 409), because other agents
   read that text: it mustn't be a channel for one agent to instruct
   another.
+
+### Audit log
+- Anyone who can reach keydrop can cause some events without a credential
+  (`api.badtoken`, `pair.request`, `pair.wrongaddr`, `login.locked`).
+  Those go through `noisyEvent`: one per minute per address (IPv6: /64) and
+  action, 60 a minute in all, and the next recorded one carries the count
+  of those left out. So a flood shows up in the log without filling the
+  disk. Events that need a token or a session are all logged.
+- Every field is cut at 200 bytes (an agent's `?purpose=` included), and
+  the file rotates at 10 MiB to `audit.jsonl.1`.
 
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated

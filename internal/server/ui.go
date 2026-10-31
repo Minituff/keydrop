@@ -306,7 +306,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	att, err := s.tryLogin(r)
 	if err != nil {
-		s.event(r, "admin", "login.locked", "", "")
+		s.noisyEvent(r, "admin", "login.locked", "", "")
 		s.renderLogin(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
 		return
 	}

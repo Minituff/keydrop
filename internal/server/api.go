@@ -76,7 +76,7 @@ func (s *Server) agent(h agentHandler) http.HandlerFunc {
 			apiError(w, http.StatusForbidden, "token "+t.Name+" isn't allowed from "+ip+"; if that's expected, the admin can add it under Agents")
 			return
 		case err != nil:
-			s.event(r, "unknown", "api.badtoken", "", "")
+			s.noisyEvent(r, "unknown", "api.badtoken", "", "")
 			apiError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}

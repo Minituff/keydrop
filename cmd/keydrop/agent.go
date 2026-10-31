@@ -407,6 +407,11 @@ func cmdRun(args []string) (int, error) {
 		return 0, err
 	}
 	purpose := "run " + filepath.Base(argv[0])
+	if *noMask {
+		// Recorded, and first so a long command name can't push it past the
+		// audit log's field limit.
+		purpose = "run --no-mask " + filepath.Base(argv[0])
+	}
 	values := map[string]string{}
 	var m mask.Masker
 	for ref := range refs {

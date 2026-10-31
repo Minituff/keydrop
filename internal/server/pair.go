@@ -213,7 +213,7 @@ func (s *Server) apiPairStart(w http.ResponseWriter, r *http.Request) {
 	s.pairings[p.ID] = p
 	s.pairMu.Unlock()
 
-	s.event(r, "unknown", "pair.request", displayCode(p.Code), "claims host "+p.Host+", user "+p.User)
+	s.noisyEvent(r, "unknown", "pair.request", displayCode(p.Code), "claims host "+p.Host+", user "+p.User)
 	out := map[string]any{"code": displayCode(p.Code), "path": "/pair/" + p.ID, "poll": poll, "expires_in": int(pairTTL.Seconds())}
 	if s.cfg.PublicURL != "" && !s.cfg.PublicURLGuess {
 		out["link"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/pair/" + p.ID
@@ -247,7 +247,7 @@ func (s *Server) apiPairPoll(w http.ResponseWriter, r *http.Request) {
 	if p.IP != ip {
 		code, from := displayCode(p.Code), p.IP
 		s.pairMu.Unlock()
-		s.event(r, "unknown", "pair.wrongaddr", code, "asked from "+from)
+		s.noisyEvent(r, "unknown", "pair.wrongaddr", code, "asked from "+from)
 		apiError(w, http.StatusForbidden, "this pairing request was made from "+from+", not "+ip+"; the token is only handed to the address that asked. Run keydrop pair --new from this address")
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -85,7 +86,29 @@ type Server struct {
 
 	pairMu   sync.Mutex
 	pairings map[string]*pairing // by ID
+
+	noisyMu sync.Mutex
+	noisy   noisyEvents
 }
+
+// noisyEvents throttles the audit events an unauthenticated client can
+// cause, so a host on the network can't fill the disk with them.
+type noisyEvents struct {
+	byKey        map[string]*noisyKey // address group + action
+	window       time.Time            // start of the current global minute
+	count        int                  // recorded in this minute
+	suppressedGl int                  // left out by the global cap
+}
+
+type noisyKey struct {
+	last       time.Time
+	suppressed int
+}
+
+const (
+	noisyPerKey    = time.Minute // one recorded event per address and action
+	noisyPerMinute = 60          // and at most this many overall
+)
 
 // New builds a Server. If no admin exists yet (or ResetAdmin is set) it
 // opens setup and logs a one-time setup code.
@@ -209,6 +232,68 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // X-Forwarded-For when the request came through a trusted proxy. Every
 // X-Forwarded-For line counts: a proxy that adds its own line rather than
 // appending to the client's must not let the client's line decide.
+// noisyEvent records an event that an unauthenticated request can cause
+// (a bad token, a pairing request, a failed login): at most one a minute
+// per address (IPv6: per /64) and action, and 60 a minute overall. What's
+// left out is counted, and the next recorded event says how many.
+func (s *Server) noisyEvent(r *http.Request, actor, action, target, detail string) {
+	ip := s.clientIP(r)
+	now := s.now()
+	key := sourceGroup(ip) + " " + action
+	s.noisyMu.Lock()
+	n := &s.noisy
+	if n.byKey == nil {
+		n.byKey = map[string]*noisyKey{}
+	}
+	if now.Sub(n.window) >= time.Minute {
+		n.window, n.count = now, 0
+	}
+	k := n.byKey[key]
+	if k != nil && now.Sub(k.last) < noisyPerKey {
+		k.suppressed++
+		s.noisyMu.Unlock()
+		return
+	}
+	if n.count >= noisyPerMinute {
+		n.suppressedGl++
+		s.noisyMu.Unlock()
+		return
+	}
+	if len(n.byKey) > 10000 {
+		for kk, v := range n.byKey {
+			if now.Sub(v.last) >= noisyPerKey && v.suppressed == 0 {
+				delete(n.byKey, kk)
+			}
+		}
+	}
+	if k == nil {
+		k = &noisyKey{}
+		n.byKey[key] = k
+	}
+	extra := ""
+	if k.suppressed > 0 {
+		extra = fmt.Sprintf("+%d more like this from this address not logged", k.suppressed)
+	}
+	if n.suppressedGl > 0 {
+		if extra != "" {
+			extra += "; "
+		}
+		extra += fmt.Sprintf("+%d other unauthenticated events not logged (rate limit)", n.suppressedGl)
+	}
+	k.last, k.suppressed = now, 0
+	n.count++
+	n.suppressedGl = 0
+	s.noisyMu.Unlock()
+	if extra != "" {
+		if detail != "" {
+			detail = extra + "; " + detail // first, so clipping keeps it
+		} else {
+			detail = extra
+		}
+	}
+	s.event(r, actor, action, target, detail)
+}
+
 func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

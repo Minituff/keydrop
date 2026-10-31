@@ -72,7 +72,13 @@ replacement for Vault or Infisical in a team.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
 - **An audit log** of every login, change and secret read (which agent,
-  which secret, which command).
+  which secret, which command, and whether `run --no-mask` was used). It's
+  `data/audit.jsonl`, rotated to `audit.jsonl.1` at 10 MiB, so it takes
+  at most about 20 MiB. Events that need no credentials (a bad token, a
+  pairing request, a locked login) are logged at most once a minute per
+  address and 60 a minute overall, with a count of what was left out, so
+  nobody on the network can fill the disk with them. Text fields are cut
+  at 200 bytes.
 
 ### Security design
 
