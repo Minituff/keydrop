@@ -8,6 +8,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -36,11 +37,23 @@ var (
 	ErrNotVariable = errors.New("not a variable")
 	ErrBadName     = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
 	ErrBadSecret   = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
+	// ErrRequestedByOther: another token already has a pending request for
+	// this name, and only it (or the admin) may change the request.
+	ErrRequestedByOther = errors.New("already requested by another agent")
+	// ErrIntegrity: the state file was changed by something without the
+	// master key.
+	ErrIntegrity = errors.New("keydrop.json failed its integrity check (HMAC): it was changed outside keydrop, or by something without the master key; refusing to start. Restore it from a backup")
 )
 
 const (
 	stateFile = "keydrop.json"
-	keyCheck  = "keydrop-key-check"
+	// keyCheck is sealed into the state so a wrong master key is caught at
+	// start. keyCheckV1 is the pre-MAC format; keyCheckMAC says the state
+	// file carries an HMAC and must have a valid one. Because it's sealed,
+	// someone without the master key can't strip the MAC and turn the
+	// check back off.
+	keyCheckV1  = "keydrop-key-check"
+	keyCheckMAC = "keydrop-key-check:v2"
 	// TokenPrefix makes leaked tokens easy to recognise and grep for.
 	TokenPrefix = "kd_"
 )
@@ -74,14 +87,18 @@ type Secret struct {
 	// PreviousVariable is Previous's own kind. Kind belongs to each value,
 	// so rolling back after a kind change can't turn an old secret value
 	// into a variable that's listed, unmasked and read without a log.
-	PreviousVariable bool       `json:"previous_variable,omitempty"`
-	Pending          bool       `json:"pending,omitempty"` // requested by an agent, waiting for a value
-	RequestedBy      string     `json:"requested_by,omitempty"`
-	New              bool       `json:"new,omitempty"` // value changed and no agent has acknowledged it yet
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	LastReadAt       *time.Time `json:"last_read_at,omitempty"`
-	LastReadBy       string     `json:"last_read_by,omitempty"`
+	PreviousVariable bool   `json:"previous_variable,omitempty"`
+	Pending          bool   `json:"pending,omitempty"` // requested by an agent, waiting for a value
+	RequestedBy      string `json:"requested_by,omitempty"`
+	New              bool   `json:"new,omitempty"` // value changed and no agent has acknowledged it yet
+	// AckedBy names the tokens that acknowledged the current value. Each
+	// token's inbox is its own, so one agent's ack doesn't hide a change
+	// from another. Cleared when the value changes.
+	AckedBy    []string   `json:"acked_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	LastReadAt *time.Time `json:"last_read_at,omitempty"`
+	LastReadBy string     `json:"last_read_by,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -89,6 +106,16 @@ func (s Secret) Ref() string { return s.Namespace + "/" + s.Name }
 
 // HasValue reports whether a value has been set.
 func (s Secret) HasValue() bool { return len(s.Value) > 0 }
+
+// NewFor reports whether the current value is new to the token named tok:
+// changed since it last acknowledged it. Before any agent acknowledges a
+// change it's new to all of them; after that, only to those that haven't.
+func (s Secret) NewFor(tok string) bool {
+	if !s.HasValue() {
+		return false
+	}
+	return s.New || (len(s.AckedBy) > 0 && !slices.Contains(s.AckedBy, tok))
+}
 
 // Kind is "variable" or "secret", for display.
 func (s Secret) Kind() string {
@@ -202,6 +229,28 @@ type state struct {
 	Admin    admin              `json:"admin"`
 	Secrets  map[string]*Secret `json:"secrets"`
 	Tokens   map[string]*Token  `json:"tokens"`
+	// MAC is HMAC-SHA256 over the rest of the state, with a key derived
+	// from the master key, so the file can't be edited (a token hash
+	// added, the admin password replaced) without it.
+	MAC []byte `json:"mac,omitempty"`
+}
+
+// clone copies the state deeply enough to undo any mutation: the maps and
+// the structs they point to. Slices and pointers inside them are only ever
+// replaced, never written through, so sharing them is safe.
+func (st *state) clone() state {
+	c := *st
+	c.Secrets = make(map[string]*Secret, len(st.Secrets))
+	for k, v := range st.Secrets {
+		cp := *v
+		c.Secrets[k] = &cp
+	}
+	c.Tokens = make(map[string]*Token, len(st.Tokens))
+	for k, v := range st.Tokens {
+		cp := *v
+		c.Tokens[k] = &cp
+	}
+	return c
 }
 
 // Store is safe for concurrent use. Every mutation is written to disk before
@@ -213,6 +262,11 @@ type Store struct {
 	master []byte
 	st     state
 	now    func() time.Time
+	macKey []byte
+	// Migrated is set when Open upgraded a state file written before the
+	// HMAC existed. The old binary can't read it any more (see
+	// Downgrade).
+	Migrated bool
 }
 
 // ParseKey accepts a 32-byte master key as base64 (standard or URL) or hex.
@@ -252,11 +306,12 @@ func Open(dir string, key []byte) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
+	s.macKey = s.DeriveKey("state mac")
 	data, err := os.ReadFile(s.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		s.st = state{Version: 1, Secrets: map[string]*Secret{}, Tokens: map[string]*Token{}}
-		s.st.KeyCheck = s.seal([]byte(keyCheck), "keycheck")
+		s.st.KeyCheck = s.seal([]byte(keyCheckMAC), "keycheck")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
@@ -270,8 +325,14 @@ func Open(dir string, key []byte) (*Store, error) {
 	if err := json.Unmarshal(data, &s.st); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", s.path, err)
 	}
-	if pt, err := s.open(s.st.KeyCheck, "keycheck"); err != nil || string(pt) != keyCheck {
+	pt, err := s.open(s.st.KeyCheck, "keycheck")
+	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC) {
 		return nil, errors.New("master key does not match this data directory")
+	}
+	if string(pt) == keyCheckMAC {
+		if !hmac.Equal(s.st.MAC, s.mac()) {
+			return nil, ErrIntegrity
+		}
 	}
 	if s.st.Secrets == nil {
 		s.st.Secrets = map[string]*Secret{}
@@ -279,8 +340,49 @@ func Open(dir string, key []byte) (*Store, error) {
 	if s.st.Tokens == nil {
 		s.st.Tokens = map[string]*Token{}
 	}
+	if string(pt) == keyCheckV1 {
+		// Written before the MAC existed: add one, and record in the
+		// sealed key check that it's required from now on.
+		s.st.KeyCheck = s.seal([]byte(keyCheckMAC), "keycheck")
+		if err := s.save(); err != nil {
+			return nil, fmt.Errorf("adding an integrity check to %s: %w", s.path, err)
+		}
+		s.Migrated = true
+	}
 	return s, nil
 }
+
+// mac is the HMAC of the state with its MAC field empty.
+func (s *Store) mac() []byte {
+	c := s.st
+	c.MAC = nil
+	data, err := json.Marshal(&c)
+	if err != nil {
+		panic(err) // the state is always marshalable
+	}
+	m := hmac.New(sha256.New, s.macKey)
+	m.Write(data)
+	return m.Sum(nil)
+}
+
+// Downgrade rewrites the state so the release before the integrity check
+// can read it again: the key check goes back to the old format. The MAC
+// stays in the file (the old release ignores it), and the next start of
+// this release checks nothing until it adds a fresh one.
+func (s *Store) Downgrade() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.st.clone()
+	s.st.KeyCheck = s.seal([]byte(keyCheckV1), "keycheck")
+	return s.commit(snap)
+}
+
+// SealBlob encrypts a file-sized blob kept outside the state (the TLS
+// key), bound to name so it can't be swapped with another.
+func (s *Store) SealBlob(name string, pt []byte) []byte { return s.seal(pt, "blob:"+name) }
+
+// OpenBlob decrypts what SealBlob sealed under the same name.
+func (s *Store) OpenBlob(name string, ct []byte) ([]byte, error) { return s.open(ct, "blob:"+name) }
 
 // DeriveKey returns a 32-byte key for purpose, derived from the master key
 // with HKDF. Each purpose gets an independent key, none of them the
@@ -311,7 +413,18 @@ func (s *Store) open(ct []byte, aad string) ([]byte, error) {
 	return s.aead.Open(nil, ct[:n], ct[n:], []byte(aad))
 }
 
+// commit saves, or puts the state back to snap if the save fails, so memory
+// never shows a change that a restart would undo. Call with s.mu held.
+func (s *Store) commit(snap state) error {
+	if err := s.save(); err != nil {
+		s.st = snap
+		return err
+	}
+	return nil
+}
+
 func (s *Store) save() error {
+	s.st.MAC = s.mac()
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
 		return err
@@ -357,6 +470,7 @@ func copySecret(sec *Secret) Secret {
 	if len(sec.Previous) > 0 {
 		c.Previous = []byte{1}
 	}
+	c.AckedBy = slices.Clone(sec.AckedBy)
 	return c
 }
 
@@ -375,8 +489,9 @@ func (s *Store) AdminConfigured() bool {
 func (s *Store) SetAdmin(passwordHash string, totpSecret []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	s.st.Admin = admin{PasswordHash: passwordHash, TOTPSecret: s.sealTOTP(totpSecret)}
-	return s.save()
+	return s.commit(snap)
 }
 
 // SetPassword replaces the admin password hash, leaving the authenticator
@@ -384,11 +499,12 @@ func (s *Store) SetAdmin(passwordHash string, totpSecret []byte) error {
 func (s *Store) SetPassword(passwordHash string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if s.st.Admin.PasswordHash == "" {
 		return ErrNotFound
 	}
 	s.st.Admin.PasswordHash = passwordHash
-	return s.save()
+	return s.commit(snap)
 }
 
 // SetTOTP turns the authenticator on with a new seed, or off with nil. The
@@ -396,11 +512,12 @@ func (s *Store) SetPassword(passwordHash string) error {
 func (s *Store) SetTOTP(seed []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if s.st.Admin.PasswordHash == "" {
 		return ErrNotFound
 	}
 	s.st.Admin.TOTPSecret = s.sealTOTP(seed)
-	return s.save()
+	return s.commit(snap)
 }
 
 func (s *Store) sealTOTP(seed []byte) []byte {
@@ -438,11 +555,12 @@ func (s *Store) Admin() (string, []byte, int64, error) {
 func (s *Store) UseTOTPStep(step int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if step <= s.st.Admin.TOTPLastStep {
 		return errors.New("code already used")
 	}
 	s.st.Admin.TOTPLastStep = step
-	return s.save()
+	return s.commit(snap)
 }
 
 // ---- secrets ----
@@ -476,6 +594,17 @@ func (s *Store) GetSecret(ns, name string) (Secret, bool) {
 // PutValue creates or replaces a secret's value. The old value is kept as
 // Previous so a bad paste can be rolled back. meta is applied if non-nil.
 func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
+	return s.putValue(ns, name, value, meta, true)
+}
+
+// CreateValue is PutValue that refuses (ErrExists) to replace a value. The
+// check and the write happen under one lock, so two writers can't both
+// see "empty" and the second silently replace the first.
+func (s *Store) CreateValue(ns, name string, value []byte, meta *Meta) error {
+	return s.putValue(ns, name, value, meta, false)
+}
+
+func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bool) error {
 	if !ValidName(ns) {
 		return ErrBadName
 	}
@@ -484,33 +613,45 @@ func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
+	if ok && len(sec.Value) > 0 && !overwrite {
+		return ErrExists
+	}
+	var prev []byte
+	if ok && len(sec.Value) > 0 {
+		var err error
+		if prev, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
+			return err
+		}
+	}
 	if !ok {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
 		s.st.Secrets[key(ns, name)] = sec
 	}
-	if len(sec.Value) > 0 {
-		sec.Previous = s.reseal(sec.Value, ns, name, "value", "previous")
-		sec.PreviousVariable = sec.Variable
+	if prev != nil {
+		sec.Previous, sec.PreviousVariable = prev, sec.Variable
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
-	sec.Pending, sec.New, sec.UpdatedAt = false, true, now
+	sec.Pending, sec.New, sec.AckedBy, sec.UpdatedAt = false, true, nil, now
 	if meta != nil {
 		applyMeta(sec, *meta)
 	}
-	return s.save()
+	return s.commit(snap)
 }
 
 func aad(ns, name, field string) string { return field + ":" + key(ns, name) }
 
-// reseal moves ciphertext between fields (AAD includes the field name).
-func (s *Store) reseal(ct []byte, ns, name, from, to string) []byte {
+// reseal moves ciphertext between fields (AAD includes the field name). A
+// value that won't decrypt is an error, never an empty value, so a
+// rollback can't wipe it.
+func (s *Store) reseal(ct []byte, ns, name, from, to string) ([]byte, error) {
 	pt, err := s.open(ct, aad(ns, name, from))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("decrypting %s %s: %w", from, key(ns, name), err)
 	}
-	return s.seal(pt, aad(ns, name, to))
+	return s.seal(pt, aad(ns, name, to)), nil
 }
 
 func applyMeta(sec *Secret, m Meta) {
@@ -521,18 +662,20 @@ func applyMeta(sec *Secret, m Meta) {
 func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
 		return ErrNotFound
 	}
 	applyMeta(sec, m)
 	sec.UpdatedAt = s.now().UTC()
-	return s.save()
+	return s.commit(snap)
 }
 
-// Request creates an empty placeholder for the admin to fill in. Requesting
-// one that's already pending updates its description; requesting one that
-// already has a value fails with ErrExists.
+// Request creates an empty placeholder for the admin to fill in. The token
+// that made a pending request may update its description; any other gets
+// ErrRequestedByOther, so one agent can't rewrite text another agent will
+// read. Requesting one that already has a value fails with ErrExists.
 func (s *Store) Request(ns, name, description, usage, by string) error {
 	if !ValidName(ns) {
 		return ErrBadName
@@ -542,10 +685,14 @@ func (s *Store) Request(ns, name, description, usage, by string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if ok && !sec.Pending {
 		return ErrExists
+	}
+	if ok && sec.RequestedBy != by {
+		return ErrRequestedByOther
 	}
 	if !ok {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
@@ -553,24 +700,26 @@ func (s *Store) Request(ns, name, description, usage, by string) error {
 	}
 	sec.Pending, sec.RequestedBy, sec.UpdatedAt = true, by, now
 	sec.Description, sec.Usage = description, usage
-	return s.save()
+	return s.commit(snap)
 }
 
 // Delete removes a secret.
 func (s *Store) Delete(ns, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if _, ok := s.st.Secrets[key(ns, name)]; !ok {
 		return ErrNotFound
 	}
 	delete(s.st.Secrets, key(ns, name))
-	return s.save()
+	return s.commit(snap)
 }
 
 // Rollback swaps the current and previous values.
 func (s *Store) Rollback(ns, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
 		return ErrNotFound
@@ -578,12 +727,21 @@ func (s *Store) Rollback(ns, name string) error {
 	if len(sec.Previous) == 0 {
 		return ErrNoPrevious
 	}
-	cur := s.reseal(sec.Value, ns, name, "value", "previous")
-	sec.Value = s.reseal(sec.Previous, ns, name, "previous", "value")
-	sec.Previous = cur
+	var cur []byte
+	if len(sec.Value) > 0 {
+		var err error
+		if cur, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
+			return err
+		}
+	}
+	old, err := s.reseal(sec.Previous, ns, name, "previous", "value")
+	if err != nil {
+		return err
+	}
+	sec.Value, sec.Previous = old, cur
 	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
-	sec.New, sec.UpdatedAt = true, s.now().UTC()
-	return s.save()
+	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, s.now().UTC()
+	return s.commit(snap)
 }
 
 // Reveal decrypts a value and, for a secret, records who read it. variable
@@ -592,6 +750,7 @@ func (s *Store) Rollback(ns, name string) error {
 func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
 		return nil, false, ErrNotFound
@@ -608,7 +767,7 @@ func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err er
 	}
 	now := s.now().UTC()
 	sec.LastReadAt, sec.LastReadBy = &now, by
-	return pt, false, s.save()
+	return pt, false, s.commit(snap)
 }
 
 // VariableValue decrypts a variable's value. It refuses secrets, so code
@@ -629,16 +788,32 @@ func (s *Store) VariableValue(ns, name string) ([]byte, error) {
 	return s.open(sec.Value, aad(ns, name, "value"))
 }
 
-// Ack clears the "new" flag once an agent has dealt with a secret.
-func (s *Store) Ack(ns, name string) error {
+// Ack records that the token named by has dealt with the current value. It
+// only changes that token's own inbox (see NewFor), and clears the admin's
+// "no agent has picked it up yet" badge.
+func (s *Store) Ack(ns, name, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
 		return ErrNotFound
 	}
+	if !slices.Contains(sec.AckedBy, by) {
+		sec.AckedBy = append(slices.Clone(sec.AckedBy), by)
+	}
 	sec.New = false
-	return s.save()
+	return s.commit(snap)
+}
+
+// forgetAcks drops a revoked token's acks, so a new token given the same
+// name starts with its own inbox. Call with s.mu held.
+func (s *Store) forgetAcks(tok string) {
+	for _, sec := range s.st.Secrets {
+		if i := slices.Index(sec.AckedBy, tok); i >= 0 {
+			sec.AckedBy = slices.Delete(slices.Clone(sec.AckedBy), i, i+1)
+		}
+	}
 }
 
 // Namespaces lists every namespace used by a secret or granted to a token.
@@ -708,6 +883,7 @@ func (s *Store) createToken(name string, namespaces []string, write bool, source
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if _, ok := s.st.Tokens[name]; ok {
 		return "", ErrExists
 	}
@@ -720,7 +896,7 @@ func (s *Store) createToken(name string, namespaces []string, write bool, source
 		Name: name, Hash: hashToken(plain), Namespaces: namespaces,
 		Write: write, Sources: sources, CreatedAt: s.now().UTC(), CollectBy: collectBy,
 	}
-	return plain, s.save()
+	return plain, s.commit(snap)
 }
 
 // Collected marks a paired token as handed over. It matches on the token
@@ -730,10 +906,11 @@ func (s *Store) Collected(plain string) error {
 	h := hashToken(plain)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	for _, t := range s.st.Tokens {
 		if t.Hash == h {
 			t.CollectBy = nil
-			return s.save()
+			return s.commit(snap)
 		}
 	}
 	return ErrNotFound
@@ -744,6 +921,7 @@ func (s *Store) Collected(plain string) error {
 func (s *Store) RevokeUncollected(now time.Time) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	var gone []string
 	for name, t := range s.st.Tokens {
 		if t.CollectBy != nil && now.After(*t.CollectBy) {
@@ -753,7 +931,12 @@ func (s *Store) RevokeUncollected(now time.Time) []string {
 	}
 	if len(gone) > 0 {
 		sort.Strings(gone)
-		_ = s.save()
+		for _, name := range gone {
+			s.forgetAcks(name)
+		}
+		if err := s.commit(snap); err != nil {
+			return nil
+		}
 	}
 	return gone
 }
@@ -762,11 +945,13 @@ func (s *Store) RevokeUncollected(now time.Time) []string {
 func (s *Store) RevokeToken(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	if _, ok := s.st.Tokens[name]; !ok {
 		return ErrNotFound
 	}
 	delete(s.st.Tokens, name)
-	return s.save()
+	s.forgetAcks(name)
+	return s.commit(snap)
 }
 
 // LookupToken finds the token matching plain, checks it may be used from
@@ -807,12 +992,13 @@ func (s *Store) SetTokenSources(name string, sources []string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snap := s.st.clone()
 	t, ok := s.st.Tokens[name]
 	if !ok {
 		return ErrNotFound
 	}
 	t.Sources = sources
-	return s.save()
+	return s.commit(snap)
 }
 
 // ListTokens returns all tokens sorted by name.

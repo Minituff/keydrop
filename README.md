@@ -64,10 +64,11 @@ replacement for Vault or Infisical in a team.
   into `run -e` exactly like secrets, so one command can take both. The
   web page lists secrets and variables separately.
 - **Agents know what to do with a new key.** Secrets you add are marked
-  *new* until an agent acknowledges them, and `keydrop inbox` (run by a
+  *new* for each agent token until that token acknowledges them, and `keydrop inbox` (run by a
   session-start hook) shows them with your description. An agent can also
   **ask** for a key: `keydrop request` creates an empty placeholder and returns a
-  link for you to fill in, and `keydrop wait` blocks until you do.
+  link for you to fill in, and `keydrop wait` blocks until you do. Only the
+  token that asked can change a pending request's description.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
 - **An audit log** of every login, change and secret read (which agent,
@@ -77,7 +78,7 @@ replacement for Vault or Infisical in a team.
 
 | | |
 |---|---|
-| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The master key comes from a file (Docker secret) and is never stored in the data directory. |
+| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses. |
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
@@ -112,6 +113,56 @@ The log prints two things:
 
 **Back up `master.key` separately from `data/`.** Without it the data can't be
 read, which is deliberate.
+
+### What the master key protects
+
+Someone with a copy of `data/` but not the master key can't:
+
+- read any secret or variable value, or the authenticator seed;
+- read the TLS private key (`tls.key` is sealed), so they can't pose as
+  the server that agents have pinned;
+- change `keydrop.json` (add a token hash, replace the admin password,
+  grant a namespace): its HMAC no longer matches and keydrop refuses to
+  start with an integrity error.
+
+They **can** still see metadata: secret and variable names, descriptions,
+namespaces, token names, the admin password's PBKDF2 hash, and the audit
+log. And someone who can write to `data/` can put back an **older complete
+copy** of it (an earlier backup verifies fine), or delete it. Protect
+`data/` like any other backup, just not like the key.
+
+Limitations, by design for now:
+
+- **No master-key rotation.** Changing the key means a new install and
+  re-entering the values.
+- **One server per data directory.** There's no lock file: two instances
+  on one volume would overwrite each other's changes. Run one.
+
+### Upgrading and rolling back
+
+The first start of a release with the sealed TLS key and integrity check
+upgrades the data directory in place, and logs each step:
+
+- A plaintext `tls.key` is sealed with the master key. The key and
+  certificate stay the same, so **the pin agents hold doesn't change**.
+  The sealed copy is written beside it and read back before it replaces
+  the plaintext one.
+- `keydrop.json` gets an HMAC, and the sealed key check records that one
+  is required from now on.
+
+**Earlier releases can't start on upgraded data:** they refuse with
+"master key does not match this data directory" and never touch it
+(they'd fail on the sealed `tls.key` too, rather than make a new
+certificate). To go back, stop keydrop and run the *new* image once with
+the same volumes and environment:
+
+```sh
+docker compose run --rm keydrop downgrade-data
+```
+
+That writes `tls.key` back in plaintext and the key check in the old
+format; then start the older image. Starting the new one again upgrades
+again. Restoring a backup of `data/` from before the upgrade also works.
 
 Lost the admin password or authenticator? Restart with
 `KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove the variable.
@@ -249,10 +300,10 @@ allowed sources gets 403.
 | `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`) |
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata |
 | `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged) |
-| `POST /api/v1/secrets/{ns}/{name}/ack` | Clear the *new* flag |
+| `POST /api/v1/secrets/{ns}/{name}/ack` | Clear the *new* flag for this token (other tokens still see it as new) |
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
-| `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}` |
-| `GET /api/v1/expiring?days=14` | Secrets expiring within N days |
+| `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}`. 409 if it already has a value, or another token already asked for it |
+| `GET /api/v1/expiring?days=14` | Secrets expiring within N days (at most 36500) |
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |

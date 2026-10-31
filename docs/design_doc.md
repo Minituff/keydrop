@@ -228,7 +228,11 @@ every read logged, no way to just look). So an entry is either a
 
 ### Telling the agent about new keys
 - **Push (the human adds a key):** the secret is marked *new* until an agent
-  runs `keydrop ack`. `keydrop inbox` lists new secrets with their
+  runs `keydrop ack`. Each token has its own inbox: an ack records the
+  token's name on the current value (`acked_by`, cleared when the value
+  changes), so one agent's ack doesn't hide a change from another, and a
+  read-only token's ack changes nothing anyone else sees except the
+  admin's "no agent has picked it up yet" badge. `keydrop inbox` lists new secrets with their
   descriptions, and is designed to run from a session-start hook. There
   are no webhooks or chat notifications: telling a person about anything
   is the job of whatever runs the agents, not of keydrop.
@@ -237,15 +241,44 @@ every read logged, no way to just look). So an entry is either a
   to the human, who opens it on their phone and pastes the value.
   `keydrop wait NAME` returns once it has one. In practice most keys start
   as "I need a token for X", so this is probably the most-used flow.
+  Read-only tokens may request. Only the token that made a pending request
+  can change its description (another gets 409), because other agents
+  read that text: it mustn't be a channel for one agent to instruct
+  another.
 
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated
   data binds the ciphertext to its namespace, name and field, so values
   can't be moved between records by editing the file.
 - The master key comes from a file (a Docker secret) or an env var, and is
-  never written to the data directory. A backup of the data without the
-  key is useless, which is intended. A key-check blob detects a wrong
+  never written to the data directory. A key-check blob detects a wrong
   master key at startup instead of failing later.
+- `tls.key` is stored sealed (AES-GCM, AAD `blob:tls.key`) in a PEM block
+  of type `KEYDROP SEALED PRIVATE KEY`, so a copy of the data can't
+  impersonate the pinned server. An older plaintext key is sealed in place
+  on start, keeping the key and certificate (and so the pin). The PEM type
+  ends in ` PRIVATE KEY` on purpose: an older release fails to parse it and
+  refuses to start, instead of making a new certificate.
+- `keydrop.json` carries an HMAC-SHA256 over the rest of the state, keyed
+  with `HKDF(master key, "keydrop state mac")`, separate from the
+  encryption key. Without it, write access to the data was enough to add a
+  token hash or replace the admin password. The sealed key check says
+  whether a MAC is required (`keydrop-key-check:v2`), so stripping the MAC
+  doesn't turn the check off; a v1 file is upgraded on open. A MAC failure
+  stops the server. `keydrop downgrade-data` puts the v1 key check back
+  (and unseals `tls.key`) for going back to an older release.
+- What the MAC can't stop: putting back an older complete copy of the
+  data, which verifies fine (including a copy from before the upgrade,
+  which then gets re-upgraded). Metadata (names, descriptions, the
+  password hash, the audit log) is readable without the key.
+- Every change is made to the in-memory state and saved before the
+  method returns; if the save fails, memory goes back to the last saved
+  state, so the UI never shows a change (a revoke, say) that a restart
+  would undo. A value that won't decrypt makes rollback fail instead of
+  wiping it, and "create unless it exists" is checked under the same lock
+  as the write.
+- Not done: master-key rotation, and a lock against two servers on one
+  data directory. Both are documented limitations.
 - Tokens are 256-bit random values with a `kd_` prefix, so they're easy to
   grep for if they leak. Only the SHA-256 hash is stored.
 

@@ -35,7 +35,13 @@ isn't worth it.
   only to the address that asked.
 - **Encryption at rest:** AES-256-GCM per value, with the namespace, name and
   field bound as additional data. The master key is never written to the
-  data directory.
+  data directory. `tls.key` is sealed too, and `keydrop.json` is HMAC'd
+  with a key derived from the master key (`Store.DeriveKey`; never reuse
+  the encryption key for anything else). Any change to the data format
+  needs an automatic migration, a way back (`keydrop downgrade-data`) and
+  a README note under "Upgrading and rolling back".
+- **Store mutations** take a snapshot (`s.st.clone()`) and finish with
+  `s.commit(snap)`, so a failed save leaves memory as it was.
 - **The web UI has no JavaScript.** The CSP forbids scripts. Don't add
   inline scripts, event handlers or third-party assets; use plain forms.
 - **Every state-changing form** checks the CSRF token and goes through the

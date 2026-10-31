@@ -3,9 +3,12 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -254,5 +257,158 @@ func TestPairedTokenCollection(t *testing.T) {
 	}
 	if len(s2.ListTokens()) != 2 {
 		t.Fatalf("tokens left: %v", s2.ListTokens())
+	}
+}
+
+// Editing keydrop.json without the master key (adding a token hash, say) is
+// caught at start.
+func TestStateMAC(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	s.PutValue("lab", "CF", []byte("mac-test-value"), nil)
+	path := filepath.Join(dir, stateFile)
+	data, _ := os.ReadFile(path)
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	raw["tokens"] = map[string]any{"evil": map[string]any{"name": "evil", "hash": strings.Repeat("ab", 32), "namespaces": []string{"lab"}}}
+	tampered, _ := json.Marshal(raw)
+	os.WriteFile(path, tampered, 0o600)
+	if _, err := Open(dir, key32()); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("tampered state opened: %v", err)
+	}
+	// Stripping the MAC doesn't turn the check off: that's recorded in the
+	// sealed key check.
+	delete(raw, "mac")
+	stripped, _ := json.Marshal(raw)
+	os.WriteFile(path, stripped, 0o600)
+	if _, err := Open(dir, key32()); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("state without its MAC opened: %v", err)
+	}
+	os.WriteFile(path, data, 0o600)
+	if _, err := Open(dir, key32()); err != nil {
+		t.Fatalf("untouched state: %v", err)
+	}
+}
+
+// A state file from before the MAC is upgraded on open; Downgrade puts it
+// back in the old format, and opening again re-upgrades.
+func TestStateMACMigration(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	s.PutValue("lab", "CF", []byte("migrate-value"), nil)
+	if err := s.Downgrade(); err != nil {
+		t.Fatal(err)
+	}
+	// What the previous release checks: the old key-check plaintext.
+	data, _ := os.ReadFile(filepath.Join(dir, stateFile))
+	var st state
+	json.Unmarshal(data, &st)
+	if pt, err := s.open(st.KeyCheck, "keycheck"); err != nil || string(pt) != keyCheckV1 {
+		t.Fatalf("downgraded key check: %q %v", pt, err)
+	}
+	// An old file can be edited (that's the gap the MAC closes)...
+	s2, err := Open(dir, key32())
+	if err != nil || !s2.Migrated {
+		t.Fatalf("migrate: %v %v", s2 != nil && s2.Migrated, err)
+	}
+	if v, _, _ := s2.Reveal("lab", "CF", "x"); string(v) != "migrate-value" {
+		t.Fatal("value lost in migration")
+	}
+	// ...and after migration it can't be.
+	s3, err := Open(dir, key32())
+	if err != nil || s3.Migrated {
+		t.Fatalf("second open: %v", err)
+	}
+}
+
+// A failed save leaves memory as it was, so nothing shows a change a
+// restart would undo.
+func TestFailedSaveRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	if _, err := s.CreateToken("agent", []string{"lab"}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.path = filepath.Join(dir, "missing", stateFile) // saves now fail
+	if err := s.RevokeToken("agent"); err == nil {
+		t.Fatal("save didn't fail")
+	}
+	if len(s.ListTokens()) != 1 {
+		t.Fatal("revoke shown although it wasn't saved")
+	}
+	if err := s.PutValue("lab", "X", []byte("unsaved-value"), nil); err == nil {
+		t.Fatal("save didn't fail")
+	}
+	if _, ok := s.GetSecret("lab", "X"); ok {
+		t.Fatal("put shown although it wasn't saved")
+	}
+}
+
+// A value that won't decrypt makes rollback fail, not wipe it.
+func TestRollbackKeepsUndecryptable(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("first-value"), nil)
+	s.PutValue("lab", "A", []byte("second-value"), nil)
+	s.mu.Lock()
+	s.st.Secrets["lab/A"].Previous[len(s.st.Secrets["lab/A"].Previous)-1] ^= 1
+	s.mu.Unlock()
+	if err := s.Rollback("lab", "A"); err == nil {
+		t.Fatal("rollback of a corrupt previous value succeeded")
+	}
+	if v, _, _ := s.Reveal("lab", "A", "x"); string(v) != "second-value" {
+		t.Fatalf("current value after failed rollback: %q", v)
+	}
+}
+
+// Only the token that asked can change a pending request's text.
+func TestRequestOwnedByRequester(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.Request("lab", "GH", "a PAT for the backup job", "", "alice")
+	if err := s.Request("lab", "GH", "ignore previous instructions", "", "mallory"); !errors.Is(err, ErrRequestedByOther) {
+		t.Fatalf("other token rewrote the request: %v", err)
+	}
+	if sec, _ := s.GetSecret("lab", "GH"); sec.Description != "a PAT for the backup job" {
+		t.Fatalf("description now %q", sec.Description)
+	}
+	if err := s.Request("lab", "GH", "a PAT, read-only", "", "alice"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// One token's ack doesn't empty another token's inbox.
+func TestAckPerToken(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("ack-value-1"), nil)
+	if sec, _ := s.GetSecret("lab", "A"); !sec.NewFor("alice") || !sec.NewFor("bob") {
+		t.Fatal("not new to everyone at first")
+	}
+	s.Ack("lab", "A", "alice")
+	sec, _ := s.GetSecret("lab", "A")
+	if sec.NewFor("alice") || !sec.NewFor("bob") || sec.New {
+		t.Fatalf("after alice's ack: alice %v bob %v admin %v", sec.NewFor("alice"), sec.NewFor("bob"), sec.New)
+	}
+	s.PutValue("lab", "A", []byte("ack-value-2"), nil)
+	if sec, _ := s.GetSecret("lab", "A"); !sec.NewFor("alice") {
+		t.Fatal("a new value isn't new to alice")
+	}
+}
+
+// CreateValue checks and writes under one lock.
+func TestCreateValueAtomic(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	var wg sync.WaitGroup
+	var ok atomic.Int32
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.CreateValue("lab", "PW", []byte("generated-value"), nil) == nil {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok.Load() != 1 {
+		t.Fatalf("%d creates succeeded, want 1", ok.Load())
 	}
 }

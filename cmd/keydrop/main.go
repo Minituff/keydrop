@@ -41,6 +41,9 @@ Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
   genkey                                print a new master key
   healthcheck                           exit 0 if the local server answers (for Docker)
+  downgrade-data                        with the server stopped: rewrite the data directory
+                                         so a release without the sealed TLS key and
+                                         integrity check can read it again
 
 REF is namespace/NAME, or just NAME when the token has one namespace. Secret
 names are env-var style: CLOUDFLARE_API_TOKEN.
@@ -59,6 +62,8 @@ func main() {
 		err = cmdServer(args)
 	case "genkey":
 		err = cmdGenkey(args)
+	case "downgrade-data":
+		err = cmdDowngradeData(args)
 	case "healthcheck":
 		err = cmdHealthcheck(args)
 	case "run":

@@ -449,11 +449,22 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 	old, exists := s.store.GetSecret(ns, name)
-	if exists && old.HasValue() && r.PostFormValue("overwrite") != "yes" {
+	conflict := func() {
 		s.renderDashboard(w, r, se, http.StatusConflict, ns+"/"+name+" already exists. Tick \"Replace it\" or open it to replace the value.")
+	}
+	overwrite := r.PostFormValue("overwrite") == "yes"
+	if exists && old.HasValue() && !overwrite {
+		conflict()
 		return
 	}
-	if err := s.store.PutValue(ns, name, val, &meta); err != nil {
+	put := s.store.PutValue
+	if !overwrite {
+		put = s.store.CreateValue
+	}
+	if err := put(ns, name, val, &meta); errors.Is(err, store.ErrExists) {
+		conflict()
+		return
+	} else if err != nil {
 		s.renderDashboard(w, r, se, http.StatusInternalServerError, err.Error())
 		return
 	}

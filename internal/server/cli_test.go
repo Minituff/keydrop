@@ -3,10 +3,18 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -15,6 +23,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/minituff/keydrop/internal/store"
 )
 
 // fakeCLIDir writes gzipped stand-in builds and a SHA256SUMS, like the
@@ -140,9 +151,18 @@ func TestCLIDownloads(t *testing.T) {
 	}
 }
 
+func testSealer(t *testing.T, dir string) *store.Store {
+	st, err := store.Open(dir, bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
 func TestKeyPin(t *testing.T) {
 	dir := t.TempDir()
-	c, _, err := LoadOrCreateSelfSigned(dir, []string{"10.0.0.5"})
+	st := testSealer(t, dir)
+	c, _, _, err := LoadOrCreateSelfSigned(dir, []string{"10.0.0.5"}, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,12 +175,66 @@ func TestKeyPin(t *testing.T) {
 		t.Fatalf("KeyPin = %s, want %s", pin, want)
 	}
 	// The key is stored, so the pin survives a restart.
-	c2, _, err := LoadOrCreateSelfSigned(dir, nil)
+	c2, _, _, err := LoadOrCreateSelfSigned(dir, nil, st)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pin2, _ := KeyPin(c2.Certificate[0]); pin2 != pin {
 		t.Fatalf("pin changed on reload: %s → %s", pin, pin2)
+	}
+	// It's stored sealed, never as a plaintext key.
+	raw, _ := os.ReadFile(filepath.Join(dir, "tls.key"))
+	if strings.Contains(string(raw), "EC PRIVATE KEY") || !strings.Contains(string(raw), sealedKeyType) {
+		t.Fatalf("tls.key isn't sealed:\n%s", raw)
+	}
+	// Another master key can't open it, and nothing is regenerated.
+	other, _ := store.Open(t.TempDir(), bytes.Repeat([]byte{8}, 32))
+	if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, other); err == nil {
+		t.Fatal("opened with the wrong master key")
+	}
+	if raw2, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Equal(raw, raw2) {
+		t.Fatal("tls.key changed after a failed open")
+	}
+}
+
+// A plaintext tls.key from an earlier release is sealed in place, and the
+// certificate (and so every agent's pin) stays the same. Unsealing gives
+// the original back for a downgrade.
+func TestTLSKeyMigration(t *testing.T) {
+	dir := t.TempDir()
+	st := testSealer(t, dir)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	os.WriteFile(filepath.Join(dir, "tls.key"), keyPEM, 0o600)
+	os.WriteFile(filepath.Join(dir, "tls.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+
+	c, fp, migrated, err := LoadOrCreateSelfSigned(dir, nil, st)
+	if err != nil || !migrated {
+		t.Fatalf("migrate: %v %v", migrated, err)
+	}
+	if fp != Fingerprint(der) || !bytes.Equal(c.Certificate[0], der) {
+		t.Fatal("certificate changed during migration")
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "tls.key"))
+	if bytes.Contains(raw, keyPEM) || !bytes.Contains(raw, []byte(sealedKeyType)) {
+		t.Fatal("plaintext key left behind")
+	}
+	if _, fp2, migrated, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil || migrated || fp2 != fp {
+		t.Fatalf("second start: %v %v %s", migrated, err, fp2)
+	}
+	// A release that predates sealing can't parse it, so it refuses to start
+	// rather than making a new certificate.
+	if _, err := tls.LoadX509KeyPair(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old loader: %v", err)
+	}
+	if ok, err := UnsealTLSKey(dir, st); !ok || err != nil {
+		t.Fatalf("unseal: %v %v", ok, err)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Equal(raw, keyPEM) {
+		t.Fatal("unsealed key differs from the original")
 	}
 }
 

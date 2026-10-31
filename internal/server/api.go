@@ -31,12 +31,13 @@ type APISecret struct {
 	LastReadBy  string     `json:"last_read_by,omitempty"`
 }
 
-func (s *Server) toAPI(sec store.Secret) APISecret {
+// toAPI shapes a secret for token tok; "new" is relative to that token.
+func (s *Server) toAPI(sec store.Secret, tok string) APISecret {
 	a := APISecret{
 		Ref: sec.Ref(), Namespace: sec.Namespace, Name: sec.Name, Kind: sec.Kind(),
 		Description: sec.Description, Usage: sec.Usage, Expires: sec.Expires,
 		HasValue: sec.HasValue(), Pending: sec.Pending, RequestedBy: sec.RequestedBy,
-		New: sec.New, UpdatedAt: sec.UpdatedAt, LastReadAt: sec.LastReadAt, LastReadBy: sec.LastReadBy,
+		New: sec.NewFor(tok), UpdatedAt: sec.UpdatedAt, LastReadAt: sec.LastReadAt, LastReadBy: sec.LastReadBy,
 	}
 	if sec.Variable && sec.HasValue() {
 		if v, err := s.store.VariableValue(sec.Namespace, sec.Name); err == nil {
@@ -123,17 +124,17 @@ func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) 
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool {
 		return t.Allows(sec.Namespace) &&
 			(ns == "" || sec.Namespace == ns) &&
-			(!onlyNew || sec.New) &&
+			(!onlyNew || sec.NewFor(t.Name)) &&
 			(!onlyPending || sec.Pending)
 	}) {
-		out = append(out, s.toAPI(sec))
+		out = append(out, s.toAPI(sec, t.Name))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) apiGet(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if sec, ok := s.lookup(w, r, t); ok {
-		writeJSON(w, http.StatusOK, s.toAPI(sec))
+		writeJSON(w, http.StatusOK, s.toAPI(sec, t.Name))
 	}
 }
 
@@ -166,7 +167,7 @@ func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if !ok {
 		return
 	}
-	if err := s.store.Ack(sec.Namespace, sec.Name); err != nil {
+	if err := s.store.Ack(sec.Namespace, sec.Name, t.Name); err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -201,8 +202,11 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	}
 	old, exists := s.store.GetSecret(ns, name)
-	if exists && old.HasValue() && !b.Overwrite {
+	conflict := func() {
 		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
+	}
+	if exists && old.HasValue() && !b.Overwrite {
+		conflict()
 		return
 	}
 	// The kind is never inherited: a value is a variable only when this
@@ -223,7 +227,15 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		}
 		meta.Expires = exp
 	}
-	if err := s.store.PutValue(ns, name, []byte(b.Value), &meta); err != nil {
+	put := s.store.PutValue
+	if !b.Overwrite {
+		put = s.store.CreateValue // re-checked under the store's lock
+	}
+	if err := put(ns, name, []byte(b.Value), &meta); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			conflict()
+			return
+		}
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -260,6 +272,9 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	case errors.Is(err, store.ErrExists):
 		apiError(w, http.StatusConflict, b.Namespace+"/"+b.Name+" already has a value")
 		return
+	case errors.Is(err, store.ErrRequestedByOther):
+		apiError(w, http.StatusConflict, b.Namespace+"/"+b.Name+" was already requested by another agent; only that agent or the admin can change the request")
+		return
 	case err != nil:
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
@@ -269,17 +284,20 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
+// maxExpiringDays bounds ?days= (100 years), so days*24h can't overflow.
+const maxExpiringDays = 36500
+
 func (s *Server) apiExpiring(w http.ResponseWriter, r *http.Request, t store.Token) {
 	days := 14
 	if d, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && d >= 0 {
-		days = d
+		days = min(d, maxExpiringDays) // a huge value would overflow the duration
 	}
 	cutoff := s.now().Add(time.Duration(days) * 24 * time.Hour)
 	out := []APISecret{}
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool {
 		return t.Allows(sec.Namespace) && sec.Expires != nil && sec.Expires.Before(cutoff)
 	}) {
-		out = append(out, s.toAPI(sec))
+		out = append(out, s.toAPI(sec, t.Name))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
