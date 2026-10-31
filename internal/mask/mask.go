@@ -43,9 +43,15 @@ func (m *Masker) Add(label string, value []byte) bool {
 		value,
 		[]byte(base64.StdEncoding.EncodeToString(value)),
 		[]byte(base64.RawStdEncoding.EncodeToString(value)),
+		[]byte(base64.URLEncoding.EncodeToString(value)),
 		[]byte(base64.RawURLEncoding.EncodeToString(value)),
 		[]byte(url.QueryEscape(string(value))),
 		[]byte(url.PathEscape(string(value))),
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding} {
+		for offset := 0; offset < 3; offset++ {
+			variants = append(variants, base64Core(enc, value, offset))
+		}
 	}
 	for _, v := range variants {
 		if len(v) < MinLength || m.has(v) {
@@ -56,6 +62,32 @@ func (m *Masker) Add(label string, value []byte) bool {
 	// Longest first, so a longer match wins over one of its substrings.
 	sort.SliceStable(m.patterns, func(i, j int) bool { return len(m.patterns[i].match) > len(m.patterns[j].match) })
 	return true
+}
+
+// base64Core is the part of the base64 encoding of value that doesn't
+// depend on its neighbours, when value starts offset bytes into a 3-byte
+// group. Basic auth encodes "user:secret" in one piece, so the secret
+// starts at offset len(user)+1 mod 3, and its plain encoding only appears
+// when that's 0. The characters that mix in bits of the bytes before or
+// after are left out, so this matches whatever surrounds the secret.
+func base64Core(enc *base64.Encoding, value []byte, offset int) []byte {
+	buf := make([]byte, offset+len(value))
+	copy(buf[offset:], value)
+	full := len(buf) / 3 * 3
+	out := []byte(enc.WithPadding(base64.NoPadding).EncodeToString(buf[:full]))
+	// A trailing partial group: only the characters made entirely of its
+	// own bits are fixed (one for one byte, two for two).
+	if rest := len(buf) - full; rest > 0 {
+		tail := enc.WithPadding(base64.NoPadding).EncodeToString(buf[full:])
+		out = append(out, tail[:rest*8/6]...)
+	}
+	// Leading characters that include bits of the bytes before: one byte
+	// before touches 2 characters, two bytes touch 3.
+	skip := (offset*8 + 5) / 6
+	if skip > len(out) {
+		return nil
+	}
+	return out[skip:]
 }
 
 func (m *Masker) has(v []byte) bool {
@@ -113,18 +145,22 @@ func (w *Writer) drain(final bool) error {
 scan:
 	for i < len(w.buf) {
 		rest := w.buf[i:]
+		if !final {
+			for _, p := range w.m.patterns {
+				if len(rest) < len(p.match) && bytes.HasPrefix(p.match, rest) {
+					// Could be the start of a secret, or of a longer one
+					// than a pattern that already matches here: wait for
+					// more before deciding.
+					break scan
+				}
+			}
+		}
+		// Patterns are longest first, so the first match is the longest.
 		for _, p := range w.m.patterns {
 			if bytes.HasPrefix(rest, p.match) {
 				out = append(out, p.repl...)
 				i += len(p.match)
 				continue scan
-			}
-		}
-		if !final {
-			for _, p := range w.m.patterns {
-				if len(rest) < len(p.match) && bytes.HasPrefix(p.match, rest) {
-					break scan // could be the start of a secret: wait for more
-				}
 			}
 		}
 		out = append(out, w.buf[i])

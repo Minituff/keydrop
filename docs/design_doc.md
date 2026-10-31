@@ -178,11 +178,20 @@ log, not for access control.
   "inject everything" and no `{{NAME}}` substitution in arguments: argument
   values are visible in `/proc/<pid>/cmdline` to the same user.
 - **Output masking:** the CLI wraps the child's stdout and stderr and
-  replaces each value with `[keydrop:ref]`. That includes base64 (so
-  Basic-auth headers are caught) and URL-encoded forms. It's a streaming
-  masker that holds back bytes only while they could still be the start of
-  a secret, so interactive output isn't delayed. Values shorter than 4
-  characters aren't masked, since that would mangle normal output.
+  replaces each value with `[keydrop:ref]`. That includes base64 and
+  URL-encoded forms. Base64 is matched at all three alignments, because a
+  Basic-auth header encodes `user:secret` in one piece and the secret's
+  own encoding only appears when `len(user)+1` is a multiple of 3; the one
+  or two characters at each edge that mix in the neighbouring bytes stay
+  visible. It's a streaming masker that holds back bytes only while they
+  could still be the start of a secret, so interactive output isn't
+  delayed. When one secret is a prefix of another, it waits until the
+  longer one can no longer match, and the longest match wins. Values
+  shorter than 4 characters aren't masked, since that would mangle normal
+  output.
+- **What masking can promise:** accident prevention for honest tools. It
+  doesn't catch hex, JSON-escaped, case-changed, truncated or split
+  output, or anything the command sends to a file or the network.
 - `run` removes `KEYDROP_TOKEN` from the child's environment, forwards
   signals, and exits with the child's exit code.
 - A plain `get` only prints variables. For a secret it refuses and points
