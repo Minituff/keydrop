@@ -74,6 +74,7 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
 | `internal/audit` | JSONL audit log plus in-memory rings for the UI. Authenticated and unauthenticated events in separate files, each rotated at 10 MiB (five and one old files kept); fields capped at 200 bytes, and only the last 512 KiB of each read at start. |
+| `e2e` | End-to-end tests: the built binary as server and CLI, the admin through the web forms (build tag `e2e`). |
 
 ## Design decisions
 
@@ -438,7 +439,9 @@ code. The full list is in the README.
 
 ## Build and release
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a
-  Docker build on every push and pull request. Pushes to `dev` then
+  Docker build on every push and pull request, and the end-to-end suite
+  (`go test -tags e2e ./e2e/...`) as a separate job with the full history,
+  since its upgrade test builds the release before the integrity check. Pushes to `dev` then
   publish `ghcr.io/minituff/keydrop:dev` and `:dev-<sha>` (amd64), for a
   test deployment that pins the digest. The image's version is
   `dev-<sha>`, matching the tag. CI also starts the image, installs the CLI
@@ -462,10 +465,13 @@ v0.1 (MVP), not yet released:
   change password, pairing, allowed sources, agent labels, audit log,
   TLS with pinning, Dockerfile, CI and release
   workflows, unit tests.
-- **Tested so far:** unit tests, plus an end-to-end run of the server and
-  CLI on Linux. That run covered namespace isolation, a wrong pin being
-  refused, `curl -v` masking (plain and base64), exit codes and the request
-  flow.
+- **Tested so far:** unit tests, and an end-to-end suite (`e2e/`, run in
+  CI) that drives the built binary as server and CLI: setup and login
+  through the forms, pairing, listing without values, `run` masking (plain,
+  base64, Basic auth), exit codes, environment and argv, write and
+  read-only tokens, requests, revoke, a wrong pin, `get --to-file`, a
+  restart, `upgrade-data`/`downgrade-data` against the previous release,
+  and `rotate-tls` with re-pinning.
 - **Not yet checked:** the UI in a real browser (phone especially), the
   Docker image build, and the CI and release workflows.
 

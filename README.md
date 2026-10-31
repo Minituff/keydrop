@@ -404,6 +404,7 @@ Authenticated responses carry `X-Keydrop-Version`, the server's build.
 
 ```sh
 go test ./...
+go test -tags e2e ./e2e/...                   # end-to-end: the real binary as server and CLI
 go build ./cmd/keydrop                        # this platform
 GOOS=linux GOARCH=amd64 go build ./cmd/keydrop  # cross-compile (from Windows too)
 docker build -t keydrop .

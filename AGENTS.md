@@ -77,6 +77,7 @@ GitHub Actions are the exception; keep them to well-known actions
 | `internal/mask` | Streaming output masker. |
 | `internal/qr` | QR encoder for the authenticator setup (stdlib only). |
 | `internal/audit` | Audit log. |
+| `e2e` | End-to-end tests of the built binary (build tag `e2e`). |
 
 ## Build and test
 
@@ -84,9 +85,22 @@ GitHub Actions are the exception; keep them to well-known actions
 gofmt -l .            # must print nothing
 go vet ./...
 go test ./...         # CI also runs -race (needs cgo; may not work on Windows)
+go test -tags e2e ./e2e/...   # end-to-end, with the real binary (Linux/macOS)
 go build ./cmd/keydrop
 docker build -t keydrop:dev .
 ```
+
+The end-to-end suite (`e2e/`, build tag `e2e`, so plain `go test ./...`
+skips it) builds `keydrop`, starts `keydrop server` as a subprocess on a
+free localhost port with a temporary data directory, drives the admin web
+forms over HTTP and runs the CLI as an agent would, with `HOME` in a
+temporary directory (your own `~/.config/keydrop` is never read). It takes
+a few seconds after the build and needs `sh`, `base64` and `sha256sum`. The
+upgrade test also builds the release at the previous data format from git
+history (`git worktree`, removed afterwards); in a shallow clone it skips
+with a message, so fetch the full history to run it. CI runs the suite as
+its own job. When a change touches the server and CLI together (pairing,
+`run`, the data format, TLS), add a step there as well as unit tests.
 
 Run it locally:
 
