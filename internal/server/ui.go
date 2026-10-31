@@ -15,6 +15,7 @@ import (
 	"github.com/minituff/keydrop/internal/audit"
 	"github.com/minituff/keydrop/internal/auth"
 	"github.com/minituff/keydrop/internal/notify"
+	"github.com/minituff/keydrop/internal/qr"
 	"github.com/minituff/keydrop/internal/store"
 )
 
@@ -75,18 +76,20 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
 
 // Fixed flash messages, picked by key so a link can't inject arbitrary text.
 var flashes = map[string]string{
-	"saved":      "Saved. The value can't be shown again.",
+	"saved":      "Saved.",
 	"details":    "Details saved.",
 	"rolledback": "Rolled back to the previous value.",
 	"deleted":    "Deleted.",
 	"revoked":    "Token revoked.",
+	"totpon":     "Authenticator turned on. Logging in now needs a code.",
+	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
 }
 
 type page map[string]any
@@ -137,10 +140,51 @@ func crossSite(r *http.Request) bool {
 
 // ---- setup and login ----
 
-func (s *Server) checkSetupToken(tok string) bool {
+// otpView is what a page needs to show a new authenticator seed: a QR code
+// (for setting up from a computer), an otpauth link (tapping it on a phone
+// opens the authenticator app) and the key for typing in by hand.
+func (s *Server) otpView(seed []byte) page {
+	account := "admin"
+	if u, err := url.Parse(s.cfg.PublicURL); err == nil && u.Hostname() != "" {
+		account = u.Hostname() // tells two installs apart in the app
+	}
+	uri := auth.TOTPURI(seed, "keydrop", account)
+	p := page{
+		"OTPSecret": auth.TOTPBase32(seed),
+		// Built from fixed parts and a base32 seed, so it's safe to mark as a
+		// URL (html/template would otherwise blank the otpauth: scheme).
+		"OTPURI": template.URL(uri),
+	}
+	if c, err := qr.Encode(uri); err == nil {
+		p["QR"] = template.HTML(c.SVG()) // only numbers and fixed markup
+	}
+	return p
+}
+
+// checkSetupCode compares a setup code, rate-limiting wrong guesses.
+func (s *Server) checkSetupCode(r *http.Request, code string) (ok, locked bool) {
+	ip, now := s.clientIP(r), s.now()
+	if s.setupLimiter.Allow(ip, now) != nil {
+		return false, true
+	}
 	s.setupMu.Lock()
-	defer s.setupMu.Unlock()
-	return s.setupToken != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.setupToken)) == 1
+	want := s.setupCode
+	s.setupMu.Unlock()
+	ok = want != "" && subtle.ConstantTimeCompare([]byte(normalizeCode(code)), []byte(want)) == 1
+	if !ok {
+		s.setupLimiter.Fail(ip, now)
+	}
+	return ok, false
+}
+
+func (s *Server) renderSetupCode(w http.ResponseWriter, r *http.Request, locked bool) {
+	if locked {
+		s.render(w, r, "setup", http.StatusTooManyRequests, nil, page{"Title": "Set up", "Step": "code",
+			"Error": "Too many wrong codes. Wait 15 minutes, or restart keydrop to get a new code."})
+		return
+	}
+	s.render(w, r, "setup", http.StatusForbidden, nil, page{"Title": "Set up", "Step": "code",
+		"Error": "That code doesn't match. Check keydrop's log: the code changes every time keydrop restarts."})
 }
 
 func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
@@ -148,77 +192,102 @@ func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	tok := r.URL.Query().Get("token")
-	if !s.checkSetupToken(tok) {
-		s.message(w, r, http.StatusForbidden, "Setup link needed", "Open the setup link printed in the container log.")
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		s.render(w, r, "setup", http.StatusOK, nil, page{"Title": "Set up", "Step": "code"})
 		return
 	}
-	s.renderSetup(w, r, tok, "")
+	if ok, locked := s.checkSetupCode(r, code); !ok {
+		s.renderSetupCode(w, r, locked)
+		return
+	}
+	s.renderSetup(w, r, normalizeCode(code), "totp", "")
 }
 
-func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, tok, errMsg string) {
+func (s *Server) renderSetup(w http.ResponseWriter, r *http.Request, code, mfa, errMsg string) {
 	status := http.StatusOK
 	if errMsg != "" {
 		status = http.StatusBadRequest
 	}
-	s.render(w, r, "setup", status, nil, page{
-		"Title": "Set up", "Token": tok, "Error": errMsg,
-		"OTPSecret": auth.TOTPBase32(s.setupSeed),
-		// Built here from fixed parts and a base32 seed, so it's safe to mark
-		// as a URL (html/template would otherwise blank the otpauth: scheme).
-		"OTPURI": template.URL(auth.TOTPURI(s.setupSeed, "keydrop", "admin")),
-	})
+	s.setupMu.Lock()
+	seed := s.setupSeed
+	s.setupMu.Unlock()
+	data := s.otpView(seed)
+	data["Title"], data["Step"], data["Code"], data["MFA"], data["Error"] = "Set up", "account", code, mfa, errMsg
+	s.render(w, r, "setup", status, nil, data)
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
-	tok := r.PostFormValue("token")
-	if crossSite(r) || !s.checkSetupToken(tok) {
-		s.message(w, r, http.StatusForbidden, "Setup link needed", "Open the setup link printed in the container log.")
+	if crossSite(r) {
+		http.Error(w, "cross-site request refused", http.StatusForbidden)
 		return
 	}
+	code := r.PostFormValue("code")
+	if ok, locked := s.checkSetupCode(r, code); !ok {
+		s.renderSetupCode(w, r, locked)
+		return
+	}
+	code = normalizeCode(code)
+	mfa := r.PostFormValue("mfa")
 	pw, pw2 := r.PostFormValue("password"), r.PostFormValue("password2")
 	switch {
 	case len([]rune(pw)) < auth.MinPasswordLength:
-		s.renderSetup(w, r, tok, fmt.Sprintf("The password needs at least %d characters.", auth.MinPasswordLength))
+		s.renderSetup(w, r, code, mfa, fmt.Sprintf("The password needs at least %d characters.", auth.MinPasswordLength))
 		return
 	case pw != pw2:
-		s.renderSetup(w, r, tok, "The passwords don't match.")
+		s.renderSetup(w, r, code, mfa, "The passwords don't match.")
 		return
 	}
-	step, ok := auth.CheckTOTP(s.setupSeed, r.PostFormValue("code"), s.now())
-	if !ok {
-		s.renderSetup(w, r, tok, "That code didn't match. Check the authenticator entry and try again.")
-		return
+	s.setupMu.Lock()
+	seed := s.setupSeed
+	s.setupMu.Unlock()
+	var step int64
+	if mfa == "none" {
+		seed = nil
+	} else {
+		var ok bool
+		if step, ok = auth.CheckTOTP(seed, r.PostFormValue("totp"), s.now()); !ok {
+			s.renderSetup(w, r, code, mfa, "That authenticator code didn't match. Check the keydrop entry in the app and try again, or choose password only.")
+			return
+		}
 	}
 	hash, err := auth.HashPassword(pw)
 	if err == nil {
-		err = s.store.SetAdmin(hash, s.setupSeed)
+		err = s.store.SetAdmin(hash, seed)
 	}
-	if err == nil {
+	if err == nil && seed != nil {
 		err = s.store.UseTOTPStep(step)
 	}
 	if err != nil {
 		log.Printf("setup: %v", err)
-		s.renderSetup(w, r, tok, "Couldn't save the admin login. Check the container log.")
+		s.renderSetup(w, r, code, mfa, "Couldn't save the admin login. Check keydrop's log.")
 		return
 	}
 	s.setupMu.Lock()
-	s.setupToken, s.setupSeed = "", nil
+	s.setupCode, s.setupSeed = "", nil
 	s.setupMu.Unlock()
 	s.mu.Lock()
 	s.sessions = map[string]*session{} // a reset logs everyone out
 	s.mu.Unlock()
-	s.event(r, "admin", "admin.setup", "", "")
+	detail := "with authenticator"
+	if seed == nil {
+		detail = "password only"
+	}
+	s.event(r, "admin", "admin.setup", "", detail)
 	s.newSession(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
+	s.render(w, r, "login", status, nil, page{"Title": "Log in", "TOTP": s.store.TOTPEnabled(), "Error": errMsg})
+}
+
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 	if !s.store.AdminConfigured() {
-		s.message(w, r, http.StatusServiceUnavailable, "Not set up yet", "Open the setup link printed in the container log.")
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, "login", http.StatusOK, nil, page{"Title": "Log in"})
+	s.renderLogin(w, r, http.StatusOK, "")
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -230,22 +299,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.limiter.Allow(ip, now); err != nil {
 		s.event(r, "admin", "login.locked", "", "")
-		s.render(w, r, "login", http.StatusTooManyRequests, nil, page{"Title": "Log in", "Error": "Too many failed attempts. Try again in 15 minutes."})
+		s.renderLogin(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
 		return
 	}
 	hash, seed, _, err := s.store.Admin()
 	ok := err == nil && auth.CheckPassword(hash, r.PostFormValue("password"))
-	var step int64
-	if ok {
-		step, ok = auth.CheckTOTP(seed, r.PostFormValue("code"), now)
-	}
-	if ok {
-		ok = s.store.UseTOTPStep(step) == nil // rejects a replayed code
+	if ok && seed != nil {
+		var step int64
+		step, ok = auth.CheckTOTP(seed, r.PostFormValue("totp"), now)
+		if ok {
+			ok = s.store.UseTOTPStep(step) == nil // rejects a replayed code
+		}
 	}
 	if !ok {
 		s.limiter.Fail(ip, now)
 		s.event(r, "admin", "login.fail", "", "")
-		s.render(w, r, "login", http.StatusUnauthorized, nil, page{"Title": "Log in", "Error": "Wrong password or code."})
+		msg := "Wrong password."
+		if seed != nil {
+			msg = "Wrong password or code."
+		}
+		s.renderLogin(w, r, http.StatusUnauthorized, msg)
 		return
 	}
 	s.limiter.Succeed(ip)
@@ -361,6 +434,10 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request, _ string, 
 }
 
 func (s *Server) renderSecret(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
+	s.renderSecretWith(w, r, se, status, errMsg, "")
+}
+
+func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg, value string) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	sec, ok := s.store.GetSecret(ns, name)
 	if !ok {
@@ -375,8 +452,29 @@ func (s *Server) renderSecret(w http.ResponseWriter, r *http.Request, se *sessio
 	}
 	s.render(w, r, "secret", status, se, page{
 		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
-		"Readers": readers, "Error": errMsg,
+		"Readers": readers, "Error": errMsg, "Value": value,
 	})
+}
+
+// handleReveal shows a value on the secret page. It's a POST, so the value
+// never lands in a URL or browser history, and every view is logged.
+func (s *Server) handleReveal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	ns, name := r.PathValue("ns"), r.PathValue("name")
+	val, err := s.store.Reveal(ns, name, "admin (web)")
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
+		return
+	case errors.Is(err, store.ErrNoValue):
+		s.renderSecret(w, r, se, http.StatusBadRequest, "There's no value to show yet.")
+		return
+	case err != nil:
+		log.Printf("reveal %s/%s: %v", ns, name, err)
+		s.renderSecret(w, r, se, http.StatusInternalServerError, "Couldn't decrypt the value. Check keydrop's log.")
+		return
+	}
+	s.event(r, "admin", "secret.reveal", ns+"/"+name, "web UI")
+	s.renderSecretWith(w, r, se, http.StatusOK, "", string(val))
 }
 
 func (s *Server) back(w http.ResponseWriter, r *http.Request, msg string) {
@@ -502,4 +600,83 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request, _ str
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	s.render(w, r, "audit", http.StatusOK, se, page{"Title": "Log", "Events": s.audit.Recent(300)})
+}
+
+// ---- settings ----
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.renderSettings(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
+	on := s.store.TOTPEnabled()
+	s.mu.Lock()
+	seed := se.newTOTP
+	s.mu.Unlock()
+	data := page{}
+	if !on && seed != nil {
+		data = s.otpView(seed)
+	}
+	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
+	s.render(w, r, "settings", status, se, data)
+}
+
+// handleTOTPStart makes a new seed for this session and shows it. Nothing
+// changes until a code from it is confirmed.
+func (s *Server) handleTOTPStart(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	if !s.store.TOTPEnabled() {
+		s.mu.Lock()
+		se.newTOTP = auth.NewTOTPSecret()
+		s.mu.Unlock()
+	}
+	s.renderSettings(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.mu.Lock()
+	seed := se.newTOTP
+	s.mu.Unlock()
+	if seed == nil || s.store.TOTPEnabled() {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	step, ok := auth.CheckTOTP(seed, r.PostFormValue("totp"), s.now())
+	if !ok {
+		s.renderSettings(w, r, se, http.StatusBadRequest, "That code didn't match. Check the keydrop entry in the app and try again.")
+		return
+	}
+	if err := s.store.SetTOTP(seed); err != nil {
+		log.Printf("totp on: %v", err)
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save. Check keydrop's log.")
+		return
+	}
+	_ = s.store.UseTOTPStep(step) // fails only if this code was already used
+	s.mu.Lock()
+	se.newTOTP = nil
+	s.mu.Unlock()
+	s.event(r, "admin", "admin.totp.on", "", "")
+	http.Redirect(w, r, "/settings?msg=totpon", http.StatusSeeOther)
+}
+
+// handleTOTPOff needs the password again, so an unattended logged-in phone
+// can't quietly weaken the login.
+func (s *Server) handleTOTPOff(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	ip, now := s.clientIP(r), s.now()
+	if s.limiter.Allow(ip, now) != nil {
+		s.renderSettings(w, r, se, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
+		return
+	}
+	hash, _, _, err := s.store.Admin()
+	if err != nil || !auth.CheckPassword(hash, r.PostFormValue("password")) {
+		s.limiter.Fail(ip, now)
+		s.renderSettings(w, r, se, http.StatusUnauthorized, "Wrong password.")
+		return
+	}
+	if err := s.store.SetTOTP(nil); err != nil {
+		log.Printf("totp off: %v", err)
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save. Check keydrop's log.")
+		return
+	}
+	s.event(r, "admin", "admin.totp.off", "", "")
+	http.Redirect(w, r, "/settings?msg=totpoff", http.StatusSeeOther)
 }

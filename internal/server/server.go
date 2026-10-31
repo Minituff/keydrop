@@ -45,40 +45,72 @@ type session struct {
 	csrf    string
 	created time.Time
 	seen    time.Time
+	// newTOTP is the seed shown while turning the authenticator on, kept
+	// until the first code from it is confirmed.
+	newTOTP []byte
 }
 
 // Server implements http.Handler.
 type Server struct {
-	cfg     Config
-	store   *store.Store
-	audit   *audit.Log
-	limiter *auth.Limiter
-	mux     *http.ServeMux
-	now     func() time.Time
+	cfg          Config
+	store        *store.Store
+	audit        *audit.Log
+	limiter      *auth.Limiter
+	setupLimiter *auth.Limiter
+	mux          *http.ServeMux
+	now          func() time.Time
 
 	mu       sync.Mutex
 	sessions map[string]*session
 
-	setupMu    sync.Mutex
-	setupToken string // empty when setup isn't open
-	setupSeed  []byte
+	setupMu   sync.Mutex
+	setupCode string // empty when setup isn't open
+	setupSeed []byte
 }
 
 // New builds a Server. If no admin exists yet (or ResetAdmin is set) it
-// opens setup and logs a one-time setup link.
+// opens setup and logs a one-time setup code.
 func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	s := &Server{
-		cfg: cfg, store: st, audit: al, limiter: auth.NewLimiter(),
+		cfg: cfg, store: st, audit: al,
+		limiter: auth.NewLimiter(), setupLimiter: auth.NewLimiter(),
 		mux: http.NewServeMux(), now: time.Now, sessions: map[string]*session{},
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
-		s.setupToken = randomString(24)
+		s.setupCode = newSetupCode()
 		s.setupSeed = auth.NewTOTPSecret()
-		log.Printf("admin setup is open. Visit %s/setup?token=%s", strings.TrimRight(cfg.PublicURL, "/"), s.setupToken)
-		log.Printf("(the setup link works once and is printed only here, in the container log)")
+		base := strings.TrimRight(cfg.PublicURL, "/")
+		log.Printf("admin setup is open. Go to %s/setup and enter the setup code %s", base, displayCode(s.setupCode))
+		log.Printf("or open %s/setup?code=%s", base, s.setupCode)
+		log.Printf("(the code works once, and only proves you can read this log; a restart before setup makes a new one)")
 	}
 	s.routes()
 	return s
+}
+
+// Setup codes avoid 0/O and 1/I, which are easy to mistype from a log.
+const setupAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// newSetupCode returns 6 characters (30 bits). It only has to stop someone
+// else on the network claiming an empty install, and guesses are
+// rate-limited, so it's short enough to type from a phone.
+func newSetupCode() string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	for i := range b {
+		b[i] = setupAlphabet[b[i]&31] // 32 symbols, so no modulo bias
+	}
+	return string(b)
+}
+
+// displayCode splits a code as ABC-DEF for reading.
+func displayCode(c string) string { return c[:3] + "-" + c[3:] }
+
+// normalizeCode accepts lower case, spaces and dashes.
+func normalizeCode(c string) string {
+	return strings.NewReplacer("-", "", " ", "").Replace(strings.ToUpper(strings.TrimSpace(c)))
 }
 
 func randomString(n int) string {
@@ -110,7 +142,12 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /tokens", s.admin(s.handleTokens))
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
+	m.HandleFunc("POST /secret/{ns}/{name}/reveal", s.admin(s.handleReveal))
 	m.HandleFunc("GET /audit", s.admin(s.handleAudit))
+	m.HandleFunc("GET /settings", s.admin(s.handleSettings))
+	m.HandleFunc("POST /settings/totp/start", s.admin(s.handleTOTPStart))
+	m.HandleFunc("POST /settings/totp/on", s.admin(s.handleTOTPOn))
+	m.HandleFunc("POST /settings/totp/off", s.admin(s.handleTOTPOff))
 
 	m.HandleFunc("GET /api/v1/whoami", s.agent(s.apiWhoami))
 	m.HandleFunc("GET /api/v1/secrets", s.agent(s.apiList))
@@ -231,7 +268,7 @@ func (s *Server) admin(h adminHandler) http.HandlerFunc {
 		sid, se := s.currentSession(r)
 		if se == nil {
 			if s.setupOpen() {
-				http.Error(w, "keydrop needs setting up: use the setup link from the container log", http.StatusServiceUnavailable)
+				http.Redirect(w, r, "/setup", http.StatusSeeOther)
 				return
 			}
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -254,5 +291,5 @@ func (s *Server) admin(h adminHandler) http.HandlerFunc {
 func (s *Server) setupOpen() bool {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
-	return s.setupToken != ""
+	return s.setupCode != ""
 }

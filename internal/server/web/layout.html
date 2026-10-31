@@ -14,6 +14,7 @@
     <a href="/">Secrets</a>
     <a href="/tokens">Agents</a>
     <a href="/audit">Log</a>
+    <a href="/settings">Settings</a>
     <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Log out</button></form>
   </nav>{{end}}
 </header>
@@ -27,7 +28,16 @@
 
 
 {{define "valuefield"}}
-<label>Value <small>(can't be shown again after saving)</small>
+<label>Value
   <textarea name="value" rows="3" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
 <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+{{end}}
+
+
+{{define "authenticator"}}
+{{with .QR}}<div class="qr">{{.}}</div>
+<p class="muted">Scan this with your authenticator app. On this phone, use the button instead.</p>{{end}}
+<p><a class="button" href="{{.OTPURI}}">Add to authenticator app</a></p>
+<p>Or enter this key by hand:</p>
+<p><code class="secret">{{.OTPSecret}}</code></p>
 {{end}}

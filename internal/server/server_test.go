@@ -72,13 +72,14 @@ func (h *harness) csrf() string {
 	return m[1]
 }
 
-// setup completes first-run setup and leaves the client logged in.
+// setup completes first-run setup with an authenticator and leaves the
+// client logged in.
 func (h *harness) setup() {
 	h.t.Helper()
-	tok, seed := h.srv.setupToken, h.srv.setupSeed
+	code, seed := h.srv.setupCode, h.srv.setupSeed
 	resp := h.post("/setup", url.Values{
-		"token": {tok}, "password": {"a long enough password"}, "password2": {"a long enough password"},
-		"code": {totpNow(seed, time.Now())},
+		"code": {code}, "password": {"a long enough password"}, "password2": {"a long enough password"},
+		"mfa": {"totp"}, "totp": {totpNow(seed, time.Now())},
 	})
 	if resp.StatusCode != http.StatusSeeOther {
 		b, _ := io.ReadAll(resp.Body)
@@ -111,8 +112,8 @@ func (h *harness) api(method, path, token string, body any) (int, map[string]any
 
 func TestSetupLoginAndCSRF(t *testing.T) {
 	h := newHarness(t)
-	if code, _ := h.get("/setup?token=wrong"); code != http.StatusForbidden {
-		t.Fatalf("bad setup token: %d", code)
+	if code, _ := h.get("/setup?code=WRONG1"); code != http.StatusForbidden {
+		t.Fatalf("bad setup code: %d", code)
 	}
 	h.setup()
 	if h.srv.setupOpen() {
@@ -161,12 +162,12 @@ func TestLoginLockout(t *testing.T) {
 	h.setup()
 	anon := &http.Client{}
 	for i := 0; i < 5; i++ {
-		resp, _ := anon.PostForm(h.ts.URL+"/login", url.Values{"password": {"nope"}, "code": {"000000"}})
+		resp, _ := anon.PostForm(h.ts.URL+"/login", url.Values{"password": {"nope"}, "totp": {"000000"}})
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: %d", i, resp.StatusCode)
 		}
 	}
-	resp, _ := anon.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}, "code": {"000000"}})
+	resp, _ := anon.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}, "totp": {"000000"}})
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("not locked out: %d", resp.StatusCode)
 	}
@@ -263,5 +264,119 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 	if resp.Header.Get("Cache-Control") != "no-store" {
 		t.Error("pages must not be cached")
+	}
+}
+
+func TestSetupCode(t *testing.T) {
+	h := newHarness(t)
+	// Before setup, the dashboard and login send you to setup.
+	for _, p := range []string{"/", "/login"} {
+		resp, _ := h.web.Get(h.ts.URL + p)
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/setup" {
+			t.Fatalf("%s before setup: %d %s", p, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	seed := auth.TOTPBase32(h.srv.setupSeed)
+	// Without a code, setup asks for one and doesn't show the authenticator
+	// key (it would let a bystander copy the admin's second factor).
+	code, body := h.get("/setup")
+	if code != 200 || !strings.Contains(body, `name="code"`) || strings.Contains(body, seed) {
+		t.Fatalf("code step: %d", code)
+	}
+	if c := h.srv.setupCode; len(c) != 6 || strings.ContainsAny(c, "01OI") {
+		t.Fatalf("setup code %q", c)
+	}
+	// The code is forgiving about case, spaces and the dash.
+	typed := strings.ToLower(displayCode(h.srv.setupCode))
+	code, body = h.get("/setup?code=" + url.QueryEscape(" "+typed))
+	if code != 200 || !strings.Contains(body, seed) || !strings.Contains(body, "<svg") {
+		t.Fatalf("account step: %d", code)
+	}
+	// A wrong code on submit is refused too.
+	resp := h.post("/setup", url.Values{"code": {"AAAAAA"}, "password": {"a long enough password"}, "password2": {"a long enough password"}, "mfa": {"none"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong code on submit: %d", resp.StatusCode)
+	}
+	// Guessing is rate-limited (one wrong guess above, plus these).
+	for i := 0; i < 4; i++ {
+		h.get("/setup?code=BBBBBB")
+	}
+	if code, _ := h.get("/setup?code=" + h.srv.setupCode); code != http.StatusTooManyRequests {
+		t.Fatalf("not locked out: %d", code)
+	}
+}
+
+func TestPasswordOnlyAndTOTPSettings(t *testing.T) {
+	h := newHarness(t)
+	resp := h.post("/setup", url.Values{"code": {h.srv.setupCode}, "password": {"a long enough password"}, "password2": {"a long enough password"}, "mfa": {"none"}})
+	if resp.StatusCode != http.StatusSeeOther || h.st.TOTPEnabled() {
+		t.Fatalf("password-only setup: %d", resp.StatusCode)
+	}
+	login := func(totp string) int {
+		c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, _ := c.PostForm(h.ts.URL+"/login", url.Values{"password": {"a long enough password"}, "totp": {totp}})
+		return resp.StatusCode
+	}
+	if _, body := h.get("/login"); strings.Contains(body, `name="totp"`) {
+		t.Fatal("login asks for a code with the authenticator off")
+	}
+	if c := login(""); c != http.StatusSeeOther {
+		t.Fatalf("password-only login: %d", c)
+	}
+
+	// Turning it on shows a new seed, and only a code from it switches it on.
+	csrf := h.csrf()
+	h.post("/settings/totp/start", url.Values{"csrf": {csrf}})
+	h.srv.mu.Lock()
+	var seed []byte
+	for _, se := range h.srv.sessions {
+		if se.csrf == csrf {
+			seed = se.newTOTP
+		}
+	}
+	h.srv.mu.Unlock()
+	if seed == nil {
+		t.Fatal("no pending seed")
+	}
+	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "totp": {"000000"}}); resp.StatusCode != http.StatusBadRequest || h.st.TOTPEnabled() {
+		t.Fatalf("wrong code turned it on: %d", resp.StatusCode)
+	}
+	if resp := h.post("/settings/totp/on", url.Values{"csrf": {csrf}, "totp": {totpNow(seed, time.Now())}}); resp.StatusCode != http.StatusSeeOther || !h.st.TOTPEnabled() {
+		t.Fatalf("turn on: %d", resp.StatusCode)
+	}
+	if c := login(""); c != http.StatusUnauthorized {
+		t.Fatalf("login without code after turning on: %d", c)
+	}
+
+	// Turning it off needs the password.
+	if resp := h.post("/settings/totp/off", url.Values{"csrf": {csrf}, "password": {"wrong password!"}}); resp.StatusCode != http.StatusUnauthorized || !h.st.TOTPEnabled() {
+		t.Fatalf("off with wrong password: %d", resp.StatusCode)
+	}
+	if resp := h.post("/settings/totp/off", url.Values{"csrf": {csrf}, "password": {"a long enough password"}}); resp.StatusCode != http.StatusSeeOther || h.st.TOTPEnabled() {
+		t.Fatalf("turn off: %d", resp.StatusCode)
+	}
+}
+
+func TestRevealInUI(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.st.PutValue("lab", "cf", []byte("shown-on-request-42"), nil)
+	// Only shown after a deliberate POST with the CSRF token.
+	if _, body := h.get("/secret/lab/cf"); strings.Contains(body, "shown-on-request-42") {
+		t.Fatal("value shown without asking")
+	}
+	if resp := h.post("/secret/lab/cf/reveal", nil); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("reveal without csrf: %d", resp.StatusCode)
+	}
+	resp := h.post("/secret/lab/cf/reveal", url.Values{"csrf": {h.csrf()}})
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "shown-on-request-42") {
+		t.Fatalf("reveal: %d", resp.StatusCode)
+	}
+	if _, body := h.get("/audit"); !strings.Contains(body, "secret.reveal") {
+		t.Fatal("reveal not in the log")
+	}
+	if sec, _ := h.st.GetSecret("lab", "cf"); sec.LastReadBy != "admin (web)" {
+		t.Fatalf("last read by %q", sec.LastReadBy)
 	}
 }

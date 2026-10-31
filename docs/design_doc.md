@@ -16,7 +16,7 @@ usually means one of:
 - **Shell history and tool logs.** Agents log their tool output, so a
   `curl -v` that echoes an `Authorization` header ends up in the session log.
 
-keydrop is a place to drop a key (write-only, from a phone) and a CLI that
+keydrop is a place to drop a key (from a phone) and a CLI that
 lets an agent **use** the key without **seeing** it.
 
 ## Threat model
@@ -43,7 +43,7 @@ For those, use Vault/OpenBao or Infisical.
 | 1Password `op run` | The model for output masking, but paid and cloud-hosted. |
 | SOPS / age | Encrypted files, not paste-from-phone. |
 
-None has a write-only phone UI, an agent inbox/request flow, or fits in a
+None has a paste-from-phone UI, an agent inbox/request flow, or fits in a
 single small container. That gap is the reason for the project.
 
 ## Shape
@@ -72,16 +72,25 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/server` | HTTP: web UI (`ui.go`, `web/`), agent API (`api.go`), TLS (`tls.go`). |
 | `internal/client` | API client used by the CLI, including certificate pinning. |
 | `internal/mask` | Streaming output masking for `keydrop run`. |
+| `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
 | `internal/audit` | JSONL audit log plus an in-memory ring for the UI. |
 | `internal/notify` | Webhooks (JSON, Discord, ntfy). |
 
 ## Design decisions
 
-### Write-only UI
-Values are never shown again after saving, the same model as GitHub
-Actions secrets. You can replace a value, roll back to the previous one
-(one level of history), or delete it, but never reveal it. If someone gets
-into the UI, they get metadata, not secrets.
+### Values in the UI: shown on purpose, logged
+The MVP was write-only, like GitHub Actions secrets. That was dropped
+(2026-10-31): an admin can mint a token for every namespace and read any
+value through the API, so hiding values from the admin protected nothing,
+and the person who owns the keys should be able to check one. Instead:
+
+- Lists and pages show names and descriptions only. A value appears only
+  after pressing "Show value", which is a POST with the CSRF token, so it
+  never lands in a URL, browser history or a cache (`no-store`).
+- Every view is audit-logged (`secret.reveal`, "web UI") and updates
+  "last read", the same as an agent read.
+- You can still replace a value, roll back to the previous one (one level
+  of history), or delete it.
 
 Each secret has a description ("what this is for and what to do with it"),
 an optional usage hint and an optional expiry date. The description is the
@@ -145,14 +154,25 @@ unless writing is allowed.
 
 ### Admin login
 - Password (PBKDF2-HMAC-SHA256, 600,000 iterations, minimum 12
-  characters) **plus** TOTP, from v1. This is the most sensitive app in
-  the lab, so a second factor isn't optional. TOTP codes can't be replayed.
+  characters), plus an optional TOTP code. Setup recommends TOTP and
+  explains why (the UI can show every value), but on a LAN-only app the
+  owner can reasonably choose password only. It can be turned on later in
+  Settings, and turning it off needs the password again. TOTP codes can't
+  be replayed.
 - Failed logins: 5 per client and 20 overall per 15 minutes. The global
   limit is what stops a distributed guesser.
-- First run prints a one-time setup link in the container log. The setup
-  page shows an `otpauth://` link, because tapping it on a phone opens the
-  authenticator app, which is easier than scanning a QR code on the same
-  screen. `KEYDROP_RESET_ADMIN=true` reopens setup without touching secrets.
+- First run prints a one-time **setup code** in the container log: 6
+  characters from an alphabet without 0/O/1/I, with a link that fills it
+  in. Its only job is to stop someone else on the network claiming the
+  empty install first, so it's short enough to type on a phone: 30 bits,
+  with wrong guesses rate-limited (5 per client, 20 overall per 15
+  minutes). It's new on every restart until setup finishes, and works
+  once. The authenticator key is only shown after the code is accepted,
+  so a bystander can't copy the second factor.
+- The authenticator step shows a QR code (for setting up from a computer;
+  `internal/qr` is a small stdlib-only encoder), an `otpauth://` link (on
+  a phone, tapping it opens the authenticator app) and the key as text.
+  `KEYDROP_RESET_ADMIN=true` reopens setup without touching secrets.
 - Sessions: a `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 hour idle
   and 8 hours maximum. Every form has a CSRF token, and cross-site requests
   (`Sec-Fetch-Site`) are refused.
@@ -193,7 +213,7 @@ code. The full list is in the README.
 
 v0.1 (MVP), not yet released:
 
-- **Done:** server, write-only UI, admin password + TOTP, namespaced agent
+- **Done:** server, web UI, admin password + optional TOTP, namespaced agent
   tokens, `run` with masking, `list`/`info`/`inbox`/`ack`,
   `request`/`wait`, `get --to-file`, `put`, `import`, `expiring`,
   webhooks, audit log, TLS with pinning, Dockerfile, CI and release
@@ -218,7 +238,6 @@ v0.1 (MVP), not yet released:
      out of v1 because a misconfigured proxy would bypass the login.
    - An MCP server exposing **metadata only** (`list`, `inbox`, `request`).
      A tool that returns values would put them in the transcript.
-   - A QR code on the setup page for setting up from a desktop.
    - `--stdin-to CMD` (for example `docker login --password-stdin`).
    - Optional per-secret allowlists inside a namespace.
    - Version history beyond one previous value.

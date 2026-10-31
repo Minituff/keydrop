@@ -37,3 +37,4 @@ code.secret { display:block; padding:.75rem; word-break:break-all; background:va
 pre { padding:.75rem; overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; }
 dl { display:grid; grid-template-columns:max-content 1fr; gap:.3rem 1rem; } dt { color:var(--muted); } dd { margin:0; }
 table { width:100%; border-collapse:collapse; font-size:.9rem; } th, td { text-align:left; padding:.4rem; border-bottom:1px solid var(--line); vertical-align:top; }
+.qr { width:min(15rem, 100%); margin:.5rem 0; } .qr svg { display:block; width:100%; height:auto; border-radius:8px; }

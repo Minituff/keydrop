@@ -1,18 +1,30 @@
 {{define "content"}}
 <h1>Set up keydrop</h1>
-<p>This page works once. Choose an admin password and add keydrop to your authenticator app.</p>
+{{if eq .Step "code"}}
+<p>keydrop doesn't have an admin yet, and whoever finishes this page first becomes the admin. The setup code proves it's you: only someone who can read keydrop's log can see it.</p>
+<form method="get" action="/setup" class="card">
+  <label>Setup code <small>(6 characters, like ABC-DEF)</small>
+    <input name="code" required autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" autofocus></label>
+  <button>Continue</button>
+</form>
+<p class="muted">Find it in the log (<code>docker logs keydrop</code>) on the line that says "setup code". It works once. If keydrop restarts before setup is finished, it prints a new code.</p>
+{{else}}
+<p>Choose the password you'll use to log in here.</p>
 <form method="post" action="/setup" class="card">
-  <input type="hidden" name="token" value="{{.Token}}">
+  <input type="hidden" name="code" value="{{.Code}}">
   <label>Password <small>(at least 12 characters)</small>
     <input type="password" name="password" autocomplete="new-password" required minlength="12"></label>
   <label>Password again
     <input type="password" name="password2" autocomplete="new-password" required minlength="12"></label>
-  <h2>Authenticator</h2>
-  <p><a class="button" href="{{.OTPURI}}">Add to authenticator app</a></p>
-  <p>Or enter this key by hand:</p>
-  <p><code class="secret">{{.OTPSecret}}</code></p>
+
+  <h2>Authenticator code <small>(recommended)</small></h2>
+  <p>This page can show every stored key, so it's worth protecting. With an authenticator app, logging in also needs a 6-digit code from your phone, and someone who learns your password still can't get in.</p>
+  <label class="check"><input type="radio" name="mfa" value="totp"{{if ne .MFA "none"}} checked{{end}}> Use an authenticator app</label>
+  {{template "authenticator" .}}
   <label>6-digit code from the app
-    <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+    <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}"></label>
+  <label class="check"><input type="radio" name="mfa" value="none"{{if eq .MFA "none"}} checked{{end}}> Password only <small>(you can add an authenticator later in Settings)</small></label>
   <button>Finish setup</button>
 </form>
+{{end}}
 {{end}}

@@ -1,6 +1,6 @@
 # keydrop
 
-A write-only secret drop for homelab AI agents.
+A secret drop for homelab AI agents.
 
 You make an API key on your phone and paste it into keydrop's web page. Your
 agent (Claude Code, Codex, a script) then **uses** the key without ever
@@ -36,13 +36,14 @@ replacement for Vault or Infisical in a team.
 
 ## How it works
 
-- **A write-only web page.** Paste a value with a description of what it's
-  for. After saving, the value is **never shown again**, in the same way as
-  GitHub Actions secrets: you can replace it, roll back to the previous value,
-  or delete it. If someone gets into the page, they see names, not keys. The
-  page is built for phones, with no autocorrect or capitalisation in the value
-  field, and it uses no JavaScript.
-- **Admin login with password + authenticator code (TOTP).** Failed logins
+- **A web page for you.** Paste a value with a description of what it's
+  for. You can view a value later (press "Show value"; every view is
+  logged), replace it, roll back to the previous value, or delete it. Lists
+  show names and descriptions only. The page is built for phones, with no
+  autocorrect or capitalisation in the value field, and it uses no
+  JavaScript.
+- **Admin login with a password, plus an authenticator code (TOTP) if you
+  turn it on** (recommended, offered at setup with a QR code). Failed logins
   are rate-limited.
 - **Namespaces and agent tokens.** Secrets live in namespaces (`homelab/…`,
   `wedding/…`). Each agent gets its own token, granted one or more
@@ -69,7 +70,7 @@ replacement for Vault or Infisical in a team.
 |---|---|
 | At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The master key comes from a file (Docker secret) and is never stored in the data directory. |
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. |
-| Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. TOTP codes can't be replayed. |
+| Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
 | Login limits | 5 failures per client and 20 overall per 15 minutes. |
 | Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
 | Headers | Strict CSP (no scripts at all), `X-Frame-Options: DENY`, `no-referrer`, `no-store`. |
@@ -90,16 +91,20 @@ docker logs keydrop
 
 The log prints two things:
 
-1. **A one-time setup link.** Open it, choose a password and add keydrop to
-   your authenticator app. On a phone, the "Add to authenticator app" button
-   opens the app directly.
+1. **A one-time setup code** (6 characters, like `K7Q-MP3`), and a link
+   with the code filled in. Go to `/setup`, enter the code, and choose a
+   password. The code only proves you can read the log, so nobody else on
+   the network can claim the empty install first. Then add keydrop to an
+   authenticator app (scan the QR code, or on a phone tap "Add to
+   authenticator app"), or choose password only and add one later in
+   Settings.
 2. **The certificate pin** (`KEYDROP_TLS_PIN=sha256:…`). Agents need this.
 
 **Back up `master.key` separately from `data/`.** Without it the data can't be
 read, which is deliberate.
 
 Lost the admin password or authenticator? Restart with
-`KEYDROP_RESET_ADMIN=true`, use the new setup link, then remove the variable.
+`KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove the variable.
 Secrets and tokens are kept.
 
 ## Quick start (agent)

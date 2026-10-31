@@ -255,28 +255,60 @@ func copySecret(sec *Secret) Secret {
 
 // ---- admin ----
 
-// AdminConfigured reports whether the admin password and TOTP are set.
+// AdminConfigured reports whether an admin password is set. The
+// authenticator (TOTP) is optional.
 func (s *Store) AdminConfigured() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.st.Admin.PasswordHash != "" && len(s.st.Admin.TOTPSecret) > 0
+	return s.st.Admin.PasswordHash != ""
 }
 
-// SetAdmin replaces the admin password hash and TOTP seed.
+// SetAdmin replaces the admin password hash and TOTP seed. A nil seed means
+// password-only login.
 func (s *Store) SetAdmin(passwordHash string, totpSecret []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.Admin = admin{PasswordHash: passwordHash, TOTPSecret: s.seal(totpSecret, "totp")}
+	s.st.Admin = admin{PasswordHash: passwordHash, TOTPSecret: s.sealTOTP(totpSecret)}
 	return s.save()
 }
 
-// Admin returns the password hash, decrypted TOTP seed and the last TOTP
-// step accepted (for replay protection).
+// SetTOTP turns the authenticator on with a new seed, or off with nil. The
+// last used step is kept, so old codes stay unusable.
+func (s *Store) SetTOTP(seed []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st.Admin.PasswordHash == "" {
+		return ErrNotFound
+	}
+	s.st.Admin.TOTPSecret = s.sealTOTP(seed)
+	return s.save()
+}
+
+func (s *Store) sealTOTP(seed []byte) []byte {
+	if len(seed) == 0 {
+		return nil
+	}
+	return s.seal(seed, "totp")
+}
+
+// TOTPEnabled reports whether login needs an authenticator code.
+func (s *Store) TOTPEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.st.Admin.TOTPSecret) > 0
+}
+
+// Admin returns the password hash, the decrypted TOTP seed (nil when the
+// authenticator is off) and the last TOTP step accepted (for replay
+// protection).
 func (s *Store) Admin() (string, []byte, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.st.Admin.PasswordHash == "" {
 		return "", nil, 0, ErrNotFound
+	}
+	if len(s.st.Admin.TOTPSecret) == 0 {
+		return s.st.Admin.PasswordHash, nil, s.st.Admin.TOTPLastStep, nil
 	}
 	seed, err := s.open(s.st.Admin.TOTPSecret, "totp")
 	return s.st.Admin.PasswordHash, seed, s.st.Admin.TOTPLastStep, err

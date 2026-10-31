@@ -1,0 +1,28 @@
+{{define "content"}}
+<h1>Settings</h1>
+<h2>Authenticator code</h2>
+{{if .TOTP}}
+<p><span class="badge new">on</span> Logging in needs your password and a 6-digit code from your authenticator app.</p>
+<form method="post" action="/settings/totp/off" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Password <small>(to confirm)</small>
+    <input type="password" name="password" autocomplete="current-password" required></label>
+  <button class="secondary">Turn off</button>
+</form>
+{{else if .OTPSecret}}
+<p>Add keydrop to your authenticator app, then enter the code it shows. Nothing changes until you do.</p>
+<form method="post" action="/settings/totp/on" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{template "authenticator" .}}
+  <label>6-digit code from the app
+    <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+  <button>Turn on</button>
+</form>
+{{else}}
+<p><span class="badge">off</span> Logging in needs only your password. This page can show every stored key, so an authenticator code is worth having: someone who learns your password still can't get in.</p>
+<form method="post" action="/settings/totp/start" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button>Set up an authenticator</button>
+</form>
+{{end}}
+{{end}}

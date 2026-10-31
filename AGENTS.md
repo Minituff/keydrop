@@ -10,10 +10,12 @@ isn't worth it.
 
 ## Security invariants — don't break these
 
-- **Values are write-only.** The web UI never displays a stored value,
-  not even partly or masked. The only way a value leaves the server is
-  `POST /api/v1/secrets/{ns}/{name}/reveal` with an agent token, and that is
-  audit-logged.
+- **Values are only shown on purpose, and every view is logged.** In the
+  web UI a value appears only after the admin presses "Show value" (a POST
+  with the CSRF token), never in a list, a URL or a redirect. Agents get
+  values only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a token.
+  Both are audit-logged, and those are the only two ways a value leaves the
+  server.
 - **Never log, print or return a value or token** anywhere else: not in
   logs, errors, audit entries, webhooks, templates or test output. Errors
   name the secret (`ns/name`), never its contents.
@@ -54,6 +56,7 @@ GitHub Actions are the exception; keep them to well-known actions
 | `internal/server` | HTTP server: UI (`ui.go`, `web/`), API (`api.go`), TLS. |
 | `internal/client` | API client used by the CLI (with certificate pinning). |
 | `internal/mask` | Streaming output masker. |
+| `internal/qr` | QR encoder for the authenticator setup (stdlib only). |
 | `internal/audit`, `internal/notify` | Audit log, webhooks. |
 
 ## Build and test
@@ -73,7 +76,7 @@ go run ./cmd/keydrop genkey > master.key
 KEYDROP_MASTER_KEY_FILE=master.key KEYDROP_DATA_DIR=./data go run ./cmd/keydrop server
 ```
 
-The setup link and the certificate pin are printed in the log. `data/`,
+The setup code and the certificate pin are printed in the log. `data/`,
 `master.key` and `*.token` are gitignored; keep it that way.
 
 Every behaviour change needs a test. `internal/server/server_test.go` has a
