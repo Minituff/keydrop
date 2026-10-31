@@ -185,11 +185,11 @@ func TestRollbackKeepsKind(t *testing.T) {
 }
 
 func TestTokenSources(t *testing.T) {
-	src, err := ParseSources("10.1.2.8, 10.1.3.0/24 ::ffff:10.9.9.9\n10.1.2.8 fd00::1 ::ffff:10.4.0.0/112")
+	src, err := ParseSources("10.0.0.8, 10.0.1.0/24 ::ffff:10.9.9.9\n10.0.0.8 fd00::1 ::ffff:10.4.0.0/112")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"10.1.2.8/32", "10.1.3.0/24", "10.9.9.9/32", "fd00::1/128", "10.4.0.0/16"}
+	want := []string{"10.0.0.8/32", "10.0.1.0/24", "10.9.9.9/32", "fd00::1/128", "10.4.0.0/16"}
 	if strings.Join(src, " ") != strings.Join(want, " ") {
 		t.Fatalf("ParseSources = %v", src)
 	}
@@ -203,8 +203,8 @@ func TestTokenSources(t *testing.T) {
 	}
 
 	s, _ := Open(t.TempDir(), key32())
-	tok, _ := s.CreateToken("box", []string{"lab"}, false, []string{"10.1.2.8/32", "10.1.3.0/24"})
-	for ip, ok := range map[string]bool{"10.1.2.8": true, "10.1.3.200": true, "::ffff:10.1.2.8": true, "10.1.2.9": false, "garbage": false, "": false} {
+	tok, _ := s.CreateToken("box", []string{"lab"}, false, []string{"10.0.0.8/32", "10.0.1.0/24"})
+	for ip, ok := range map[string]bool{"10.0.0.8": true, "10.0.1.200": true, "::ffff:10.0.0.8": true, "10.0.0.9": false, "garbage": false, "": false} {
 		_, err := s.LookupToken(tok, ip)
 		if (err == nil) != ok {
 			t.Errorf("from %q: err=%v, want allowed=%v", ip, err, ok)
