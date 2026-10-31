@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: No homelab details
+        env:
+          KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+        run: sh scripts/leak-check.sh
       - uses: actions/setup-go@v7
         with:
           go-version: "1.27"

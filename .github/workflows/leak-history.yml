@@ -1,0 +1,17 @@
+name: leak-history
+# Run by hand before making the repository public: checks every commit,
+# message and author against KEYDROP_LEAK_PATTERNS.
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: No homelab details in history
+        env:
+          KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+        run: sh scripts/leak-check.sh --history

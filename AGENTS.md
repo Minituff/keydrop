@@ -118,3 +118,10 @@ hostnames) must not go into general code or docs. Where it's unavoidable
 (for example a workflow file), mark each such line or block with a
 `PRIVATE:` comment, so `git grep PRIVATE:` lists everything to remove
 before the repo goes public.
+
+CI fails if the tree contains any of the maintainer's own addresses,
+domains or host names (`scripts/leak-check.sh`; the list is the
+`KEYDROP_LEAK_PATTERNS` repository secret, so it isn't in the repo). Use
+generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
+with a GitHub noreply address. Before going public: run the `leak-history`
+workflow, then squash.
