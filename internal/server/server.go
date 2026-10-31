@@ -291,7 +291,7 @@ func (s *Server) noisyEvent(r *http.Request, actor, action, target, detail strin
 			detail = extra
 		}
 	}
-	s.event(r, actor, action, target, detail)
+	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r), Unauthenticated: true})
 }
 
 func (s *Server) clientIP(r *http.Request) string {

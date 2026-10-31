@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,6 +30,7 @@ type harness struct {
 	ts  *httptest.Server
 	web *http.Client
 	st  *store.Store
+	dir string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -43,7 +45,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(ts.Close)
 	jar, _ := cookiejar.New(nil)
 	web := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &harness{t, srv, ts, web, st}
+	return &harness{t, srv, ts, web, st, dir}
 }
 
 func (h *harness) post(path string, form url.Values) *http.Response {
@@ -920,6 +922,13 @@ func TestNoisyEventsThrottled(t *testing.T) {
 	got := h.srv.audit.Recent(1000)
 	if n := len(got) - before; n != 1 {
 		t.Fatalf("50 bad tokens from one address made %d events", n)
+	}
+	// They go to their own file, so they can't rotate authenticated events
+	// out of the main one.
+	main, _ := os.ReadFile(filepath.Join(h.dir, "audit.jsonl"))
+	noise, _ := os.ReadFile(filepath.Join(h.dir, "audit-unauth.jsonl"))
+	if strings.Contains(string(main), "api.badtoken") || !strings.Contains(string(noise), "api.badtoken") {
+		t.Fatalf("bad-token event in the wrong file:\nmain: %s\nunauth: %s", main, noise)
 	}
 	// A minute later the next one is logged, with the count of the rest.
 	h.srv.now = func() time.Time { return time.Now().Add(2 * time.Minute) }

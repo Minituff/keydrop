@@ -4,7 +4,7 @@
 <thead><tr><th>When</th><th>Who</th><th>What</th><th>Secret</th><th>From</th></tr></thead>
 <tbody>
 {{range .Events}}
-<tr><td>{{fmtTime .Time}}</td><td>{{.Actor}}</td><td>{{.Action}}{{if .Detail}} <small>{{.Detail}}</small>{{end}}</td><td>{{.Target}}</td><td>{{.IP}}</td></tr>
+<tr><td>{{fmtTime .Time}}</td><td>{{.Actor}}</td><td>{{.Action}}{{if .Unauthenticated}} <small class="muted">(no credential)</small>{{end}}{{if .Detail}} <small>{{.Detail}}</small>{{end}}</td><td>{{.Target}}</td><td>{{.IP}}</td></tr>
 {{else}}
 <tr><td colspan="5" class="muted">Nothing yet.</td></tr>
 {{end}}

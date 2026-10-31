@@ -73,7 +73,7 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/client` | API client used by the CLI, including certificate pinning. |
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
-| `internal/audit` | JSONL audit log plus an in-memory ring for the UI. Fields capped at 200 bytes, rotated at 10 MiB (one old file kept), and only the last 512 KiB read at start. |
+| `internal/audit` | JSONL audit log plus in-memory rings for the UI. Authenticated and unauthenticated events in separate files, each rotated at 10 MiB (five and one old files kept); fields capped at 200 bytes, and only the last 512 KiB of each read at start. |
 
 ## Design decisions
 
@@ -277,7 +277,13 @@ every read logged, no way to just look). So an entry is either a
   of those left out. So a flood shows up in the log without filling the
   disk. Events that need a token or a session are all logged.
 - Every field is cut at 200 bytes (an agent's `?purpose=` included), and
-  the file rotates at 10 MiB to `audit.jsonl.1`.
+  each file rotates at 10 MiB.
+- The unauthenticated events go to `audit-unauth.jsonl` (one old copy
+  kept) and have their own in-memory list; everything that needs a token
+  or a session goes to `audit.jsonl` (five old copies). Even throttled,
+  noise from the network used to share one file with one old copy, so it
+  could rotate `secret.read` events off the disk within a day or two.
+  Now it can only rotate itself. The UI merges the two lists by time.
 
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated

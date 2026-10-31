@@ -2,6 +2,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,5 +47,87 @@ func TestOpenReadsOnlyTheTail(t *testing.T) {
 	got := l.Recent(1000)
 	if len(got) != 500 || got[0].Action != "login" {
 		t.Fatalf("recent: %d", len(got))
+	}
+}
+
+// A flood of unauthenticated events can't rotate authenticated ones off
+// disk or out of the UI's list: they have their own file and list.
+func TestNoiseCantEvictAuthenticated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	l, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.MaxBytes = 4096
+	l.Add(Event{Actor: "token:box", Action: "secret.read", Target: "lab/FAKE"})
+	for i := 0; i < 5000; i++ {
+		l.Add(Event{Actor: "unknown", Action: "api.badtoken", IP: "10.0.0.9", Unauthenticated: true})
+	}
+	l.Add(Event{Actor: "admin", Action: "login"})
+	main, _ := os.ReadFile(path)
+	if !strings.Contains(string(main), "secret.read") || strings.Contains(string(main), "badtoken") {
+		t.Fatalf("main log: %s", main)
+	}
+	if _, err := os.Stat(path + ".1"); err == nil {
+		t.Fatal("noise rotated the main log")
+	}
+	noise, _ := os.ReadFile(NoisePath(path))
+	if !strings.Contains(string(noise), "badtoken") {
+		t.Fatal("unauthenticated events not in their own file")
+	}
+	if _, err := os.Stat(NoisePath(path) + ".2"); err == nil {
+		t.Fatal("unauthenticated log kept more than one old copy")
+	}
+	got := l.Recent(1000)
+	if got[0].Action != "login" || got[1].Action != "api.badtoken" || got[len(got)-1].Action != "secret.read" {
+		t.Fatalf("recent: first %s, %s, last %s (%d)", got[0].Action, got[1].Action, got[len(got)-1].Action, len(got))
+	}
+	l.Close()
+	// After a restart both lists come back, each marked as it was.
+	l2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	got = l2.Recent(1000)
+	var reads, unauth int
+	for _, e := range got {
+		if e.Action == "secret.read" {
+			reads++
+		}
+		if e.Unauthenticated {
+			unauth++
+		}
+	}
+	if reads != 1 || unauth == 0 || got[0].Action != "login" {
+		t.Fatalf("after restart: %d reads, %d unauthenticated, newest %s", reads, unauth, got[0].Action)
+	}
+}
+
+// The main log keeps five rotated copies.
+func TestMainLogGenerations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	l, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.MaxBytes = 1024
+	for i := 0; i < 400; i++ {
+		l.Add(Event{Actor: "admin", Action: "secret.reveal", Target: fmt.Sprintf("lab/S%03d", i)})
+	}
+	l.Close()
+	for i := 1; i <= MainGenerations; i++ {
+		if _, err := os.Stat(fmt.Sprintf("%s.%d", path, i)); err != nil {
+			t.Fatalf("generation %d: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(fmt.Sprintf("%s.%d", path, MainGenerations+1)); err == nil {
+		t.Fatal("kept too many generations")
+	}
+	newest, _ := os.ReadFile(path)
+	oldest, _ := os.ReadFile(fmt.Sprintf("%s.%d", path, MainGenerations))
+	if !strings.Contains(string(newest), "S399") || strings.Contains(string(oldest), "S399") {
+		t.Fatal("generations out of order")
 	}
 }
