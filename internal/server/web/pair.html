@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>Approve an agent</h1>
+<p>A machine asked for a token. Approve it only if you just asked an agent to pair, and the code matches the one it showed you.</p>
+<div class="card">
+  <p>Code <code class="value">{{.Code}}</code></p>
+  <p>From <code>{{.P.IP}}</code><br>
+  <small class="muted">The machine says it's <code>{{.P.Host}}</code>, user <code>{{.P.User}}</code>. That part is unchecked; the address is what keydrop saw.</small></p>
+  <small>Asked {{fmtTime .P.Created}}. Requests last 10 minutes.</small>
+</div>
+
+<form method="post" action="/pair/{{.P.ID}}/approve" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Name
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" value="{{.Form.Get "name"}}" placeholder="homelab-agent" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  {{if .Exists}}<label class="check"><input type="checkbox" name="replace" value="yes"{{if eq (.Form.Get "replace") "yes"}} checked{{end}}> Replace it: revoke the existing agent with this name</label>{{end}}
+  <label>Namespaces <small>(comma-separated)</small>
+    <input name="namespaces" required list="namespaces" value="{{.Form.Get "namespaces"}}" placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <datalist id="namespaces">{{range .Namespaces}}<option value="{{.}}">{{end}}</datalist>
+  <label class="check"><input type="checkbox" name="write" value="yes"{{if eq (.Form.Get "write") "yes"}} checked{{end}}> Can create and replace secrets in these namespaces</label>
+  <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
+    <input name="sources" value="{{.Form.Get "sources"}}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <button>Approve</button>
+</form>
+
+<form method="post" action="/pair/{{.P.ID}}/deny" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="danger small">Deny</button>
+</form>
+{{end}}

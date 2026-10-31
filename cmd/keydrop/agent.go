@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -730,23 +732,119 @@ func cmdLogin(args []string) error {
 	if err != nil {
 		return err
 	}
-	dir := client.ConfigDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir, err := saveLogin(*u, tok, *pin)
+	if err != nil {
 		return err
 	}
-	files := map[string]string{"url": *u, "token": tok}
-	if *pin != "" {
-		files["pin"] = *pin
+	fmt.Printf("Logged in as %s (namespaces: %s). Saved to %s\n", w.Name, strings.Join(w.Namespaces, ", "), dir)
+	return nil
+}
+
+// saveLogin writes the url, token and pin files (mode 600).
+func saveLogin(u, tok, pin string) (string, error) {
+	dir := client.ConfigDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	files := map[string]string{"url": u, "token": tok}
+	if pin != "" {
+		files["pin"] = pin
 	} else {
 		os.Remove(filepath.Join(dir, "pin"))
 	}
 	for name, v := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(v+"\n"), 0o600); err != nil {
-			return err
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
+			return "", err
+		}
+		if err := os.Chmod(path, 0o600); err != nil { // WriteFile keeps an existing file's mode
+			return "", err
 		}
 	}
-	fmt.Printf("Logged in as %s (namespaces: %s). Saved to %s\n", w.Name, strings.Join(w.Namespaces, ", "), dir)
-	return nil
+	return dir, nil
+}
+
+// pendingPair is a pairing request in progress, kept so that running
+// `keydrop pair` again carries on waiting instead of asking again.
+type pendingPair struct {
+	URL, Pin, Poll, Code, Link string
+	Expires                    time.Time
+}
+
+func cmdPair(args []string) error {
+	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	u := fs.String("url", "", "server URL, e.g. https://10.0.0.5:8443")
+	pin := fs.String("pin", "", "certificate pin for a self-signed server (sha256:…, printed in the server log)")
+	wait := fs.Duration("timeout", 10*time.Minute, "how long to wait for approval")
+	fresh := fs.Bool("new", false, "start a new request even if one is waiting")
+	parse(fs, args)
+	dir := client.ConfigDir()
+	statePath := filepath.Join(dir, "pairing")
+
+	var p pendingPair
+	if b, err := os.ReadFile(statePath); err == nil && !*fresh {
+		if json.Unmarshal(b, &p) != nil || time.Now().After(p.Expires) || (*u != "" && *u != p.URL) {
+			p = pendingPair{}
+		}
+	}
+	if p.Poll == "" && *u == "" {
+		return errors.New("usage: keydrop pair --url URL [--pin sha256:…]")
+	}
+	if p.Poll == "" {
+		c := client.New(*u, "", *pin)
+		host, _ := os.Hostname()
+		name := ""
+		if me, err := user.Current(); err == nil {
+			name = me.Username
+		}
+		res, err := c.Pair(host, name)
+		if err != nil {
+			return err
+		}
+		link := res.Link
+		if link == "" {
+			link = strings.TrimRight(*u, "/") + res.Path
+		}
+		p = pendingPair{URL: *u, Pin: *pin, Poll: res.Poll, Code: res.Code, Link: link,
+			Expires: time.Now().Add(time.Duration(res.ExpiresIn) * time.Second)}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		b, _ := json.Marshal(p)
+		if err := os.WriteFile(statePath, b, 0o600); err != nil {
+			return err
+		}
+		fmt.Printf("Ask the keydrop admin to approve this machine. Send them this link:\n\n  %s\n\nThe page will show the code %s. The request expires at %s.\n",
+			p.Link, p.Code, p.Expires.Local().Format("15:04"))
+	} else {
+		fmt.Printf("Still waiting for approval of code %s: %s\n", p.Code, p.Link)
+	}
+	fmt.Println("Waiting… (if this is interrupted, run keydrop pair again to keep waiting)")
+
+	c := client.New(p.URL, "", p.Pin)
+	deadline := time.Now().Add(*wait)
+	for {
+		res, err := c.PairPoll(p.Poll)
+		if client.IsNotFound(err) {
+			os.Remove(statePath)
+			return errors.New("the request expired or was denied; run keydrop pair --url URL to ask again")
+		}
+		if err != nil {
+			return err
+		}
+		if res.State == "approved" {
+			os.Remove(statePath)
+			if _, err := saveLogin(p.URL, res.Token, p.Pin); err != nil {
+				return fmt.Errorf("approved, but saving the token failed (ask the admin to revoke %s and pair again): %w", res.Name, err)
+			}
+			fmt.Printf("Approved as %s (namespaces: %s). Saved to %s\n", res.Name, strings.Join(res.Namespaces, ", "), dir)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("not approved yet; run keydrop pair again to keep waiting")
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // printable quotes a variable's value in a list if it holds control

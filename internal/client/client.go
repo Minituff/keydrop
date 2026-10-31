@@ -34,6 +34,9 @@ type Client struct {
 	URL   string
 	Token string
 	HTTP  *http.Client
+	// Label says which agent is acting when several share one token
+	// (KEYDROP_AGENT, e.g. "claude"). It only shows in the audit log.
+	Label string
 
 	who *Whoami
 }
@@ -63,7 +66,7 @@ func FromEnv() (*Client, error) {
 		u = readConfigFile("url")
 	}
 	if u == "" {
-		return nil, errors.New("no server configured: run `keydrop login --url https://…` or set KEYDROP_URL")
+		return nil, errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
 	}
 	tok := os.Getenv("KEYDROP_TOKEN")
 	if tok == "" {
@@ -73,7 +76,7 @@ func FromEnv() (*Client, error) {
 		}
 		fi, err := os.Stat(path)
 		if err != nil {
-			return nil, fmt.Errorf("no token: run `keydrop login` or set KEYDROP_TOKEN_FILE (%v)", err)
+			return nil, fmt.Errorf("no token: run `keydrop pair` or set KEYDROP_TOKEN_FILE (%v)", err)
 		}
 		if fi.Mode().Perm()&0o077 != 0 {
 			return nil, fmt.Errorf("%s is readable by other users; run chmod 600 %s", path, path)
@@ -88,7 +91,9 @@ func FromEnv() (*Client, error) {
 	if pin == "" {
 		pin = readConfigFile("pin")
 	}
-	return New(u, tok, pin), nil
+	c := New(u, tok, pin)
+	c.Label = os.Getenv("KEYDROP_AGENT")
+	return c, nil
 }
 
 // New builds a client. If pin is set ("sha256:<hex>"), the server's
@@ -137,7 +142,12 @@ func (c *Client) do(method, path string, body, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	if c.Label != "" {
+		req.Header.Set("X-Keydrop-Agent", c.Label)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -277,4 +287,36 @@ func (c *Client) Request(ref, description, usage string) (string, error) {
 func (c *Client) Expiring(days int) ([]Secret, error) {
 	var out []Secret
 	return out, c.do("GET", fmt.Sprintf("/api/v1/expiring?days=%d", days), nil, &out)
+}
+
+// PairStart is the answer to a pairing request.
+type PairStart struct {
+	Code      string `json:"code"`
+	Path      string `json:"path"`
+	Link      string `json:"link"` // set when the server knows its public URL
+	Poll      string `json:"poll"`
+	ExpiresIn int    `json:"expires_in"`
+}
+
+// Pair asks the server for a token. It needs no token; the admin approves.
+func (c *Client) Pair(host, user string) (*PairStart, error) {
+	var p PairStart
+	err := c.do("POST", "/api/v1/pair", map[string]string{"host": host, "user": user}, &p)
+	return &p, err
+}
+
+// PairResult is the state of a pairing request.
+type PairResult struct {
+	State      string   `json:"state"` // pending or approved
+	Token      string   `json:"token"`
+	Name       string   `json:"name"`
+	Namespaces []string `json:"namespaces"`
+}
+
+// PairPoll checks a pairing request; once approved it returns the token,
+// exactly once. A 404 means it expired, was denied or was collected.
+func (c *Client) PairPoll(poll string) (*PairResult, error) {
+	var r PairResult
+	err := c.do("POST", "/api/v1/pair/poll", map[string]string{"poll": poll}, &r)
+	return &r, err
 }

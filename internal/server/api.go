@@ -67,17 +67,33 @@ func (s *Server) agent(h agentHandler) http.HandlerFunc {
 			apiError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		t, ok := s.store.LookupToken(strings.TrimSpace(raw))
-		if !ok {
+		ip := s.clientIP(r)
+		t, err := s.store.LookupToken(strings.TrimSpace(raw), ip)
+		switch {
+		case errors.Is(err, store.ErrSource):
+			s.event(r, actor(t), "token.denied", "", "not an allowed source")
+			apiError(w, http.StatusForbidden, "token "+t.Name+" isn't allowed from "+ip+"; if that's expected, the admin can add it under Agents")
+			return
+		case err != nil:
 			s.event(r, "unknown", "api.badtoken", "", "")
 			apiError(w, http.StatusUnauthorized, "invalid token")
 			return
+		}
+		// Agents sharing a token (Claude and Codex on one box) can say which
+		// one is acting. It's a label for the log, not an identity.
+		if l := strings.ToLower(r.Header.Get("X-Keydrop-Agent")); store.ValidName(l) {
+			t.Label = l
 		}
 		h(w, r, t)
 	}
 }
 
-func actor(t store.Token) string { return "token:" + t.Name }
+func actor(t store.Token) string {
+	if t.Label != "" {
+		return "token:" + t.Name + " (" + t.Label + ")"
+	}
+	return "token:" + t.Name
+}
 
 // lookup returns the secret only if the token may see its namespace. A
 // namespace the token isn't granted looks exactly like a missing secret.

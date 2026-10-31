@@ -12,6 +12,9 @@ Paste something like this into `CLAUDE.md` / `AGENTS.md`:
 ## Secrets (keydrop)
 API keys live in keydrop, not in files or chat. You can use them but you
 never need to see them.
+- If keydrop says there's no token, run `keydrop pair --url URL` in the
+  background, send the user the link and code it prints, and wait for it
+  to finish. Never ask the user to paste a token.
 - Never ask the user to paste a secret into chat. If you need one, run
   `keydrop request NAME --desc "what it's for, which scopes, how long it should
   last"`, send the user the link it prints, then `keydrop wait NAME`.
@@ -29,6 +32,20 @@ never need to see them.
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.
 ```
+
+## Several agents on one machine
+
+Agents running as the same user share that machine's token: pair once.
+To tell them apart in the log, give each its own `KEYDROP_AGENT`, for
+example in each agent's service environment:
+
+```sh
+KEYDROP_AGENT=claude   # Claude Code
+KEYDROP_AGENT=codex    # Codex
+```
+
+The log then shows `token:homelab-box (claude)`. It's a label for reading
+the log, not a permission.
 
 ## Claude Code hooks
 

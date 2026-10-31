@@ -12,7 +12,7 @@ var version = "dev"
 
 const usage = `keydrop — a secret drop for homelab agents.
 
-Agent commands (use a token from the admin UI; see "keydrop login"):
+Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
                                          secrets masked (-e NAME sets $NAME; VAR=REF renames)
   secrets [--new] [--pending]           list secrets this token can see (no values)
@@ -29,7 +29,10 @@ Agent commands (use a token from the admin UI; see "keydrop login"):
   put REF [--var] [--desc …]            store a value read from stdin (write tokens;
                                          --var: a variable, not a secret)
   import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (write tokens)
-  login --url URL [--pin sha256:…]      save the server URL and a token
+  pair --url URL [--pin sha256:…]       ask the admin for a token; prints a link to
+                                         approve, waits, then saves it (run again
+                                         to keep waiting)
+  login --url URL [--pin sha256:…]      save the server URL and a pasted token
   whoami                                show the token's name and namespaces
 
 Server commands:
@@ -85,6 +88,8 @@ func main() {
 		err = cmdImport(args)
 	case "login":
 		err = cmdLogin(args)
+	case "pair":
+		err = cmdPair(args)
 	case "whoami":
 		err = cmdWhoami(args)
 	case "version", "--version", "-v":

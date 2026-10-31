@@ -144,17 +144,23 @@ func cmdServer(args []string) error {
 
 	listen := env("KEYDROP_LISTEN", ":8443")
 	publicURL := env("KEYDROP_PUBLIC_URL", "")
-	if publicURL == "" {
+	guessed := publicURL == ""
+	if guessed {
 		scheme := "https"
 		if tlsCert == nil {
 			scheme = "http"
 		}
-		publicURL = scheme + "://localhost" + listen
+		host, port, err := net.SplitHostPort(listen)
+		if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+			host = "localhost"
+		}
+		publicURL = scheme + "://" + net.JoinHostPort(host, port)
 		log.Printf("KEYDROP_PUBLIC_URL isn't set; links will use %s", publicURL)
 	}
 
 	srv := server.New(server.Config{
 		PublicURL:      publicURL,
+		PublicURLGuess: guessed,
 		CookieSecure:   envBool("KEYDROP_COOKIE_SECURE", true),
 		TrustedProxies: proxies,
 		ResetAdmin:     envBool("KEYDROP_RESET_ADMIN", false),

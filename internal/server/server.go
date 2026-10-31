@@ -24,6 +24,9 @@ type Config struct {
 	// PublicURL is the base URL people use in a browser, for links in
 	// request replies and the log, e.g. https://secrets.example.com.
 	PublicURL string
+	// PublicURLGuess means PublicURL wasn't configured. Pairing links then
+	// use the URL the agent connected to instead.
+	PublicURLGuess bool
 	// CookieSecure marks the session cookie Secure. Leave it on unless the UI
 	// is reached over plain HTTP.
 	CookieSecure bool
@@ -64,6 +67,9 @@ type Server struct {
 	setupMu   sync.Mutex
 	setupCode string // empty when setup isn't open
 	setupSeed []byte
+
+	pairMu   sync.Mutex
+	pairings map[string]*pairing // by ID
 }
 
 // New builds a Server. If no admin exists yet (or ResetAdmin is set) it
@@ -73,6 +79,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		cfg: cfg, store: st, audit: al,
 		limiter: auth.NewLimiter(), setupLimiter: auth.NewLimiter(),
 		mux: http.NewServeMux(), now: time.Now, sessions: map[string]*session{},
+		pairings: map[string]*pairing{},
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()
@@ -140,6 +147,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /tokens", s.admin(s.handleTokens))
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
+	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
+	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
+	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
+	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))
 	m.HandleFunc("POST /secret/{ns}/{name}/reveal", s.admin(s.handleReveal))
 	m.HandleFunc("GET /audit", s.admin(s.handleAudit))
 	m.HandleFunc("GET /settings", s.admin(s.handleSettings))
@@ -148,6 +159,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/totp/off", s.admin(s.handleTOTPOff))
 	m.HandleFunc("POST /settings/password", s.admin(s.handlePassword))
 
+	m.HandleFunc("POST /api/v1/pair", s.apiPairStart) // no token yet: the admin approves
+	m.HandleFunc("POST /api/v1/pair/poll", s.apiPairPoll)
 	m.HandleFunc("GET /api/v1/whoami", s.agent(s.apiWhoami))
 	m.HandleFunc("GET /api/v1/secrets", s.agent(s.apiList))
 	m.HandleFunc("GET /api/v1/secrets/{ns}/{name}", s.agent(s.apiGet))

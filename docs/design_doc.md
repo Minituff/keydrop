@@ -69,7 +69,7 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `cmd/keydrop` | Entry point: `server`, `genkey`, `healthcheck`, and the agent commands (`agent.go`). |
 | `internal/store` | State file, encryption, secrets, namespaces, tokens. |
 | `internal/auth` | Password hashing, TOTP, the failed-login limiter. |
-| `internal/server` | HTTP: web UI (`ui.go`, `web/`), agent API (`api.go`), TLS (`tls.go`). |
+| `internal/server` | HTTP: web UI (`ui.go`, `web/`), agent API (`api.go`), pairing (`pair.go`), TLS (`tls.go`). |
 | `internal/client` | API client used by the CLI, including certificate pinning. |
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
@@ -118,6 +118,52 @@ unless writing is allowed.
   Namespaces and token names stay lower-case, so a ref like
   `homelab/GITHUB_PAT` reads unambiguously. The UI upper-cases what's typed,
   since a phone keyboard defaults to lower case.
+
+### Pairing
+Pasting a token means it passes through a clipboard, a chat or a terminal,
+which are the places keydrop exists to keep secrets out of. So a machine
+**pairs** instead, once:
+
+1. The agent runs `keydrop pair --url …`. The server records a request
+   (the source address it saw, plus a host and user name the machine
+   claims) and answers with a short code, an approval link and a private
+   poll secret. The agent relays the link and code to the human in chat;
+   neither is secret, since only a logged-in admin can act on the link.
+2. The admin opens the link, checks the code matches what the agent
+   showed, and sets the name, namespaces, write access and allowed
+   sources (pre-filled with the request's address).
+3. The CLI, polling with its poll secret, gets the token once and writes
+   it to a 0600 file.
+
+- **Unauthenticated, so bounded.** Anyone who can reach keydrop can ask to
+  pair, so requests are capped (3 waiting per address, 10 overall) and
+  expire after 10 minutes. They're held in memory only: a restart drops
+  them, and the agent asks again.
+- **The token goes back only to the address that asked**, and only once.
+  The poll secret is 256-bit and stored hashed.
+- **No orphan tokens.** If an approved token isn't collected within 10
+  minutes, it's revoked.
+- The claimed host and user are shown as unchecked and cleaned to a safe
+  character set; the address is what the admin should trust.
+- Re-pairing under an existing name needs "Replace it", which revokes the
+  old token, so a machine rebuild doesn't leave two working tokens.
+- `keydrop login` (paste a token made by hand) stays for scripts and
+  machines that can't wait for an approval.
+
+### Allowed sources
+A token can be limited to addresses and CIDR ranges. Use from anywhere
+else gets 403 and a `token.denied` log entry, and isn't counted as "last
+used". The point is that a token copied off its machine (into a log, a
+backup, another box) is useless elsewhere. Empty means anywhere, for
+tokens made by hand. The address is the one `KEYDROP_TRUSTED_PROXIES`
+resolves, so behind a proxy keydrop has to be told which proxy to trust.
+
+### Agent label
+Agents on one machine share its token (they run as the same user, so
+separate tokens wouldn't separate anything). `KEYDROP_AGENT=claude` sends
+a label that the log shows next to the token's name. It's only a label:
+anything holding the token can claim any label, so it's for reading the
+log, not for access control.
 
 ### Using a secret without seeing it
 - `keydrop run -e NAME -- CMD` puts the value only in the child's
@@ -254,7 +300,8 @@ v0.1 (MVP), not yet released:
 - **Done:** server, web UI, admin password + optional TOTP, namespaced agent
   tokens, `run` with masking, variables, `secrets`/`vars`/`info`/`inbox`/`ack`,
   `request`/`wait`, `get --to-file`, `put`, `import`, `expiring`,
-  change password, audit log, TLS with pinning, Dockerfile, CI and release
+  change password, pairing, allowed sources, agent labels, audit log,
+  TLS with pinning, Dockerfile, CI and release
   workflows, unit tests.
 - **Tested so far:** unit tests, plus an end-to-end run of the server and
   CLI on Linux. That run covered namespace isolation, a wrong pin being

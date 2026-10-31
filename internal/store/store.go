@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +30,8 @@ var (
 	ErrExists      = errors.New("already exists")
 	ErrNoValue     = errors.New("secret has no value yet")
 	ErrNoPrevious  = errors.New("no previous value to roll back to")
+	ErrSource      = errors.New("token not allowed from this address")
+	ErrBadSource   = errors.New("allowed sources must be IP addresses or CIDR ranges, like 10.0.0.5 or 10.0.0.0/24")
 	ErrNotVariable = errors.New("not a variable")
 	ErrBadName     = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
 	ErrBadSecret   = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
@@ -104,12 +108,60 @@ type Meta struct {
 // Token is an agent's credential. Only the SHA-256 of the token is stored;
 // tokens are 256-bit random, so a slow hash adds nothing.
 type Token struct {
-	Name       string     `json:"name"`
-	Hash       string     `json:"hash"`
-	Namespaces []string   `json:"namespaces"`
-	Write      bool       `json:"write,omitempty"` // may create and replace secrets in its namespaces
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	Name       string   `json:"name"`
+	Hash       string   `json:"hash"`
+	Namespaces []string `json:"namespaces"`
+	Write      bool     `json:"write,omitempty"` // may create and replace secrets in its namespaces
+	// Sources are the CIDR ranges the token may be used from. Empty means
+	// any address. A leaked token is then useless from another machine.
+	Sources      []string   `json:"sources,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+	LastUsedFrom string     `json:"last_used_from,omitempty"`
+	// Label is the optional agent label a request carried (Claude, Codex
+	// sharing one token). Never stored; it only goes into the audit log.
+	Label string `json:"-"`
+}
+
+// AllowsFrom reports whether the token may be used from address ip.
+func (t *Token) AllowsFrom(ip string) bool {
+	if len(t.Sources) == 0 {
+		return true
+	}
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap().WithZone("")
+	for _, src := range t.Sources {
+		if p, err := netip.ParsePrefix(src); err == nil && p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseSources reads a comma- or space-separated list of addresses and CIDR
+// ranges into canonical prefixes (a bare address becomes /32 or /128).
+func ParseSources(list string) ([]string, error) {
+	var out []string
+	for _, f := range strings.FieldsFunc(list, func(c rune) bool { return c == ',' || c == ' ' || c == '\n' || c == '\r' || c == '\t' }) {
+		var p netip.Prefix
+		if a, err := netip.ParseAddr(f); err == nil {
+			a = a.Unmap()
+			if a.Zone() != "" {
+				return nil, ErrBadSource
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		} else if p, err = netip.ParsePrefix(f); err != nil {
+			return nil, ErrBadSource
+		}
+		p = p.Masked()
+		if !slices.Contains(out, p.String()) {
+			out = append(out, p.String())
+		}
+	}
+	return out, nil
 }
 
 // Allows reports whether the token is granted namespace ns.
@@ -591,9 +643,16 @@ func hashToken(tok string) string {
 
 // CreateToken makes a new agent token and returns its plaintext. The
 // plaintext is not stored and can't be shown again.
-func (s *Store) CreateToken(name string, namespaces []string, write bool) (string, error) {
+// sources limits where it can be used from (see ParseSources); nil is
+// anywhere.
+func (s *Store) CreateToken(name string, namespaces []string, write bool, sources []string) (string, error) {
 	if !ValidName(name) || len(namespaces) == 0 {
 		return "", ErrBadName
+	}
+	for _, src := range sources {
+		if _, err := netip.ParsePrefix(src); err != nil {
+			return "", ErrBadSource
+		}
 	}
 	for _, n := range namespaces {
 		if !ValidName(n) {
@@ -612,7 +671,7 @@ func (s *Store) CreateToken(name string, namespaces []string, write bool) (strin
 	plain := TokenPrefix + base64.RawURLEncoding.EncodeToString(b)
 	s.st.Tokens[name] = &Token{
 		Name: name, Hash: hashToken(plain), Namespaces: namespaces,
-		Write: write, CreatedAt: s.now().UTC(),
+		Write: write, Sources: sources, CreatedAt: s.now().UTC(),
 	}
 	return plain, s.save()
 }
@@ -628,26 +687,49 @@ func (s *Store) RevokeToken(name string) error {
 	return s.save()
 }
 
-// LookupToken finds the token matching plain and records its use. Last-used
-// time is persisted at most once a minute to avoid a disk write per request.
-func (s *Store) LookupToken(plain string) (Token, bool) {
+// LookupToken finds the token matching plain, checks it may be used from
+// ip, and records its use. Use from a disallowed address returns the token
+// (so it can be named in the log) with ErrSource, and isn't recorded as
+// use. Last-used is persisted at most once a minute, or when the address
+// changes, to avoid a disk write per request.
+func (s *Store) LookupToken(plain, ip string) (Token, error) {
 	if !strings.HasPrefix(plain, TokenPrefix) {
-		return Token{}, false
+		return Token{}, ErrNotFound
 	}
 	h := hashToken(plain)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.st.Tokens {
 		if t.Hash == h {
+			if !t.AllowsFrom(ip) {
+				return *t, ErrSource
+			}
 			now := s.now().UTC()
-			if t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) > time.Minute {
-				t.LastUsedAt = &now
+			if t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) > time.Minute || t.LastUsedFrom != ip {
+				t.LastUsedAt, t.LastUsedFrom = &now, ip
 				_ = s.save()
 			}
-			return *t, true
+			return *t, nil
 		}
 	}
-	return Token{}, false
+	return Token{}, ErrNotFound
+}
+
+// SetTokenSources replaces where a token may be used from (nil: anywhere).
+func (s *Store) SetTokenSources(name string, sources []string) error {
+	for _, src := range sources {
+		if _, err := netip.ParsePrefix(src); err != nil {
+			return ErrBadSource
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.st.Tokens[name]
+	if !ok {
+		return ErrNotFound
+	}
+	t.Sources = sources
+	return s.save()
 }
 
 // ListTokens returns all tokens sorted by name.

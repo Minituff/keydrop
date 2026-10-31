@@ -84,7 +84,7 @@ func TestRollbackAndRequest(t *testing.T) {
 func TestTokens(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, key32())
-	tok, err := s.CreateToken("claude", []string{"lab"}, false)
+	tok, err := s.CreateToken("claude", []string{"lab"}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,15 +92,15 @@ func TestTokens(t *testing.T) {
 	if bytes.Contains(raw, []byte(tok)) {
 		t.Fatal("token stored in plaintext")
 	}
-	got, ok := s.LookupToken(tok)
-	if !ok || got.Name != "claude" || !got.Allows("lab") || got.Allows("wedding") {
-		t.Fatalf("lookup: %+v %v", got, ok)
+	got, err := s.LookupToken(tok, "10.0.0.5")
+	if err != nil || got.Name != "claude" || !got.Allows("lab") || got.Allows("wedding") {
+		t.Fatalf("lookup: %+v %v", got, err)
 	}
-	if _, ok := s.LookupToken(tok + "x"); ok {
+	if _, err := s.LookupToken(tok+"x", "10.0.0.5"); err != ErrNotFound {
 		t.Fatal("wrong token accepted")
 	}
 	s.RevokeToken("claude")
-	if _, ok := s.LookupToken(tok); ok {
+	if _, err := s.LookupToken(tok, "10.0.0.5"); err != ErrNotFound {
 		t.Fatal("revoked token accepted")
 	}
 	var st state
@@ -180,5 +180,46 @@ func TestRollbackKeepsKind(t *testing.T) {
 	s.Rollback("lab", "GITHUB_PAT")
 	if sec, _ := s.GetSecret("lab", "GITHUB_PAT"); !sec.Variable {
 		t.Fatal("second rollback lost the variable kind")
+	}
+}
+
+func TestTokenSources(t *testing.T) {
+	src, err := ParseSources("10.1.2.8, 10.1.3.0/24 ::ffff:10.9.9.9\n10.1.2.8 fd00::1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.1.2.8/32", "10.1.3.0/24", "10.9.9.9/32", "fd00::1/128"}
+	if strings.Join(src, " ") != strings.Join(want, " ") {
+		t.Fatalf("ParseSources = %v", src)
+	}
+	for _, bad := range []string{"10.1.2", "host.lan", "10.0.0.0/33", "fe80::1%eth0"} {
+		if _, err := ParseSources(bad); err != ErrBadSource {
+			t.Errorf("ParseSources(%q) accepted", bad)
+		}
+	}
+	if got, _ := ParseSources(" , "); len(got) != 0 {
+		t.Fatalf("empty list: %v", got)
+	}
+
+	s, _ := Open(t.TempDir(), key32())
+	tok, _ := s.CreateToken("box", []string{"lab"}, false, []string{"10.1.2.8/32", "10.1.3.0/24"})
+	for ip, ok := range map[string]bool{"10.1.2.8": true, "10.1.3.200": true, "::ffff:10.1.2.8": true, "10.1.2.9": false, "garbage": false, "": false} {
+		_, err := s.LookupToken(tok, ip)
+		if (err == nil) != ok {
+			t.Errorf("from %q: err=%v, want allowed=%v", ip, err, ok)
+		}
+	}
+	if got, err := s.LookupToken(tok, "10.9.9.9"); err != ErrSource || got.Name != "box" {
+		t.Fatalf("denied lookup should name the token: %+v %v", got, err)
+	}
+	if tk := s.ListTokens()[0]; tk.LastUsedFrom == "10.9.9.9" {
+		t.Fatal("denied use recorded as last use")
+	}
+	s.SetTokenSources("box", nil)
+	if _, err := s.LookupToken(tok, "192.168.1.1"); err != nil {
+		t.Fatal("no sources should mean anywhere")
+	}
+	if err := s.SetTokenSources("box", []string{"nope"}); err != ErrBadSource {
+		t.Fatal("bad source stored")
 	}
 }

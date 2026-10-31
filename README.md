@@ -48,7 +48,11 @@ replacement for Vault or Infisical in a team.
 - **Namespaces and agent tokens.** Secrets live in namespaces (`homelab/…`,
   `wedding/…`). Each agent gets its own token, granted one or more
   namespaces. An agent can't see other namespaces at all, not even the secret
-  names. Tokens are read-only unless you allow writing.
+  names. Tokens are read-only unless you allow writing, and can be limited
+  to the addresses they're used from.
+- **Pairing instead of pasting tokens.** `keydrop pair` on the agent's
+  machine prints a link; you open it, check the code, choose what the agent
+  may see, and approve. The agent collects its token directly.
 - **Agent CLI.** `keydrop run -e NAME` puts a secret into one command's
   environment under its own name and masks it in the command's output.
   Secret names are env-var style (`CLOUDFLARE_API_TOKEN`), so nothing needs
@@ -74,7 +78,8 @@ replacement for Vault or Infisical in a team.
 | | |
 |---|---|
 | At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The master key comes from a file (Docker secret) and is never stored in the data directory. |
-| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. |
+| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses. |
+| Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
 | Login limits | 5 failures per client and 20 overall per 15 minutes. |
 | Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
@@ -115,15 +120,20 @@ Secrets and tokens are kept. To change the password while logged in, use
 
 ## Quick start (agent)
 
-1. In the web page, under **Agents**, create a token, for example `homelab-claude`
-   with namespace `homelab`.
-2. On the agent's machine, as the agent's user:
+1. On the agent's machine, as the agent's user (or let the agent run it):
    ```sh
-   keydrop login --url https://192.168.1.50:8443 --pin sha256:…
-   # paste the token (input is hidden)
+   keydrop pair --url https://192.168.1.50:8443 --pin sha256:…
    ```
-   This writes `~/.config/keydrop/{url,token,pin}` with mode 600.
-3. Use it:
+   It prints a link and a short code, then waits.
+2. Open the link (logged in to keydrop). The page shows the code and the
+   address the request came from. Check the code matches, then choose the
+   agent's name, its namespaces, whether it can write, and where it's
+   allowed from (pre-filled with that address). Approve.
+3. `keydrop pair` picks up the token within a few seconds and writes
+   `~/.config/keydrop/{url,token,pin}` with mode 600. The token never
+   passes through the chat or the page. If it was interrupted, running
+   `keydrop pair` again carries on waiting.
+4. Use it:
    ```sh
    keydrop inbox                                   # anything new for me?
    keydrop secrets                                 # what keys exist (no values)
@@ -159,6 +169,21 @@ lines above a key become its description, and each key keeps its name
 anything that sat in plaintext for long. `--vars` imports every key as a
 variable instead, for a file of plain settings.
 
+**Allowed sources.** Each token can be limited to addresses or ranges
+(`10.0.0.5`, `10.0.1.0/24`). Use from anywhere else is refused (HTTP 403)
+and logged as `token.denied`, so a token copied off the machine doesn't
+work elsewhere. Pairing fills in the address the request came from; edit
+it under **Agents**. Empty means anywhere. Behind a reverse proxy, set
+`KEYDROP_TRUSTED_PROXIES` so keydrop sees the agent's real address.
+
+**Several agents, one token.** Agents on one machine (Claude Code and
+Codex, say) can share its token. Set `KEYDROP_AGENT=claude` in each one's
+environment and the log shows `token:homelab-box (claude)`. It's a label,
+not an identity: anything with the token can set it.
+
+Without pairing, you can still create a token by hand under **Agents** and
+paste it into `keydrop login --url URL`.
+
 See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
 Codex, with a session-start inbox hook and a guard against `--raw`.
 [docs/design_doc.md](docs/design_doc.md) explains how keydrop is built and
@@ -171,7 +196,7 @@ why.
 | `KEYDROP_MASTER_KEY_FILE` | — | File holding the master key (preferred). Or `KEYDROP_MASTER_KEY` with the value itself. |
 | `KEYDROP_DATA_DIR` | `/data` | State, audit log and the generated certificate. |
 | `KEYDROP_LISTEN` | `:8443` | Listen address. |
-| `KEYDROP_PUBLIC_URL` | — | Base URL used in links (`request`, the setup log line). |
+| `KEYDROP_PUBLIC_URL` | — | Base URL used in links (`request`, `pair`, the setup log line). Unset, `pair` links use the URL the agent connected to. |
 | `KEYDROP_TLS` | `auto` | `auto` (self-signed, kept in the data dir), `files` (`KEYDROP_TLS_CERT` + `KEYDROP_TLS_KEY`), or `off` (only behind a TLS-terminating proxy). |
 | `KEYDROP_TLS_HOSTS` | — | Extra DNS names/IPs for the self-signed certificate. |
 | `KEYDROP_COOKIE_SECURE` | `true` | Set `false` only if the page is reached over plain HTTP. |
@@ -179,7 +204,8 @@ why.
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
-override the files written by `keydrop login`.
+override the files written by `keydrop pair` / `keydrop login`.
+`KEYDROP_AGENT` sets the agent label shown in the log.
 
 ### Behind a reverse proxy
 
@@ -195,8 +221,10 @@ such as Tailscale or WireGuard.
 
 ## API
 
-All endpoints take `Authorization: Bearer kd_…`. A namespace the token
-isn't granted returns 404, exactly like a missing secret.
+All endpoints except pairing take `Authorization: Bearer kd_…`, and an
+optional `X-Keydrop-Agent: label`. A namespace the token isn't granted
+returns 404, exactly like a missing secret. A token used from outside its
+allowed sources gets 403.
 
 | | |
 |---|---|
@@ -208,6 +236,8 @@ isn't granted returns 404, exactly like a missing secret.
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}` |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days |
+| `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address, 10 overall |
+| `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked. 404 once expired, denied or collected |
 | `GET /healthz` | No auth |
 
 ## Building

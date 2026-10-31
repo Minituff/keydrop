@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -176,8 +177,8 @@ func TestLoginLockout(t *testing.T) {
 func TestNamespaceIsolation(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
-	lab, _ := h.st.CreateToken("lab-agent", []string{"lab"}, false)
-	wed, _ := h.st.CreateToken("wedding-agent", []string{"wedding"}, true)
+	lab, _ := h.st.CreateToken("lab-agent", []string{"lab"}, false, nil)
+	wed, _ := h.st.CreateToken("wedding-agent", []string{"wedding"}, true, nil)
 	h.st.PutValue("lab", "CF", []byte("lab-secret-value"), &store.Meta{Description: "lab only"})
 	h.st.PutValue("wedding", "CONVEX", []byte("wedding-secret-value"), nil)
 
@@ -228,7 +229,7 @@ func TestNamespaceIsolation(t *testing.T) {
 func TestRequestFlow(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
-	tok, _ := h.st.CreateToken("claude", []string{"lab"}, false)
+	tok, _ := h.st.CreateToken("claude", []string{"lab"}, false, nil)
 	code, m, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "GH_PAT", "description": "repo read"})
 	if code != http.StatusCreated || m["ref"] != "lab/GH_PAT" {
 		t.Fatalf("request: %d %v", code, m)
@@ -395,7 +396,7 @@ func TestSecretNames(t *testing.T) {
 			t.Errorf("%q: got %d", bad, resp.StatusCode)
 		}
 	}
-	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true)
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true, nil)
 	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "gh-pat"}); code != http.StatusBadRequest {
 		t.Errorf("API request with old-style name: %d", code)
 	}
@@ -424,7 +425,7 @@ func TestVariables(t *testing.T) {
 	}
 
 	// The API lists a variable's value, never a secret's.
-	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true)
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true, nil)
 	_, _, raw := h.api("GET", "/api/v1/secrets", tok, nil)
 	var list []APISecret
 	json.Unmarshal(raw, &list)
@@ -532,5 +533,160 @@ func TestChangePassword(t *testing.T) {
 	}
 	if resp, _ := fresh.PostForm(h.ts.URL+"/login", url.Values{"password": {"a brand new password"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("new password: %d", resp.StatusCode)
+	}
+}
+
+// apiFrom is api() as if from ip, via a trusted proxy header.
+func (h *harness) apiFrom(ip, method, path, token, label string, body any) (int, map[string]any) {
+	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")}
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(method, h.ts.URL+path, bytes.NewReader(b))
+	req.Header.Set("X-Forwarded-For", ip)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if label != "" {
+		req.Header.Set("X-Keydrop-Agent", label)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	return resp.StatusCode, m
+}
+
+func TestPairing(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.st.PutValue("lab", "FAKE_KEY", []byte("fake-pair-value-1"), nil)
+
+	code, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "Homelab-Agent.lan", "user": "agent<script>"})
+	if code != http.StatusCreated {
+		t.Fatalf("pair start: %d %v", code, m)
+	}
+	poll, path, shown := m["poll"].(string), m["path"].(string), m["code"].(string)
+	if _, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); m["state"] != "pending" {
+		t.Fatalf("poll before approval: %v", m)
+	}
+	// The token only goes back to the address that asked.
+	if code, _ := h.apiFrom("10.0.0.6", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); code != http.StatusNotFound {
+		t.Fatalf("poll from another address: %d", code)
+	}
+
+	if _, body := h.get("/tokens"); !strings.Contains(body, shown) || !strings.Contains(body, path) {
+		t.Fatal("pending pairing not listed on the Agents page")
+	}
+	_, body := h.get(path)
+	for _, want := range []string{shown, "10.0.0.5", `value="homelab-agent.lan"`, `value="10.0.0.5"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("approval page lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "<script>") {
+		t.Fatal("claimed user not cleaned")
+	}
+
+	csrf := h.csrf()
+	approve := func(form url.Values) int {
+		form.Set("csrf", csrf)
+		return h.post(path+"/approve", form).StatusCode
+	}
+	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "sources": {"10.0.0.300"}}); c != http.StatusBadRequest {
+		t.Fatalf("bad source accepted: %d", c)
+	}
+	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "sources": {"10.0.0.5"}}); c != http.StatusSeeOther {
+		t.Fatalf("approve: %d", c)
+	}
+	if c, _ := h.get(path); c != http.StatusNotFound {
+		t.Fatal("approved request can still be opened")
+	}
+	if c := approve(url.Values{"name": {"box2"}, "namespaces": {"lab"}}); c != http.StatusNotFound {
+		t.Fatal("approved twice")
+	}
+
+	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll})
+	tok, _ := m["token"].(string)
+	if m["state"] != "approved" || !strings.HasPrefix(tok, "kd_") || m["name"] != "box" {
+		t.Fatalf("collect: %v", m)
+	}
+	if code, _ := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); code != http.StatusNotFound {
+		t.Fatal("token handed out twice")
+	}
+
+	// Allowed sources: the paired address works, others are refused and logged.
+	if code, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/secrets/lab/FAKE_KEY/reveal", tok, "claude", nil); code != 200 || m["value"] != "fake-pair-value-1" {
+		t.Fatalf("from the paired address: %d %v", code, m)
+	}
+	if ev := h.srv.audit.Recent(1)[0]; ev.Actor != "token:box (claude)" {
+		t.Fatalf("agent label not in the log: %+v", ev)
+	}
+	code, m = h.apiFrom("10.0.0.6", "POST", "/api/v1/secrets/lab/FAKE_KEY/reveal", tok, "", nil)
+	if code != http.StatusForbidden || m["value"] != nil {
+		t.Fatalf("from another address: %d %v", code, m)
+	}
+	if ev := h.srv.audit.Recent(1)[0]; ev.Action != "token.denied" || ev.Actor != "token:box" {
+		t.Fatalf("denied use not logged: %+v", ev)
+	}
+	// A label that isn't a plain name is dropped, not logged verbatim.
+	h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", tok, "evil fake line", nil)
+	h.apiFrom("10.0.0.5", "POST", "/api/v1/secrets/lab/FAKE_KEY/ack", tok, "evil)(x", nil)
+	if ev := h.srv.audit.Recent(1)[0]; ev.Actor != "token:box" {
+		t.Fatalf("bad label logged: %+v", ev)
+	}
+
+	// The admin can widen the sources.
+	h.post("/tokens/box/sources", url.Values{"csrf": {csrf}, "sources": {"10.0.0.0/24"}})
+	if code, _ := h.apiFrom("10.0.0.6", "GET", "/api/v1/whoami", tok, "", nil); code != 200 {
+		t.Fatalf("after widening sources: %d", code)
+	}
+	if r := h.post("/tokens/box/sources", url.Values{"csrf": {csrf}, "sources": {"lan"}}); r.StatusCode != http.StatusBadRequest {
+		t.Fatal("bad source saved")
+	}
+
+	// Re-pairing under an existing name needs "replace", which revokes the old token.
+	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "box"})
+	path = m["path"].(string)
+	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}}); c != http.StatusConflict {
+		t.Fatalf("existing name without replace: %d", c)
+	}
+	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "replace": {"yes"}}); c != http.StatusSeeOther {
+		t.Fatalf("replace: %d", c)
+	}
+	if code, _ := h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", tok, "", nil); code != http.StatusUnauthorized {
+		t.Fatal("replaced token still works")
+	}
+
+	// Deny.
+	_, m = h.apiFrom("10.0.0.7", "POST", "/api/v1/pair", "", "", map[string]string{"host": "x"})
+	h.post(m["path"].(string)+"/deny", url.Values{"csrf": {csrf}})
+	if code, _ := h.apiFrom("10.0.0.7", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": m["poll"].(string)}); code != http.StatusNotFound {
+		t.Fatal("denied request still pollable")
+	}
+
+	// Caps: three waiting per address.
+	for i := 0; i < 3; i++ {
+		h.apiFrom("10.0.0.9", "POST", "/api/v1/pair", "", "", map[string]string{})
+	}
+	if code, _ := h.apiFrom("10.0.0.9", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth request from one address: %d", code)
+	}
+
+	// An approved token nobody collects is revoked when the request expires.
+	_, m = h.apiFrom("10.0.0.8", "POST", "/api/v1/pair", "", "", map[string]string{"host": "late"})
+	path = m["path"].(string)
+	approve(url.Values{"name": {"late"}, "namespaces": {"lab"}})
+	if _, ok := tokenNamed(h.st.ListTokens(), "late"); !ok {
+		t.Fatal("approval didn't create the token")
+	}
+	h.srv.now = func() time.Time { return time.Now().Add(pairTTL + time.Minute) }
+	h.srv.pendingPairings()
+	if _, ok := tokenNamed(h.st.ListTokens(), "late"); ok {
+		t.Fatal("uncollected token survived expiry")
+	}
+	if code, _ := h.apiFrom("10.0.0.9", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
+		t.Fatal("expired requests still count against the cap")
 	}
 }

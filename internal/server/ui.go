@@ -25,6 +25,7 @@ type expiryInfo struct{ Text, Class string }
 
 var funcs = template.FuncMap{
 	"join": strings.Join,
+	"code": displayCode,
 	"fmtTime": func(t time.Time) string {
 		if t.IsZero() {
 			return "—"
@@ -75,7 +76,7 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
@@ -87,6 +88,9 @@ var flashes = map[string]string{
 	"rolledback": "Rolled back to the previous value.",
 	"deleted":    "Deleted.",
 	"revoked":    "Token revoked.",
+	"paired":     "Approved. The agent collects its token within a few seconds.",
+	"denied":     "Pairing request denied.",
+	"sources":    "Allowed sources saved.",
 	"totpon":     "Authenticator turned on. Logging in now needs a code.",
 	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
 	"password":   "Password changed. Any other logged-in browsers were logged out.",
@@ -588,7 +592,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, _ string, 
 // ---- tokens ----
 
 func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	s.render(w, r, "tokens", http.StatusOK, se, page{"Title": "Agents", "Tokens": s.store.ListTokens()})
+	s.renderTokens(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) renderTokens(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
+	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Pairings": s.pendingPairings(), "Error": errMsg})
 }
 
 func splitList(s string) []string {
@@ -603,19 +611,25 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	nss := splitList(r.PostFormValue("namespaces"))
 	write := r.PostFormValue("write") == "yes"
-	tok, err := s.store.CreateToken(name, nss, write)
+	sources, err := store.ParseSources(r.PostFormValue("sources"))
+	if err != nil {
+		s.renderTokens(w, r, se, http.StatusBadRequest, "Allowed from: "+err.Error()+".")
+		return
+	}
+	tok, err := s.store.CreateToken(name, nss, write, sources)
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, store.ErrExists) {
 			msg = "An agent called " + name + " already exists. Revoke it first to make a new token."
 		}
-		s.render(w, r, "tokens", http.StatusBadRequest, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Error": msg})
+		s.renderTokens(w, r, se, http.StatusBadRequest, msg)
 		return
 	}
 	detail := "namespaces " + strings.Join(nss, ",")
 	if write {
 		detail += ", write"
 	}
+	detail += ", allowed from " + sourcesText(sources)
 	s.event(r, "admin", "token.create", name, detail)
 	u := s.cfg.PublicURL
 	if u == "" {
@@ -627,11 +641,11 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	name := r.PathValue("name")
 	if r.PostFormValue("confirm") != "yes" {
-		s.render(w, r, "tokens", http.StatusBadRequest, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Error": "Tick the box to confirm."})
+		s.renderTokens(w, r, se, http.StatusBadRequest, "Tick the box to confirm.")
 		return
 	}
 	if err := s.store.RevokeToken(name); err != nil {
-		s.render(w, r, "tokens", http.StatusNotFound, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Error": err.Error()})
+		s.renderTokens(w, r, se, http.StatusNotFound, err.Error())
 		return
 	}
 	s.event(r, "admin", "token.revoke", name, "")

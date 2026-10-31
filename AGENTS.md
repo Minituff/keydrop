@@ -26,7 +26,13 @@ isn't worth it.
   returns **404**, identical to a missing secret, so names don't leak. Every
   new API endpoint must go through the same grant check.
 - **Agents never get admin rights.** Tokens can't create tokens, change
-  grants, or reach the UI.
+  grants, or reach the UI. Pairing only *asks*: a token exists only after
+  the admin approves in the UI.
+- **Every token check goes through `store.LookupToken(token, ip)`**, which
+  enforces allowed sources. Don't add a second way to authenticate a
+  token. The only unauthenticated API endpoints are `/api/v1/pair` and
+  `/api/v1/pair/poll`; keep them capped, and hand a token over only once,
+  only to the address that asked.
 - **Encryption at rest:** AES-256-GCM per value, with the namespace, name and
   field bound as additional data. The master key is never written to the
   data directory.
@@ -56,7 +62,7 @@ GitHub Actions are the exception; keep them to well-known actions
 | `cmd/keydrop` | Entry point. `main.go` (dispatch, usage text), `serve.go` (server config from env), `agent.go` (CLI commands). |
 | `internal/store` | State file, encryption, secrets, namespaces, tokens. |
 | `internal/auth` | Password hashing, TOTP, login limiter. |
-| `internal/server` | HTTP server: UI (`ui.go`, `web/`), API (`api.go`), TLS. |
+| `internal/server` | HTTP server: UI (`ui.go`, `web/`), API (`api.go`), pairing (`pair.go`), TLS. |
 | `internal/client` | API client used by the CLI (with certificate pinning). |
 | `internal/mask` | Streaming output masker. |
 | `internal/qr` | QR encoder for the authenticator setup (stdlib only). |

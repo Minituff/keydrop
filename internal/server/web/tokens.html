@@ -1,12 +1,28 @@
 {{define "content"}}
+{{if .Pairings}}
+<h1>Waiting for approval</h1>
+<ul class="list">
+{{range .Pairings}}
+  <li><a href="/pair/{{.ID}}"><strong>{{.Host}}</strong> <span class="badge">code {{code .Code}}</span>
+    <small>from {{.IP}} · user {{.User}} · asked {{fmtTime .Created}}</small></a></li>
+{{end}}
+</ul>
+{{end}}
+
 <h1>Agents</h1>
-<p>Each agent has its own token, and can only see secrets in the namespaces it's granted.</p>
+<p>Each agent has its own token, and can only see secrets in the namespaces it's granted, from the addresses it's allowed.</p>
 <ul class="list">
 {{range .Tokens}}
   <li><div>
     <strong>{{.Name}}</strong> {{if .Write}}<span class="badge">can write</span>{{end}}
     <span class="desc">namespaces: {{join .Namespaces ", "}}</span>
-    <small>created {{fmtTime .CreatedAt}} · last used {{since .LastUsedAt}}</small>
+    <small>created {{fmtTime .CreatedAt}} · last used {{since .LastUsedAt}}{{if .LastUsedFrom}} from {{.LastUsedFrom}}{{end}}</small>
+    <form method="post" action="/tokens/{{.Name}}/sources" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Allowed from{{if not .Sources}} <span class="badge">anywhere</span>{{end}}
+        <input name="sources" value="{{join .Sources ", "}}" placeholder="anywhere" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <button class="small">Save</button>
+    </form>
     <form method="post" action="/tokens/{{.Name}}/revoke" class="inline">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> sure</label>
@@ -19,6 +35,8 @@
 </ul>
 
 <h2>Add an agent</h2>
+<p>The easy way: on the agent's machine, run <code>keydrop pair --url URL</code> and open the link it prints. It shows up above for you to approve.</p>
+<p>Or make a token by hand and paste it into <code>keydrop login</code>:</p>
 <form method="post" action="/tokens" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Name
@@ -26,6 +44,8 @@
   <label>Namespaces <small>(comma-separated)</small>
     <input name="namespaces" required placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <label class="check"><input type="checkbox" name="write" value="yes"> Can create and replace secrets in these namespaces</label>
+  <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
+    <input name="sources" placeholder="10.0.0.5, 10.0.1.0/24" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <button>Create token</button>
 </form>
 {{end}}
