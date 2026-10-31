@@ -135,7 +135,8 @@ other processes. Inside `sh -c '…'`, use single quotes so the variable is
 expanded by the child, not by your shell.
 
 Secret names look like environment variables: capital letters, digits and
-`_`, not starting with a digit. The web page upper-cases what you type.
+`_`, not starting with a digit. The web page upper-cases what you type; the
+CLI and API don't, and refuse a lower-case name.
 
 For a file (a kubeconfig, a PEM): `keydrop get NAME --to-file PATH` writes it
 with mode 600. `keydrop get NAME --raw` prints a value, which defeats the point;

@@ -315,23 +315,45 @@ var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type binding struct{ envVar, ref string }
 
+// errEnvFlag never echoes the flag: an agent used to docker's -e VAR=value
+// may have put a value there.
+var errEnvFlag = errors.New("-e takes a secret's name (NAME, ns/NAME or VAR=NAME), never a value")
+
 // parseEnvFlag reads one -e value: NAME or ns/NAME injects the secret under
 // its own name, VAR=REF under another.
 func parseEnvFlag(e string) (binding, error) {
-	if v, ref, ok := strings.Cut(e, "="); ok {
-		if !envNameRE.MatchString(v) || ref == "" {
-			return binding{}, fmt.Errorf("-e %q: want NAME or VAR=NAME", e)
+	v, ref, renamed := strings.Cut(e, "=")
+	if !renamed {
+		ref = e
+	}
+	ns, name, scoped := strings.Cut(ref, "/")
+	if !scoped {
+		ns, name = "", ref
+	}
+	switch {
+	case scoped && !store.ValidName(ns), !store.ValidSecretName(name):
+		return binding{}, errEnvFlag
+	case renamed && !envNameRE.MatchString(v):
+		return binding{}, errEnvFlag
+	case !renamed:
+		v = name
+	}
+	return binding{v, ref}, nil
+}
+
+// childEnv is the command's environment: ours without the agent's token,
+// plus the secrets (which win over inherited variables of the same name).
+func childEnv(environ []string, binds []binding, values map[string]string) []string {
+	var env []string
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, "KEYDROP_TOKEN=") { // the child never needs the agent's token
+			env = append(env, kv)
 		}
-		return binding{v, ref}, nil
 	}
-	name := e
-	if i := strings.LastIndex(e, "/"); i >= 0 {
-		name = e[i+1:]
+	for _, b := range binds {
+		env = append(env, b.envVar+"="+values[b.ref])
 	}
-	if !envNameRE.MatchString(name) {
-		return binding{}, fmt.Errorf("-e %q: want NAME or VAR=NAME", e)
-	}
-	return binding{name, e}, nil
+	return env
 }
 
 func cmdRun(args []string) (int, error) {
@@ -374,24 +396,17 @@ func cmdRun(args []string) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", ref, err)
 		}
+		if strings.ContainsRune(v, 0) {
+			return 0, fmt.Errorf("%s: the value contains a NUL byte, which can't go in an environment variable; use get --to-file", ref)
+		}
 		values[ref] = v
 		if !m.Add(ref, []byte(v)) && !*noMask {
 			fmt.Fprintf(os.Stderr, "keydrop: warning: %s is shorter than %d characters and won't be masked\n", ref, mask.MinLength)
 		}
 	}
 
-	var childEnv []string
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "KEYDROP_TOKEN=") { // the child never needs the agent's token
-			childEnv = append(childEnv, kv)
-		}
-	}
-	for _, b := range binds {
-		childEnv = append(childEnv, b.envVar+"="+values[b.ref])
-	}
-
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = childEnv
+	cmd.Env = childEnv(os.Environ(), binds, values)
 	cmd.Stdin = os.Stdin
 	var flushers []*mask.Writer
 	if *noMask {

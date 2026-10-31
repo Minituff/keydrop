@@ -55,9 +55,32 @@ func TestParseEnvFlag(t *testing.T) {
 			t.Errorf("%q: got %+v, %v", in, got, err)
 		}
 	}
-	for _, bad := range []string{"", "=X", "X=", "1X=Y", "lab/", "a-b", "lab/a-b", "A B=X"} {
-		if _, err := parseEnvFlag(bad); err == nil {
+	for _, bad := range []string{"", "=X", "X=", "1X=Y", "lab/", "a-b", "lab/a-b", "A B=X",
+		"a/b/C", "../X", "LAB/X", "cf_token", "API_KEY=sk-live-abc123"} {
+		_, err := parseEnvFlag(bad)
+		if err == nil {
 			t.Errorf("%q should be rejected", bad)
+		} else if bad != "" && strings.Contains(err.Error(), bad) {
+			t.Errorf("error echoes the flag: %v", err)
 		}
+	}
+}
+
+func TestChildEnv(t *testing.T) {
+	env := childEnv(
+		[]string{"PATH=/bin", "KEYDROP_TOKEN=kd_fake", "TOKEN=inherited", "KEYDROP_URL=x"},
+		[]binding{{"TOKEN", "CF"}, {"GH_PAT", "lab/GH_PAT"}},
+		map[string]string{"CF": "fake-cf-value", "lab/GH_PAT": "fake-gh-value"},
+	)
+	got := map[string]string{}
+	for _, kv := range env { // last wins, as in exec
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	if _, ok := got["KEYDROP_TOKEN"]; ok {
+		t.Error("agent token passed to the child")
+	}
+	if got["TOKEN"] != "fake-cf-value" || got["GH_PAT"] != "fake-gh-value" || got["PATH"] != "/bin" {
+		t.Errorf("got %v", got)
 	}
 }

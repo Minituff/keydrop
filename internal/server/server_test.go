@@ -399,4 +399,7 @@ func TestSecretNames(t *testing.T) {
 	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "gh-pat"}); code != http.StatusBadRequest {
 		t.Errorf("API request with old-style name: %d", code)
 	}
+	if code, _, raw := h.api("PUT", "/api/v1/secrets/lab/cf_token", tok, map[string]any{"value": "fake-put-value-1"}); code != http.StatusBadRequest || strings.Contains(string(raw), "fake-put-value-1") {
+		t.Errorf("API put with lower-case name: %d %s", code, raw)
+	}
 }
