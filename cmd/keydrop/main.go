@@ -10,11 +10,11 @@ import (
 // Set at build time with -ldflags "-X main.version=…".
 var version = "dev"
 
-const usage = `keydrop — a write-only secret drop for homelab agents.
+const usage = `keydrop — a secret drop for homelab agents.
 
 Agent commands (use a token from the admin UI; see "keydrop login"):
-  run [--env VAR=ref]... -- CMD [ARGS]   run CMD with secrets injected, output masked
-                                         ({{ref}} in ARGS is replaced too)
+  run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets in its environment, output
+                                         masked (-e NAME sets $NAME; VAR=REF renames it)
   list [--new] [--pending]              list secrets this token can see (no values)
   info REF                              show one secret's details (no value)
   inbox                                 secrets that are new since an agent last acked them
@@ -34,7 +34,8 @@ Server commands:
   genkey                                print a new master key
   healthcheck                           exit 0 if the local server answers (for Docker)
 
-REF is namespace/name, or just name when the token has one namespace.
+REF is namespace/NAME, or just NAME when the token has one namespace. Secret
+names are env-var style: CLOUDFLARE_API_TOKEN.
 `
 
 func main() {

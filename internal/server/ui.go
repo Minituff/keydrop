@@ -402,15 +402,19 @@ func formMeta(r *http.Request) (store.Meta, error) {
 
 func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	ns := strings.TrimSpace(r.PostFormValue("namespace"))
-	name := strings.TrimSpace(r.PostFormValue("name"))
+	// Upper-cased so a phone keyboard's lower case still gives an env-style name.
+	name := strings.ToUpper(strings.TrimSpace(r.PostFormValue("name")))
 	val := formValue(r)
 	meta, err := formMeta(r)
 	switch {
 	case err != nil:
 		s.renderDashboard(w, r, se, http.StatusBadRequest, err.Error())
 		return
-	case !store.ValidName(ns) || !store.ValidName(name):
-		s.renderDashboard(w, r, se, http.StatusBadRequest, "Namespace and name: lowercase letters, digits, '.', '_' and '-' only.")
+	case !store.ValidName(ns):
+		s.renderDashboard(w, r, se, http.StatusBadRequest, "Namespace: lowercase letters, digits, '.', '_' and '-' only.")
+		return
+	case !store.ValidSecretName(name):
+		s.renderDashboard(w, r, se, http.StatusBadRequest, "Name: like an environment variable, e.g. CLOUDFLARE_API_TOKEN (letters, digits and '_', not starting with a digit).")
 		return
 	case len(val) == 0:
 		s.renderDashboard(w, r, se, http.StatusBadRequest, "The value is empty.")

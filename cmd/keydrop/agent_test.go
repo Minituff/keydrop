@@ -31,9 +31,6 @@ not a pair
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v", got)
 	}
-	if envKeyToName("CLOUDFLARE_API_TOKEN") != "cloudflare-api-token" {
-		t.Fatal("name conversion")
-	}
 }
 
 func TestParseInterspersed(t *testing.T) {
@@ -45,9 +42,22 @@ func TestParseInterspersed(t *testing.T) {
 	}
 }
 
-func TestTemplateRE(t *testing.T) {
-	m := templateRE.FindAllStringSubmatch("Bearer {{cf}} and {{ lab/gh-pat }} not {{Bad}}", -1)
-	if len(m) != 2 || m[0][1] != "cf" || m[1][1] != "lab/gh-pat" {
-		t.Fatalf("got %v", m)
+func TestParseEnvFlag(t *testing.T) {
+	for in, want := range map[string]binding{
+		"CF_TOKEN":              {"CF_TOKEN", "CF_TOKEN"},
+		"homelab/CF_TOKEN":      {"CF_TOKEN", "homelab/CF_TOKEN"},
+		"TOKEN=CF_TOKEN":        {"TOKEN", "CF_TOKEN"},
+		"TOKEN=lab/CF_TOKEN":    {"TOKEN", "lab/CF_TOKEN"},
+		"GH_PAT=wedding/GH_PAT": {"GH_PAT", "wedding/GH_PAT"},
+	} {
+		got, err := parseEnvFlag(in)
+		if err != nil || got != want {
+			t.Errorf("%q: got %+v, %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"", "=X", "X=", "1X=Y", "lab/", "a-b", "lab/a-b", "A B=X"} {
+		if _, err := parseEnvFlag(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
 	}
 }

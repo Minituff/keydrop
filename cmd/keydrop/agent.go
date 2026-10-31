@@ -311,42 +311,55 @@ type multiFlag []string
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
-var (
-	templateRE = regexp.MustCompile(`\{\{\s*([a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)?)\s*\}\}`)
-	envNameRE  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-)
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+type binding struct{ envVar, ref string }
+
+// parseEnvFlag reads one -e value: NAME or ns/NAME injects the secret under
+// its own name, VAR=REF under another.
+func parseEnvFlag(e string) (binding, error) {
+	if v, ref, ok := strings.Cut(e, "="); ok {
+		if !envNameRE.MatchString(v) || ref == "" {
+			return binding{}, fmt.Errorf("-e %q: want NAME or VAR=NAME", e)
+		}
+		return binding{v, ref}, nil
+	}
+	name := e
+	if i := strings.LastIndex(e, "/"); i >= 0 {
+		name = e[i+1:]
+	}
+	if !envNameRE.MatchString(name) {
+		return binding{}, fmt.Errorf("-e %q: want NAME or VAR=NAME", e)
+	}
+	return binding{name, e}, nil
+}
 
 func cmdRun(args []string) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var envs multiFlag
-	fs.Var(&envs, "env", "VAR=ref: put secret ref in the child's environment as VAR (repeatable)")
+	fs.Var(&envs, "e", "NAME, ns/NAME or VAR=NAME: put a secret in the command's environment (repeatable)")
+	fs.Var(&envs, "env", "same as -e")
 	noMask := fs.Bool("no-mask", false, "don't mask secret values in the command's output")
 	fs.Parse(args)
 	argv := fs.Args()
-	if len(argv) == 0 {
-		return 0, errors.New("usage: keydrop run [--env VAR=ref]... -- CMD [ARGS]")
+	if len(argv) == 0 || len(envs) == 0 {
+		return 0, errors.New("usage: keydrop run -e NAME [-e VAR=NAME]... -- CMD [ARGS]")
 	}
 
-	type binding struct{ envVar, ref string }
 	var binds []binding
-	for _, e := range envs {
-		v, ref, ok := strings.Cut(e, "=")
-		if !ok || !envNameRE.MatchString(v) || ref == "" {
-			return 0, fmt.Errorf("--env %q: want VAR=ref", e)
-		}
-		binds = append(binds, binding{v, ref})
-	}
 	refs := map[string]bool{}
-	for _, b := range binds {
-		refs[b.ref] = true
-	}
-	for _, a := range argv {
-		for _, m := range templateRE.FindAllStringSubmatch(a, -1) {
-			refs[m[1]] = true
+	seen := map[string]bool{}
+	for _, e := range envs {
+		b, err := parseEnvFlag(e)
+		if err != nil {
+			return 0, err
 		}
-	}
-	if len(refs) == 0 {
-		return 0, errors.New("no secrets referenced: use --env VAR=ref or {{ref}} in the command")
+		if seen[b.envVar] {
+			return 0, fmt.Errorf("-e: %s is set twice", b.envVar)
+		}
+		seen[b.envVar] = true
+		binds = append(binds, b)
+		refs[b.ref] = true
 	}
 
 	c, err := newClient()
@@ -367,11 +380,6 @@ func cmdRun(args []string) (int, error) {
 		}
 	}
 
-	for i, a := range argv {
-		argv[i] = templateRE.ReplaceAllStringFunc(a, func(s string) string {
-			return values[templateRE.FindStringSubmatch(s)[1]]
-		})
-	}
 	var childEnv []string
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "KEYDROP_TOKEN=") { // the child never needs the agent's token
@@ -576,11 +584,6 @@ func parseEnvFile(r io.Reader) ([]envEntry, error) {
 	return out, sc.Err()
 }
 
-// envKeyToName turns CLOUDFLARE_API_TOKEN into cloudflare-api-token.
-func envKeyToName(k string) string {
-	return strings.ToLower(strings.ReplaceAll(k, "_", "-"))
-}
-
 func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	ns := fs.String("namespace", "", "namespace to import into (default: the token's only namespace)")
@@ -615,11 +618,10 @@ func cmdImport(args []string) error {
 	}
 	var done, skipped int
 	for _, e := range entries {
-		name := envKeyToName(e.key)
-		ref := *ns + "/" + name
+		ref := *ns + "/" + e.key
 		switch {
-		case !store.ValidName(name):
-			fmt.Printf("skip %s: not a valid name\n", e.key)
+		case !store.ValidSecretName(e.key):
+			fmt.Printf("skip %s: secret names are capital letters, digits and '_'\n", e.key)
 			skipped++
 			continue
 		case e.value == "":
@@ -628,24 +630,24 @@ func cmdImport(args []string) error {
 			continue
 		}
 		if *dry {
-			fmt.Printf("would import %s -> %s\n", e.key, ref)
+			fmt.Printf("would import %s\n", ref)
 			continue
 		}
 		desc := e.comment
 		if desc == "" {
-			desc = "Imported from " + filepath.Base(pos[0]) + " (" + e.key + ")"
+			desc = "Imported from " + filepath.Base(pos[0])
 		}
 		err := c.Put(ref, e.value, client.PutOptions{Description: &desc, Overwrite: *overwrite})
 		var ae *client.APIError
 		if errors.As(err, &ae) && ae.Status == 409 {
-			fmt.Printf("skip %s: %s already exists (use --overwrite)\n", e.key, ref)
+			fmt.Printf("skip %s: already exists (use --overwrite)\n", ref)
 			skipped++
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", e.key, err)
 		}
-		fmt.Printf("imported %s -> %s\n", e.key, ref)
+		fmt.Printf("imported %s\n", ref)
 		done++
 	}
 	if !*dry {

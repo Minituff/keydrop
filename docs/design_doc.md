@@ -97,7 +97,8 @@ an optional usage hint and an optional expiry date. The description is the
 main way the human tells the agent what to do.
 
 ### Namespaces and agent tokens
-Secrets live in namespaces (`homelab/cloudflare-dns`, `wedding/convex`).
+Secrets live in namespaces (`homelab/CLOUDFLARE_API_TOKEN`,
+`wedding/CONVEX_DEPLOY_KEY`).
 Each agent has its own token, granted one or more namespaces, read-only
 unless writing is allowed.
 
@@ -110,14 +111,21 @@ unless writing is allowed.
   tokens, changes grants or sees every namespace.
 - A token is a 0600 file per Unix user, so two users on one machine can
   have different scopes.
-- When a token has exactly one namespace, the CLI accepts a bare `name`
-  instead of `namespace/name`.
+- When a token has exactly one namespace, the CLI accepts a bare `NAME`
+  instead of `namespace/NAME`.
+- **Secret names are env-var style** (`CLOUDFLARE_API_TOKEN`: capitals,
+  digits, `_`). A secret is almost always used as an environment variable,
+  so its name is the variable name and `run -e NAME` needs no mapping.
+  Namespaces and token names stay lower-case, so a ref like
+  `homelab/GITHUB_PAT` reads unambiguously. The UI upper-cases what's typed,
+  since a phone keyboard defaults to lower case.
 
 ### Using a secret without seeing it
-- `keydrop run --env VAR=ref -- CMD` puts the value only in the child's
-  environment. `{{ref}}` in arguments is replaced just before exec. That's
-  convenient, but visible in `/proc/<pid>/cmdline` to the same user, so
-  `--env` is the recommended form.
+- `keydrop run -e NAME -- CMD` puts the value only in the child's
+  environment, as `$NAME` (`-e VAR=NAME` renames it). Each secret is named
+  on the command line, so every read is logged per secret. There's no
+  "inject everything" and no `{{NAME}}` substitution in arguments: argument
+  values are visible in `/proc/<pid>/cmdline` to the same user.
 - **Output masking:** the CLI wraps the child's stdout and stderr and
   replaces each value with `[keydrop:ref]`. That includes base64 (so
   Basic-auth headers are caught) and URL-encoded forms. It's a streaming

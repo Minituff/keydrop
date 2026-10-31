@@ -15,9 +15,10 @@ never need to see them.
 - Never ask the user to paste a secret into chat. If you need one, run
   `keydrop request NAME --desc "what it's for, which scopes, how long it should
   last"`, send the user the link it prints, then `keydrop wait NAME`.
-- Use secrets only through `keydrop run`:
-  `keydrop run --env TOKEN=NAME -- curl -H "Authorization: Bearer $TOKEN" …`
-  (inside `sh -c`, single-quote the script so the child expands `$TOKEN`).
+- Use secrets only through `keydrop run`. `-e NAME` sets `$NAME` for one
+  command: `keydrop run -e GITHUB_PAT -- sh -c 'curl -H "Authorization: Bearer $GITHUB_PAT" …'`
+  (single-quote the script so the child expands the variable, not your
+  shell). `-e VAR=NAME` sets it under another name.
 - `keydrop list` / `keydrop info NAME` show what exists and what each key is
   for. Follow the description: it says what to do with the key.
 - New keys show up in `keydrop inbox`. Deal with them, then `keydrop ack NAME`.
@@ -46,7 +47,7 @@ In `.claude/settings.json`:
 ```
 
 - **SessionStart:** whatever `keydrop inbox` prints becomes context at the
-  start of the session. The agent sees "1 new secret: homelab/cloudflare-dns,
+  start of the session. The agent sees "1 new secret: homelab/CLOUDFLARE_API_TOKEN,
   'DNS edit token, replace the old one in the Traefik stack'" without being
   asked. `--quiet` prints nothing when there's nothing new.
 - **PreToolUse guard:** a small script that blocks commands that would print

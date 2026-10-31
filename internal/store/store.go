@@ -28,7 +28,8 @@ var (
 	ErrExists     = errors.New("already exists")
 	ErrNoValue    = errors.New("secret has no value yet")
 	ErrNoPrevious = errors.New("no previous value to roll back to")
-	ErrBadName    = errors.New("names must match [a-z0-9][a-z0-9._-]{0,63}")
+	ErrBadName    = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
+	ErrBadSecret  = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
 )
 
 const (
@@ -38,10 +39,18 @@ const (
 	TokenPrefix = "kd_"
 )
 
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+var (
+	nameRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	secretRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
+)
 
-// ValidName reports whether s is usable as a namespace, secret or token name.
+// ValidName reports whether s is usable as a namespace or token name.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+// ValidSecretName reports whether s is usable as a secret name. Secret names
+// are env-var style so "keydrop run -e NAME" can inject a secret under its
+// own name with nothing to translate.
+func ValidSecretName(s string) bool { return secretRE.MatchString(s) }
 
 // Secret is one stored secret. Value and Previous are ciphertext.
 type Secret struct {
@@ -357,8 +366,11 @@ func (s *Store) GetSecret(ns, name string) (Secret, bool) {
 // PutValue creates or replaces a secret's value. The old value is kept as
 // Previous so a bad paste can be rolled back. meta is applied if non-nil.
 func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
-	if !ValidName(ns) || !ValidName(name) {
+	if !ValidName(ns) {
 		return ErrBadName
+	}
+	if !ValidSecretName(name) {
+		return ErrBadSecret
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,8 +423,11 @@ func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 // one that's already pending updates its description; requesting one that
 // already has a value fails with ErrExists.
 func (s *Store) Request(ns, name, description, usage, by string) error {
-	if !ValidName(ns) || !ValidName(name) {
+	if !ValidName(ns) {
 		return ErrBadName
+	}
+	if !ValidSecretName(name) {
+		return ErrBadSecret
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

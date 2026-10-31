@@ -1,4 +1,4 @@
-// Package server is keydrop's HTTP side: the write-only admin UI and the
+// Package server is keydrop's HTTP side: the admin UI and the
 // agent API.
 package server
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestRoundTripAndAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutValue("lab", "cf", []byte("super-secret-123"), &Meta{Description: "dns"}); err != nil {
+	if err := s.PutValue("lab", "CF", []byte("super-secret-123"), &Meta{Description: "dns"}); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, stateFile))
@@ -31,7 +32,7 @@ func TestRoundTripAndAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := s2.Reveal("lab", "cf", "test")
+	v, err := s2.Reveal("lab", "CF", "test")
 	if err != nil || string(v) != "super-secret-123" {
 		t.Fatalf("reveal: %q %v", v, err)
 	}
@@ -44,38 +45,38 @@ func TestRoundTripAndAtRest(t *testing.T) {
 func TestCiphertextBoundToName(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, key32())
-	s.PutValue("a", "one", []byte("value-one"), nil)
-	s.PutValue("b", "two", []byte("value-two"), nil)
+	s.PutValue("a", "ONE", []byte("value-one"), nil)
+	s.PutValue("b", "TWO", []byte("value-two"), nil)
 	s.mu.Lock()
-	s.st.Secrets["b/two"].Value = s.st.Secrets["a/one"].Value
+	s.st.Secrets["b/TWO"].Value = s.st.Secrets["a/ONE"].Value
 	s.mu.Unlock()
-	if _, err := s.Reveal("b", "two", "x"); err == nil {
+	if _, err := s.Reveal("b", "TWO", "x"); err == nil {
 		t.Fatal("swapped ciphertext decrypted")
 	}
 }
 
 func TestRollbackAndRequest(t *testing.T) {
 	s, _ := Open(t.TempDir(), key32())
-	if err := s.Request("lab", "gh", "need a PAT", "", "claude"); err != nil {
+	if err := s.Request("lab", "GH", "need a PAT", "", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Reveal("lab", "gh", "x"); err != ErrNoValue {
+	if _, err := s.Reveal("lab", "GH", "x"); err != ErrNoValue {
 		t.Fatalf("want ErrNoValue, got %v", err)
 	}
-	s.PutValue("lab", "gh", []byte("v1-value"), nil)
-	if sec, _ := s.GetSecret("lab", "gh"); sec.Pending || sec.Description != "need a PAT" || !sec.New {
+	s.PutValue("lab", "GH", []byte("v1-value"), nil)
+	if sec, _ := s.GetSecret("lab", "GH"); sec.Pending || sec.Description != "need a PAT" || !sec.New {
 		t.Fatalf("after fill: %+v", sec)
 	}
-	if err := s.Request("lab", "gh", "again", "", "claude"); err != ErrExists {
+	if err := s.Request("lab", "GH", "again", "", "claude"); err != ErrExists {
 		t.Fatalf("re-request of filled secret: %v", err)
 	}
-	s.PutValue("lab", "gh", []byte("v2-value"), nil)
-	s.Rollback("lab", "gh")
-	if v, _ := s.Reveal("lab", "gh", "x"); string(v) != "v1-value" {
+	s.PutValue("lab", "GH", []byte("v2-value"), nil)
+	s.Rollback("lab", "GH")
+	if v, _ := s.Reveal("lab", "GH", "x"); string(v) != "v1-value" {
 		t.Fatalf("rollback gave %q", v)
 	}
-	s.Rollback("lab", "gh")
-	if v, _ := s.Reveal("lab", "gh", "x"); string(v) != "v2-value" {
+	s.Rollback("lab", "GH")
+	if v, _ := s.Reveal("lab", "GH", "x"); string(v) != "v2-value" {
 		t.Fatalf("roll forward gave %q", v)
 	}
 }
@@ -116,5 +117,22 @@ func TestNames(t *testing.T) {
 		if ValidName(bad) {
 			t.Errorf("%q should be invalid", bad)
 		}
+	}
+	for _, ok := range []string{"A", "CLOUDFLARE_API_TOKEN", "_X", "GH_PAT_2"} {
+		if !ValidSecretName(ok) {
+			t.Errorf("secret %q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"", "cf", "Cf_Token", "2FA", "A-B", "A.B", "A B", "A/B", "A=B", strings.Repeat("A", 65)} {
+		if ValidSecretName(bad) {
+			t.Errorf("secret %q should be invalid", bad)
+		}
+	}
+	s, _ := Open(t.TempDir(), key32())
+	if err := s.PutValue("lab", "cf", []byte("value-123"), nil); err != ErrBadSecret {
+		t.Errorf("lowercase secret name: got %v", err)
+	}
+	if err := s.Request("lab", "gh-pat", "", "", "x"); err != ErrBadSecret {
+		t.Errorf("request with old-style name: got %v", err)
 	}
 }

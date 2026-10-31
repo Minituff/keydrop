@@ -140,12 +140,12 @@ func TestSetupLoginAndCSRF(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create: %d", resp.StatusCode)
 	}
-	for _, p := range []string{"/", "/secret/lab/cf", "/audit", "/tokens"} {
+	for _, p := range []string{"/", "/secret/lab/CF", "/audit", "/tokens"} {
 		if _, body := h.get(p); strings.Contains(body, "the-real-value-42") {
 			t.Fatalf("value shown on %s", p)
 		}
 	}
-	if v, _ := h.st.Reveal("lab", "cf", "t"); string(v) != "the-real-value-42" {
+	if v, _ := h.st.Reveal("lab", "CF", "t"); string(v) != "the-real-value-42" {
 		t.Fatalf("whitespace not trimmed: %q", v)
 	}
 
@@ -178,42 +178,42 @@ func TestNamespaceIsolation(t *testing.T) {
 	h.setup()
 	lab, _ := h.st.CreateToken("lab-agent", []string{"lab"}, false)
 	wed, _ := h.st.CreateToken("wedding-agent", []string{"wedding"}, true)
-	h.st.PutValue("lab", "cf", []byte("lab-secret-value"), &store.Meta{Description: "lab only"})
-	h.st.PutValue("wedding", "convex", []byte("wedding-secret-value"), nil)
+	h.st.PutValue("lab", "CF", []byte("lab-secret-value"), &store.Meta{Description: "lab only"})
+	h.st.PutValue("wedding", "CONVEX", []byte("wedding-secret-value"), nil)
 
 	// Each agent lists only its own namespace.
 	_, _, raw := h.api("GET", "/api/v1/secrets", wed, nil)
-	if strings.Contains(string(raw), "lab") || !strings.Contains(string(raw), "wedding/convex") {
+	if strings.Contains(string(raw), "lab") || !strings.Contains(string(raw), "wedding/CONVEX") {
 		t.Fatalf("wedding list: %s", raw)
 	}
 	// Other namespaces look missing, not forbidden.
-	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/cf/reveal", wed, nil); code != http.StatusNotFound {
+	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/CF/reveal", wed, nil); code != http.StatusNotFound {
 		t.Fatalf("cross-namespace reveal: %d", code)
 	}
-	if code, _, _ := h.api("GET", "/api/v1/secrets/lab/cf", wed, nil); code != http.StatusNotFound {
+	if code, _, _ := h.api("GET", "/api/v1/secrets/lab/CF", wed, nil); code != http.StatusNotFound {
 		t.Fatalf("cross-namespace info: %d", code)
 	}
 	// Reveal works in-namespace and is logged.
-	code, m, _ := h.api("POST", "/api/v1/secrets/lab/cf/reveal", lab, nil)
+	code, m, _ := h.api("POST", "/api/v1/secrets/lab/CF/reveal", lab, nil)
 	if code != 200 || m["value"] != "lab-secret-value" {
 		t.Fatalf("reveal: %d %v", code, m)
 	}
 	// Metadata never carries the value.
-	_, _, raw = h.api("GET", "/api/v1/secrets/lab/cf", lab, nil)
+	_, _, raw = h.api("GET", "/api/v1/secrets/lab/CF", lab, nil)
 	if strings.Contains(string(raw), "lab-secret-value") {
 		t.Fatal("value in metadata")
 	}
 	// Writes need the write grant, in an allowed namespace.
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/new", lab, map[string]any{"value": "x-123456"}); code != http.StatusForbidden {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/NEW", lab, map[string]any{"value": "x-123456"}); code != http.StatusForbidden {
 		t.Fatalf("read-only token wrote: %d", code)
 	}
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/new", wed, map[string]any{"value": "x-123456"}); code != http.StatusForbidden {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/NEW", wed, map[string]any{"value": "x-123456"}); code != http.StatusForbidden {
 		t.Fatalf("wrote outside namespace: %d", code)
 	}
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/gen", wed, map[string]any{"value": "x-123456"}); code != 200 {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/GEN", wed, map[string]any{"value": "x-123456"}); code != 200 {
 		t.Fatalf("write: %d", code)
 	}
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/gen", wed, map[string]any{"value": "y-123456"}); code != http.StatusConflict {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/GEN", wed, map[string]any{"value": "y-123456"}); code != http.StatusConflict {
 		t.Fatalf("silent overwrite: %d", code)
 	}
 	// Bad and missing tokens.
@@ -229,26 +229,26 @@ func TestRequestFlow(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
 	tok, _ := h.st.CreateToken("claude", []string{"lab"}, false)
-	code, m, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "gh-pat", "description": "repo read"})
-	if code != http.StatusCreated || m["ref"] != "lab/gh-pat" {
+	code, m, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "GH_PAT", "description": "repo read"})
+	if code != http.StatusCreated || m["ref"] != "lab/GH_PAT" {
 		t.Fatalf("request: %d %v", code, m)
 	}
 	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "wedding", "name": "x"}); code != http.StatusForbidden {
 		t.Fatalf("request outside namespace: %d", code)
 	}
-	if _, body := h.get("/"); !strings.Contains(body, "Requested by agents") || !strings.Contains(body, "lab/gh-pat") {
+	if _, body := h.get("/"); !strings.Contains(body, "Requested by agents") || !strings.Contains(body, "lab/GH_PAT") {
 		t.Fatal("request not on dashboard")
 	}
-	resp := h.post("/secret/lab/gh-pat/value", url.Values{"csrf": {h.csrf()}, "value": {"ghp_filled_in"}})
+	resp := h.post("/secret/lab/GH_PAT/value", url.Values{"csrf": {h.csrf()}, "value": {"ghp_filled_in"}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("fill: %d", resp.StatusCode)
 	}
-	_, m, _ = h.api("GET", "/api/v1/secrets/lab/gh-pat", tok, nil)
+	_, m, _ = h.api("GET", "/api/v1/secrets/lab/GH_PAT", tok, nil)
 	if m["pending"] != false || m["has_value"] != true || m["new"] != true {
 		t.Fatalf("after fill: %v", m)
 	}
-	h.api("POST", "/api/v1/secrets/lab/gh-pat/ack", tok, nil)
-	_, m, _ = h.api("GET", "/api/v1/secrets/lab/gh-pat", tok, nil)
+	h.api("POST", "/api/v1/secrets/lab/GH_PAT/ack", tok, nil)
+	_, m, _ = h.api("GET", "/api/v1/secrets/lab/GH_PAT", tok, nil)
 	if m["new"] != false {
 		t.Fatalf("ack didn't clear new: %v", m)
 	}
@@ -360,15 +360,15 @@ func TestPasswordOnlyAndTOTPSettings(t *testing.T) {
 func TestRevealInUI(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
-	h.st.PutValue("lab", "cf", []byte("shown-on-request-42"), nil)
+	h.st.PutValue("lab", "CF", []byte("shown-on-request-42"), nil)
 	// Only shown after a deliberate POST with the CSRF token.
-	if _, body := h.get("/secret/lab/cf"); strings.Contains(body, "shown-on-request-42") {
+	if _, body := h.get("/secret/lab/CF"); strings.Contains(body, "shown-on-request-42") {
 		t.Fatal("value shown without asking")
 	}
-	if resp := h.post("/secret/lab/cf/reveal", nil); resp.StatusCode != http.StatusForbidden {
+	if resp := h.post("/secret/lab/CF/reveal", nil); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("reveal without csrf: %d", resp.StatusCode)
 	}
-	resp := h.post("/secret/lab/cf/reveal", url.Values{"csrf": {h.csrf()}})
+	resp := h.post("/secret/lab/CF/reveal", url.Values{"csrf": {h.csrf()}})
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "shown-on-request-42") {
 		t.Fatalf("reveal: %d", resp.StatusCode)
@@ -376,7 +376,27 @@ func TestRevealInUI(t *testing.T) {
 	if _, body := h.get("/audit"); !strings.Contains(body, "secret.reveal") {
 		t.Fatal("reveal not in the log")
 	}
-	if sec, _ := h.st.GetSecret("lab", "cf"); sec.LastReadBy != "admin (web)" {
+	if sec, _ := h.st.GetSecret("lab", "CF"); sec.LastReadBy != "admin (web)" {
 		t.Fatalf("last read by %q", sec.LastReadBy)
+	}
+}
+
+func TestSecretNames(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	csrf := h.csrf()
+	// The UI upper-cases what was typed, so a phone keyboard is fine.
+	resp := h.post("/secrets", url.Values{"csrf": {csrf}, "namespace": {"lab"}, "name": {"cf_api_token"}, "value": {"value-123456"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/secret/lab/CF_API_TOKEN?msg=saved" {
+		t.Fatalf("lower-case name: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, bad := range []string{"cloudflare-dns", "2FA", "A.B", "A B"} {
+		if resp := h.post("/secrets", url.Values{"csrf": {csrf}, "namespace": {"lab"}, "name": {bad}, "value": {"value-123456"}}); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%q: got %d", bad, resp.StatusCode)
+		}
+	}
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, true)
+	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"name": "gh-pat"}); code != http.StatusBadRequest {
+		t.Errorf("API request with old-style name: %d", code)
 	}
 }

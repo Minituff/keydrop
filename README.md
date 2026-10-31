@@ -9,13 +9,13 @@ the agent's logs, or git.
 
 ```sh
 # The agent writes this. Only the name appears in its transcript.
-keydrop run --env CF=cloudflare-dns -- \
-  curl -s -H "Authorization: Bearer $CF" https://api.cloudflare.com/client/v4/user/tokens/verify
+keydrop run -e CLOUDFLARE_API_TOKEN -- sh -c \
+  'curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify'
 ```
 
 If the command prints the key anyway (`curl -v`, an error message, a base64
 Basic-auth header), keydrop replaces it in the output with
-`[keydrop:cloudflare-dns]`.
+`[keydrop:CLOUDFLARE_API_TOKEN]`.
 
 One small container plus one CLI binary. Written in Go with **no third-party
 dependencies**, so the whole thing can be audited in an afternoon.
@@ -49,9 +49,10 @@ replacement for Vault or Infisical in a team.
   `wedding/…`). Each agent gets its own token, granted one or more
   namespaces. An agent can't see other namespaces at all, not even the secret
   names. Tokens are read-only unless you allow writing.
-- **Agent CLI.** `keydrop run` injects secrets into one command's
-  environment (or replaces `{{name}}` in its arguments) and masks them in its
-  output. `list`, `info` and `inbox` show descriptions, never values.
+- **Agent CLI.** `keydrop run -e NAME` puts a secret into one command's
+  environment under its own name and masks it in the command's output.
+  Secret names are env-var style (`CLOUDFLARE_API_TOKEN`), so nothing needs
+  translating. `list`, `info` and `inbox` show descriptions, never values.
 - **Agents know what to do with a new key.** Secrets you add are marked
   *new* until an agent acknowledges them, and `keydrop inbox` (run by a
   session-start hook) shows them with your description. An agent can also
@@ -120,17 +121,21 @@ Secrets and tokens are kept.
 3. Use it:
    ```sh
    keydrop inbox                                   # anything new for me?
-   keydrop run --env TOKEN=cloudflare-dns -- curl -H "Authorization: Bearer $TOKEN" …
-   keydrop run -- curl -H "Authorization: Bearer {{cloudflare-dns}}" …
-   keydrop ack cloudflare-dns                      # dealt with it
-   keydrop request github-pat --desc "Fine-grained PAT for org/repo, contents:read, 90 days"
-   keydrop wait github-pat
+   keydrop run -e CLOUDFLARE_API_TOKEN -- terraform apply   # sets $CLOUDFLARE_API_TOKEN
+   keydrop run -e TOKEN=CLOUDFLARE_API_TOKEN -- sh -c 'curl -H "Authorization: Bearer $TOKEN" …'
+   keydrop ack CLOUDFLARE_API_TOKEN                # dealt with it
+   keydrop request GITHUB_PAT --desc "Fine-grained PAT for org/repo, contents:read, 90 days"
+   keydrop wait GITHUB_PAT
    ```
 
-`{{name}}` in arguments is convenient, but the value is then visible in
-`/proc/<pid>/cmdline` to other processes of the same user while the command
-runs. `--env` avoids that. Inside `sh -c '…'`, use single quotes so
-`$TOKEN` is expanded by the child, not by your shell.
+`-e NAME` sets `$NAME`; `-e VAR=NAME` sets `$VAR` instead. Repeat `-e` for
+several secrets. Values only ever go into the command's environment, never
+its arguments, because arguments are visible in `/proc/<pid>/cmdline` to
+other processes. Inside `sh -c '…'`, use single quotes so the variable is
+expanded by the child, not by your shell.
+
+Secret names look like environment variables: capital letters, digits and
+`_`, not starting with a digit. The web page upper-cases what you type.
 
 For a file (a kubeconfig, a PEM): `keydrop get NAME --to-file PATH` writes it
 with mode 600. `keydrop get NAME --raw` prints a value, which defeats the point;
@@ -138,7 +143,8 @@ it exists for the rare pipe that needs it.
 
 To migrate an existing `.env` (needs a token with write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
-lines above a key become its description. Values are never printed. Rotate
+lines above a key become its description, and each key keeps its name
+(keys that aren't upper-case are skipped). Values are never printed. Rotate
 anything that sat in plaintext for long.
 
 See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
