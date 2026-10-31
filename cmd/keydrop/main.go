@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/minituff/keydrop/internal/client"
 )
 
 // Set at build time with -ldflags "-X main.version=…".
@@ -49,6 +51,7 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	client.Version = version
 	cmd, args := os.Args[1], os.Args[2:]
 	var err error
 	switch cmd {

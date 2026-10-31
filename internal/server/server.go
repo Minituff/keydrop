@@ -34,6 +34,17 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 	// ResetAdmin forces setup mode even if an admin exists.
 	ResetAdmin bool
+	// Version is the server's build version. Agents get it in the
+	// X-Keydrop-Version header so the CLI can warn about a mismatch.
+	Version string
+	// CLI are the CLI builds the server hands out (LoadCLI).
+	CLI []CLIBuild
+	// CertPin and KeyPin identify keydrop's own self-signed certificate:
+	// the CLI pins the certificate, curl pins the key. Empty otherwise.
+	CertPin, KeyPin string
+	// DirectURL reaches keydrop itself rather than through a proxy, for the
+	// pinned install command, e.g. https://10.0.0.5:8443.
+	DirectURL string
 }
 
 const (
@@ -131,6 +142,8 @@ func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	m.HandleFunc("GET /static/style.css", s.handleCSS)
+	m.HandleFunc("GET /install.sh", s.handleInstallScript)
+	m.HandleFunc("GET /cli/{file}", s.handleCLI)
 
 	m.HandleFunc("GET /setup", s.handleSetupForm)
 	m.HandleFunc("POST /setup", s.handleSetup)

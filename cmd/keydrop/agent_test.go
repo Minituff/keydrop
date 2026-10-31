@@ -97,3 +97,20 @@ func TestPrintable(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectAddress(t *testing.T) {
+	for _, tc := range []struct {
+		hosts  []string
+		listen string
+		want   string
+	}{
+		{[]string{"secrets.example.com", "10.0.0.5"}, ":8443", "https://10.0.0.5:8443"},
+		{[]string{"secrets.example.com"}, ":8443", "https://secrets.example.com:8443"},
+		{[]string{"fd00::5"}, "0.0.0.0:9443", "https://[fd00::5]:9443"},
+		{nil, ":8443", ""},
+	} {
+		if got := directAddress(tc.hosts, tc.listen); got != tc.want {
+			t.Errorf("directAddress(%v, %q) = %q, want %q", tc.hosts, tc.listen, got, tc.want)
+		}
+	}
+}

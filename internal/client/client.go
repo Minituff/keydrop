@@ -29,6 +29,25 @@ type Whoami struct {
 	Write      bool     `json:"write"`
 }
 
+// Version is this CLI's build version, set by main. When it differs from
+// the server's, the client warns once on stderr.
+var Version string
+
+var (
+	warnedVersion bool
+	warnTo        io.Writer = os.Stderr
+)
+
+// checkVersion warns when the server is a different build. Unversioned
+// local builds ("dev") are skipped.
+func checkVersion(server string) {
+	if warnedVersion || server == "" || Version == "" || Version == "dev" || server == "dev" || server == Version {
+		return
+	}
+	warnedVersion = true
+	fmt.Fprintf(warnTo, "keydrop: this CLI is %s but the server is %s; reinstall it from the server's Agents page\n", Version, server)
+}
+
 // Client is a configured API client.
 type Client struct {
 	URL   string
@@ -156,6 +175,7 @@ func (c *Client) do(method, path string, body, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
+	checkVersion(resp.Header.Get("X-Keydrop-Version"))
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }

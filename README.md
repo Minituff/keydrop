@@ -120,6 +120,22 @@ Secrets and tokens are kept. To change the password while logged in, use
 
 ## Quick start (agent)
 
+0. Install the CLI. The server hands out its own build for Linux and
+   macOS (amd64 and arm64), so the CLI is always the server's version and
+   the machine needs nothing but `curl`. The exact command is on the
+   **Agents** page and in the server log:
+   ```sh
+   curl -fsSk --pinnedpubkey 'sha256//…' https://192.168.1.50:8443/install.sh | sh
+   ```
+   `-k` skips the usual certificate check and `--pinnedpubkey` replaces it
+   with a check of keydrop's own key, so a different server can't hand you
+   a different binary. Behind a proxy with a real certificate it's just
+   `curl -fsS https://secrets.example.com/install.sh | sh`. The script
+   picks the build with `uname`, checks it against `SHA256SUMS`, and
+   installs to `~/.local/bin` (`KEYDROP_INSTALL_DIR` to change). Windows:
+   download the `.exe` from the Agents page. Tagged releases also attach
+   every build to the GitHub release. `keydrop --version` shows the build;
+   the CLI warns once if it doesn't match the server's.
 1. On the agent's machine, as the agent's user (or let the agent run it):
    ```sh
    keydrop pair --url https://192.168.1.50:8443 --pin sha256:…
@@ -202,6 +218,7 @@ why.
 | `KEYDROP_COOKIE_SECURE` | `true` | Set `false` only if the page is reached over plain HTTP. |
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
+| `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
 override the files written by `keydrop pair` / `keydrop login`.
@@ -239,6 +256,10 @@ allowed sources gets 403.
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address (IPv6: per /64), 10 overall |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |
+| `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself) |
+| `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 4 downloads at a time |
+
+Authenticated responses carry `X-Keydrop-Version`, the server's build.
 
 ## Building
 
@@ -252,7 +273,10 @@ docker build -t keydrop .
 Tags `v*` publish CLI binaries with `SHA256SUMS` to the GitHub release, and a
 multi-arch image (with SBOM and provenance) to GHCR, from GitHub-hosted
 runners. Pushes to `dev` publish an amd64 image tagged `dev` and
-`dev-<sha>` once the tests pass; pin it by digest, not by the moving tag.
+`dev-<sha>` (its version is `dev-<sha>` too) once the tests pass; pin it by
+digest, not by the moving tag. Every image includes the CLI for all six
+platforms (about 24 MB compressed); CI installs it from a running image
+with `install.sh` and checks the version before anything is published.
 
 ## Roadmap
 

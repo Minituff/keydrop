@@ -282,6 +282,32 @@ every read logged, no way to just look). So an entry is either a
 - **Not designed for the internet.** Reach it over a LAN or a VPN such as
   Tailscale or WireGuard.
 
+### Getting the CLI onto an agent's machine
+The server hands out the CLI it was built with: every image carries all
+six builds (linux, darwin, windows × amd64, arm64), gzipped in `/cli`.
+`GET /install.sh` picks one with `uname`, checks `SHA256SUMS` and installs
+it; `GET /cli/<build>` serves the file. Why the server and not GitHub
+releases: an agent needs no GitHub access (the repo may be private), and
+the CLI's version always equals the server's.
+
+The trust question is the first download, before the agent has paired.
+Straight to keydrop, the command is `curl -k --pinnedpubkey sha256//…`:
+curl skips the CA check but refuses any server whose public key doesn't
+hash to the pin (`--pinnedpubkey` still applies with `-k`). curl can pin a
+key, not a certificate, so the server shows both pins: the key pin for
+curl and the certificate pin for `keydrop pair`. Both come from the same
+self-signed certificate, which is kept, so they stay stable. Through a
+trusted proxy the script uses the public URL and normal certificate
+checks. The checksum file comes over the same channel, so it catches a
+corrupted download, not a malicious server; the pin is what does that.
+The script inserts its own URL into the download commands, so a Host header
+that isn't a plain host[:port] is refused rather than quoted.
+
+The downloads are unauthenticated (they hold nothing secret) and capped at
+4 at a time. Authenticated API responses carry `X-Keydrop-Version`; the
+CLI warns once if it differs. The header isn't sent to anyone without a
+token, so the server doesn't announce its version.
+
 ### Deployment hardening (recommended in the example compose file)
 Non-root, read-only root filesystem, `cap_drop: ALL`,
 `no-new-privileges`, master key as a Docker secret. Pin the image by digest
@@ -295,7 +321,11 @@ code. The full list is in the README.
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a
   Docker build on every push and pull request. Pushes to `dev` then
   publish `ghcr.io/minituff/keydrop:dev` and `:dev-<sha>` (amd64), for a
-  test deployment that pins the digest.
+  test deployment that pins the digest. The image's version is
+  `dev-<sha>`, matching the tag. CI also starts the image, installs the CLI
+  with its own pinned `install.sh`, checks `--version`, and checks that a
+  wrong pin is refused. The bundle comes from the Dockerfile, so no release
+  can ship without it.
 - Release (`release.yml`, on a `v*` tag): cross-built CLI binaries with
   `SHA256SUMS` on the GitHub release, and a multi-arch image (amd64, arm64)
   on GHCR with SBOM and provenance attestations. GitHub-hosted runners

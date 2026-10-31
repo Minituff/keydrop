@@ -19,7 +19,23 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - name: Docker build (no push)
-        run: docker build .
+        run: docker build --build-arg VERSION=ci-test -t keydrop:ci .
+      # The image must hand out a working CLI of its own version: install it
+      # with the script the server serves, pinned, and run it.
+      - name: Install the CLI from the image
+        run: |
+          key=$(docker run --rm keydrop:ci genkey)
+          docker run -d --name kd -p 127.0.0.1:8443:8443 -e KEYDROP_MASTER_KEY="$key" -e KEYDROP_TLS_HOSTS=127.0.0.1 keydrop:ci
+          for i in $(seq 30); do curl -fsSk https://127.0.0.1:8443/healthz && break; sleep 1; done
+          docker logs kd 2>&1 | grep -F -- "--pinnedpubkey"
+          cmd=$(docker logs kd 2>&1 | grep -o "curl -fsSk --pinnedpubkey .*| sh")
+          KEYDROP_INSTALL_DIR="$RUNNER_TEMP/bin" sh -c "$cmd"
+          test "$("$RUNNER_TEMP/bin/keydrop" --version)" = "keydrop ci-test"
+          # a wrong pin must refuse to download (set -e ignores "!", hence the if)
+          if curl -fsSk --pinnedpubkey 'sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' https://127.0.0.1:8443/cli/SHA256SUMS; then
+            echo "a wrong pin was accepted"; exit 1
+          fi
+          docker rm -f kd
 
   # Pushes to dev also publish ghcr.io/<repo>:dev and :dev-<sha>, after the
   # tests pass. Deployments pin the digest, never the moving :dev tag.
@@ -45,6 +61,8 @@ jobs:
           tags: |
             type=raw,value=dev
             type=sha,prefix=dev-
+      - id: short
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v7
         with:
@@ -53,7 +71,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=dev-${{ github.sha }}
+          build-args: VERSION=dev-${{ steps.short.outputs.sha }} # matches the dev-<sha> tag
           provenance: false
       - name: Digest
         run: echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"

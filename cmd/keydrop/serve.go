@@ -87,6 +87,23 @@ func cmdHealthcheck(args []string) error {
 	return nil
 }
 
+// directAddress is the URL agents use to reach keydrop itself: the first IP
+// in KEYDROP_TLS_HOSTS (names usually point at a proxy), else the first name.
+func directAddress(hosts []string, listen string) string {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil || len(hosts) == 0 {
+		return ""
+	}
+	pick := hosts[0]
+	for _, h := range hosts {
+		if net.ParseIP(h) != nil {
+			pick = h
+			break
+		}
+	}
+	return "https://" + net.JoinHostPort(pick, port)
+}
+
 func cmdServer(args []string) error {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	fs.Parse(args)
@@ -120,7 +137,9 @@ func cmdServer(args []string) error {
 	}
 
 	tlsMode := env("KEYDROP_TLS", "auto")
+	listen := env("KEYDROP_LISTEN", ":8443")
 	var tlsCert *tls.Certificate
+	var certPin, keyPin, directURL string
 	switch tlsMode {
 	case "auto":
 		hosts := strings.FieldsFunc(env("KEYDROP_TLS_HOSTS", ""), func(r rune) bool { return r == ',' || r == ' ' })
@@ -129,6 +148,11 @@ func cmdServer(args []string) error {
 			return fmt.Errorf("self-signed certificate: %w", err)
 		}
 		tlsCert = &c
+		certPin = fp
+		if keyPin, err = server.KeyPin(c.Certificate[0]); err != nil {
+			return err
+		}
+		directURL = directAddress(hosts, listen)
 		log.Printf("TLS: self-signed certificate. Agents pin it with KEYDROP_TLS_PIN=%s", fp)
 	case "files":
 		c, err := tls.LoadX509KeyPair(env("KEYDROP_TLS_CERT", ""), env("KEYDROP_TLS_KEY", ""))
@@ -142,7 +166,6 @@ func cmdServer(args []string) error {
 		return fmt.Errorf("KEYDROP_TLS must be auto, files or off, not %q", tlsMode)
 	}
 
-	listen := env("KEYDROP_LISTEN", ":8443")
 	publicURL := env("KEYDROP_PUBLIC_URL", "")
 	guessed := publicURL == ""
 	if guessed {
@@ -158,13 +181,35 @@ func cmdServer(args []string) error {
 		log.Printf("KEYDROP_PUBLIC_URL isn't set; links will use %s", publicURL)
 	}
 
-	srv := server.New(server.Config{
+	if directURL == "" && certPin != "" {
+		directURL = publicURL
+	}
+	cli, err := server.LoadCLI(env("KEYDROP_CLI_DIR", ""))
+	if err != nil {
+		return fmt.Errorf("KEYDROP_CLI_DIR: %w", err)
+	}
+
+	cfg := server.Config{
 		PublicURL:      publicURL,
 		PublicURLGuess: guessed,
 		CookieSecure:   envBool("KEYDROP_COOKIE_SECURE", true),
 		TrustedProxies: proxies,
 		ResetAdmin:     envBool("KEYDROP_RESET_ADMIN", false),
-	}, st, al)
+		Version:        version,
+		CLI:            cli,
+		CertPin:        certPin,
+		KeyPin:         keyPin,
+		DirectURL:      directURL,
+	}
+	srv := server.New(cfg, st, al)
+	if public, direct := cfg.InstallCommands(); public != "" || direct != "" {
+		log.Printf("install the CLI on an agent's machine with one of:")
+		for _, c := range []string{public, direct} {
+			if c != "" {
+				log.Printf("  %s", c)
+			}
+		}
+	}
 
 	hs := &http.Server{
 		Addr:              listen,

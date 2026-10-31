@@ -596,7 +596,9 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, _ string, 
 }
 
 func (s *Server) renderTokens(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
-	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Pairings": s.pendingPairings(), "Error": errMsg})
+	public, direct := s.cfg.InstallCommands()
+	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Pairings": s.pendingPairings(), "Error": errMsg,
+		"InstallPublic": public, "InstallDirect": direct, "CLI": s.cfg.CLI, "CertPin": s.cfg.CertPin, "Version": s.cfg.Version})
 }
 
 func splitList(s string) []string {

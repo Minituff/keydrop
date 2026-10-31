@@ -35,7 +35,17 @@
 </ul>
 
 <h2>Add an agent</h2>
+{{if .CLI}}
+<p>1. Install the CLI on the agent's machine (Linux or macOS, amd64 or arm64). It's keydrop {{.Version}}, the same build as this server.</p>
+{{if .InstallPublic}}<pre><code>{{.InstallPublic}}</code></pre>{{end}}
+{{if .InstallDirect}}<p>{{if .InstallPublic}}Or straight to keydrop, checking its key instead of a public certificate:{{else}}This checks keydrop's own key, so it's safe without a public certificate:{{end}}</p>
+<pre><code>{{.InstallDirect}}</code></pre>{{end}}
+<p><small>Other systems: download a build and check it against <a href="/cli/SHA256SUMS">SHA256SUMS</a>:
+{{range $i, $b := .CLI}}{{if $i}} · {{end}}<a href="/cli/{{$b.Name}}">{{$b.OS}} {{$b.Arch}}</a>{{end}}</small></p>
+<p>2. Pair it: run <code>keydrop pair --url URL{{if .CertPin}} --pin {{.CertPin}}{{end}}</code> and open the link it prints. It shows up above for you to approve.</p>
+{{else}}
 <p>The easy way: on the agent's machine, run <code>keydrop pair --url URL</code> and open the link it prints. It shows up above for you to approve.</p>
+{{end}}
 <p>Or make a token by hand and paste it into <code>keydrop login</code>:</p>
 <form method="post" action="/tokens" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

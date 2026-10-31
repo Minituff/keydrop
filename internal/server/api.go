@@ -84,6 +84,11 @@ func (s *Server) agent(h agentHandler) http.HandlerFunc {
 		if l := strings.ToLower(r.Header.Get("X-Keydrop-Agent")); store.ValidName(l) {
 			t.Label = l
 		}
+		// Only for authenticated agents, so the version isn't announced to
+		// anyone who connects.
+		if s.cfg.Version != "" {
+			w.Header().Set("X-Keydrop-Version", s.cfg.Version)
+		}
 		h(w, r, t)
 	}
 }
