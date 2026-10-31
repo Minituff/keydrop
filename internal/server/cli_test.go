@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -168,7 +169,7 @@ func testSealer(t *testing.T, dir string) *store.Store {
 func TestKeyPin(t *testing.T) {
 	dir := t.TempDir()
 	st := testSealer(t, dir)
-	c, _, _, err := LoadOrCreateSelfSigned(dir, []string{"10.0.0.5"}, st)
+	c, _, err := LoadOrCreateSelfSigned(dir, []string{"10.0.0.5"}, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestKeyPin(t *testing.T) {
 		t.Fatalf("KeyPin = %s, want %s", pin, want)
 	}
 	// The key is stored, so the pin survives a restart.
-	c2, _, _, err := LoadOrCreateSelfSigned(dir, nil, st)
+	c2, _, err := LoadOrCreateSelfSigned(dir, nil, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func TestKeyPin(t *testing.T) {
 	}
 	// Another master key can't open it, and nothing is regenerated.
 	other, _ := store.Open(t.TempDir(), bytes.Repeat([]byte{8}, 32))
-	if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, other); err == nil {
+	if _, _, err := LoadOrCreateSelfSigned(dir, nil, other); err == nil {
 		t.Fatal("opened with the wrong master key")
 	}
 	if raw2, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Equal(raw, raw2) {
@@ -210,7 +211,7 @@ func TestTLSHalfPairRefused(t *testing.T) {
 	for _, keep := range []string{"tls.crt", "tls.key"} {
 		dir := t.TempDir()
 		st := testSealer(t, dir)
-		if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil {
+		if _, _, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil {
 			t.Fatal(err)
 		}
 		gone := "tls.key"
@@ -219,7 +220,7 @@ func TestTLSHalfPairRefused(t *testing.T) {
 		}
 		os.Remove(filepath.Join(dir, gone))
 		before, _ := os.ReadFile(filepath.Join(dir, keep))
-		if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, st); !errors.Is(err, ErrHalfPair) {
+		if _, _, err := LoadOrCreateSelfSigned(dir, nil, st); !errors.Is(err, ErrHalfPair) {
 			t.Fatalf("only %s: got %v, want ErrHalfPair", keep, err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, gone)); !errors.Is(err, os.ErrNotExist) {
@@ -231,8 +232,9 @@ func TestTLSHalfPairRefused(t *testing.T) {
 	}
 }
 
-// A plaintext tls.key from an earlier release is sealed in place, and the
-// certificate (and so every agent's pin) stays the same. Unsealing gives
+// A plaintext tls.key from an earlier release is refused at start (never
+// sealed behind the operator's back); SealTLSKey (upgrade-data) seals it in
+// place, keeping the certificate and so every agent's pin. Unsealing gives
 // the original back for a downgrade.
 func TestTLSKeyMigration(t *testing.T) {
 	dir := t.TempDir()
@@ -245,19 +247,26 @@ func TestTLSKeyMigration(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "tls.key"), keyPEM, 0o600)
 	os.WriteFile(filepath.Join(dir, "tls.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
 
-	c, fp, migrated, err := LoadOrCreateSelfSigned(dir, nil, st)
-	if err != nil || !migrated {
-		t.Fatalf("migrate: %v %v", migrated, err)
+	if _, _, err := LoadOrCreateSelfSigned(dir, nil, st); !errors.Is(err, ErrKeyNotSealed) {
+		t.Fatalf("plaintext key at start: %v", err)
 	}
-	if fp != Fingerprint(der) || !bytes.Equal(c.Certificate[0], der) {
-		t.Fatal("certificate changed during migration")
+	if raw, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Equal(raw, keyPEM) {
+		t.Fatal("start changed a plaintext tls.key")
+	}
+	fp, sealed, err := SealTLSKey(dir, st)
+	if err != nil || !sealed || fp != Fingerprint(der) {
+		t.Fatalf("seal: %v %v %s", sealed, err, fp)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "tls.key"))
 	if bytes.Contains(raw, keyPEM) || !bytes.Contains(raw, []byte(sealedKeyType)) {
 		t.Fatal("plaintext key left behind")
 	}
-	if _, fp2, migrated, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil || migrated || fp2 != fp {
-		t.Fatalf("second start: %v %v %s", migrated, err, fp2)
+	if fp2, sealed, err := SealTLSKey(dir, st); err != nil || sealed || fp2 != fp {
+		t.Fatalf("second seal: %v %v %s", sealed, err, fp2)
+	}
+	c, fp3, err := LoadOrCreateSelfSigned(dir, nil, st)
+	if err != nil || fp3 != fp || !bytes.Equal(c.Certificate[0], der) {
+		t.Fatalf("start after sealing: %v %s", err, fp3)
 	}
 	// A release that predates sealing can't parse it, so it refuses to start
 	// rather than making a new certificate.
@@ -269,6 +278,54 @@ func TestTLSKeyMigration(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Equal(raw, keyPEM) {
 		t.Fatal("unsealed key differs from the original")
+	}
+	// No certificate at all: nothing to seal, not an error.
+	if fp, sealed, err := SealTLSKey(t.TempDir(), st); fp != "" || sealed || err != nil {
+		t.Fatalf("empty dir: %q %v %v", fp, sealed, err)
+	}
+}
+
+// Rotation makes a new sealed key and certificate and keeps the old pair as
+// timestamped backups.
+func TestRotateSelfSigned(t *testing.T) {
+	dir := t.TempDir()
+	st := testSealer(t, dir)
+	if _, _, err := RotateSelfSigned(dir, nil, st, time.Now()); err == nil {
+		t.Fatal("rotated with no certificate")
+	}
+	_, oldFP, err := LoadOrCreateSelfSigned(dir, nil, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey, _ := os.ReadFile(filepath.Join(dir, "tls.key"))
+	oldCrt, _ := os.ReadFile(filepath.Join(dir, "tls.crt"))
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	fp, backups, err := RotateSelfSigned(dir, []string{"10.0.0.5", "secrets.example.com"}, st, now)
+	if err != nil || fp == oldFP || len(backups) != 2 {
+		t.Fatalf("rotate: %v %s %v", err, fp, backups)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "tls.key.20260102T030405Z.bak")); !bytes.Equal(b, oldKey) {
+		t.Fatal("old key not kept")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "tls.crt.20260102T030405Z.bak")); !bytes.Equal(b, oldCrt) {
+		t.Fatal("old certificate not kept")
+	}
+	c, fp2, err := LoadOrCreateSelfSigned(dir, nil, st)
+	if err != nil || fp2 != fp {
+		t.Fatalf("start after rotation: %v %s %s", err, fp2, fp)
+	}
+	if len(c.Leaf.IPAddresses) != 1 || !slices.Contains(c.Leaf.DNSNames, "secrets.example.com") {
+		t.Fatalf("SANs: %v %v", c.Leaf.IPAddresses, c.Leaf.DNSNames)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "tls.key")); !bytes.Contains(raw, []byte(sealedKeyType)) {
+		t.Fatal("new key isn't sealed")
+	}
+	// The same second again won't overwrite a backup.
+	if _, _, err := RotateSelfSigned(dir, nil, st, now); err == nil {
+		t.Fatal("overwrote a backup")
+	}
+	if _, fp3, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil || fp3 != fp {
+		t.Fatalf("after refused rotation: %v", err)
 	}
 }
 

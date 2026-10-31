@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -48,45 +49,125 @@ var ErrHalfPair = errors.New("only one of tls.crt and tls.key is in the data dir
 	"refusing to make a new one, which would change the pin every agent holds. Restore the missing file from a backup. " +
 	"If no agent has paired yet (or you mean to re-pin them all), remove the other file too and a new certificate is made on start")
 
+// ErrKeyNotSealed: tls.key is in plaintext, as a release before sealing
+// wrote it (or downgrade-data left it).
+var ErrKeyNotSealed = errors.New("tls.key in the data directory isn't sealed with the master key (it's from an older release, or downgrade-data). " +
+	"keydrop no longer seals it on start: stop keydrop and run `keydrop upgrade-data` once, then start it again")
+
 // LoadOrCreateSelfSigned returns a certificate stored in dir, creating a
 // 10-year ECDSA one on first run (when neither tls.crt nor tls.key exists;
-// one without the other is ErrHalfPair). hosts become the SANs. The private key is
-// stored sealed with the master key; a plaintext tls.key from an earlier
-// release is sealed in place, keeping the same key and certificate, and
-// migrated reports that it was.
-func LoadOrCreateSelfSigned(dir string, hosts []string, sealer Sealer) (c tls.Certificate, fp string, migrated bool, err error) {
+// one without the other is ErrHalfPair). hosts become the SANs. The private
+// key is stored sealed with the master key; a plaintext one is refused
+// with ErrKeyNotSealed (SealTLSKey, run by upgrade-data, seals it).
+func LoadOrCreateSelfSigned(dir string, hosts []string, sealer Sealer) (tls.Certificate, string, error) {
+	c, sealed, err := loadPair(dir, sealer)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return createSelfSigned(dir, hosts, sealer)
+	case err != nil:
+		return tls.Certificate{}, "", err
+	case !sealed:
+		return tls.Certificate{}, "", ErrKeyNotSealed
+	}
+	return c, Fingerprint(c.Certificate[0]), nil
+}
+
+// loadPair reads tls.crt and tls.key from dir. Neither there is
+// os.ErrNotExist; just one is ErrHalfPair. sealed says how tls.key was
+// stored.
+func loadPair(dir string, sealer Sealer) (c tls.Certificate, sealed bool, err error) {
 	certPath, keyPath := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
 	certPEM, err1 := os.ReadFile(certPath)
 	keyFile, err2 := os.ReadFile(keyPath)
 	switch {
-	case err1 == nil && err2 == nil:
-		keyPEM, sealed, err := openKey(keyFile, sealer)
-		if err != nil {
-			return tls.Certificate{}, "", false, err
-		}
-		c, err := tls.X509KeyPair(certPEM, keyPEM)
-		if err != nil {
-			return tls.Certificate{}, "", false, fmt.Errorf("%s and %s: %w", certPath, keyPath, err)
-		}
-		if !sealed {
-			if err := writeSealedKey(keyPath, keyPEM, sealer); err != nil {
-				return tls.Certificate{}, "", false, fmt.Errorf("sealing %s: %w", keyPath, err)
-			}
-			migrated = true
-		}
-		return c, Fingerprint(c.Certificate[0]), migrated, nil
 	case err1 != nil && !errors.Is(err1, os.ErrNotExist):
-		return tls.Certificate{}, "", false, err1
+		return c, false, err1
 	case err2 != nil && !errors.Is(err2, os.ErrNotExist):
-		return tls.Certificate{}, "", false, err2
-	case err1 == nil || err2 == nil:
+		return c, false, err2
+	case err1 != nil && err2 != nil:
+		return c, false, os.ErrNotExist
+	case err1 != nil || err2 != nil:
 		// Half a pair: making a new one would silently change the pin
 		// every agent holds.
-		return tls.Certificate{}, "", false, ErrHalfPair
+		return c, false, ErrHalfPair
 	}
+	keyPEM, sealed, err := openKey(keyFile, sealer)
+	if err != nil {
+		return c, false, err
+	}
+	c, err = tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return c, false, fmt.Errorf("%s and %s: %w", certPath, keyPath, err)
+	}
+	return c, sealed, nil
+}
+
+// SealTLSKey seals a plaintext tls.key in dir in place, keeping the same key
+// and certificate (so the pin doesn't change). It returns the certificate's
+// fingerprint ("" if dir has no certificate), and whether it sealed
+// anything; an already sealed key is left alone.
+func SealTLSKey(dir string, sealer Sealer) (fp string, sealed bool, err error) {
+	c, already, err := loadPair(dir, sealer)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	fp = Fingerprint(c.Certificate[0])
+	if already {
+		return fp, false, nil
+	}
+	keyPath := filepath.Join(dir, "tls.key")
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return "", false, err
+	}
+	if err := writeSealedKey(keyPath, keyPEM, sealer); err != nil {
+		return "", false, fmt.Errorf("sealing %s: %w", keyPath, err)
+	}
+	return fp, true, nil
+}
+
+// RotateSelfSigned replaces the self-signed certificate in dir with a new
+// key and certificate (sealed, as on first run). The old tls.crt and
+// tls.key are kept beside them as tls.crt.<stamp>.bak and
+// tls.key.<stamp>.bak (the key stays sealed as it was). It returns the new
+// fingerprint and the backup paths.
+func RotateSelfSigned(dir string, hosts []string, sealer Sealer, now time.Time) (string, []string, error) {
+	if _, _, err := loadPair(dir, sealer); errors.Is(err, os.ErrNotExist) {
+		return "", nil, errors.New("there's no tls.crt and tls.key in the data directory to rotate; keydrop makes them on its first start")
+	} else if err != nil {
+		return "", nil, err
+	}
+	stamp := now.UTC().Format("20060102T150405Z")
+	names := []string{"tls.key", "tls.crt"}
+	for _, name := range names { // check both first: never leave half a pair
+		if _, err := os.Lstat(filepath.Join(dir, name+"."+stamp+".bak")); err == nil {
+			return "", nil, fmt.Errorf("%s.%s.bak already exists; try again in a second", name, stamp)
+		}
+	}
+	var backups []string
+	for _, name := range names {
+		to := filepath.Join(dir, name+"."+stamp+".bak")
+		if err := os.Rename(filepath.Join(dir, name), to); err != nil {
+			return "", backups, err
+		}
+		backups = append(backups, to)
+	}
+	_, fp, err := createSelfSigned(dir, hosts, sealer)
+	if err != nil {
+		return "", backups, fmt.Errorf("making the new certificate (the old one is in %s; rename them back to undo): %w", strings.Join(backups, " and "), err)
+	}
+	return fp, backups, nil
+}
+
+// createSelfSigned makes a new key and certificate in dir. The key is
+// written (sealed) before the certificate.
+func createSelfSigned(dir string, hosts []string, sealer Sealer) (tls.Certificate, string, error) {
+	certPath, keyPath := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, "", false, err
+		return tls.Certificate{}, "", err
 	}
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	tmpl := &x509.Certificate{
@@ -107,22 +188,22 @@ func LoadOrCreateSelfSigned(dir string, hosts []string, sealer Sealer) (c tls.Ce
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, "", false, err
+		return tls.Certificate{}, "", err
 	}
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return tls.Certificate{}, "", false, err
+		return tls.Certificate{}, "", err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	if err := writeSealedKey(keyPath, keyPEM, sealer); err != nil {
-		return tls.Certificate{}, "", false, err
+		return tls.Certificate{}, "", err
 	}
 	if err := writeFileSync(certPath, certPEM, 0o644); err != nil {
-		return tls.Certificate{}, "", false, err
+		return tls.Certificate{}, "", err
 	}
-	c, err = tls.X509KeyPair(certPEM, keyPEM)
-	return c, Fingerprint(der), false, err
+	c, err := tls.X509KeyPair(certPEM, keyPEM)
+	return c, Fingerprint(der), err
 }
 
 // openKey returns the plaintext PEM of a tls.key file, and whether it was

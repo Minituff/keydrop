@@ -42,6 +42,11 @@ var (
 	ErrRequestedByOther = errors.New("already requested by another agent")
 	// ErrIntegrity: the state file was changed by something without the
 	// master key.
+	// ErrNeedsUpgrade: the state file is in the format of a release before
+	// the integrity check, which the server doesn't upgrade on its own.
+	ErrNeedsUpgrade = errors.New("keydrop.json is in the format of an older release, without the integrity check, and keydrop no longer upgrades it on start. " +
+		"Stop keydrop, back up the data directory, and run `keydrop upgrade-data` once with the same data directory and master key " +
+		"(see Upgrading and rolling back in the README), then start it again")
 	ErrIntegrity = errors.New("keydrop.json failed its integrity check (HMAC): it was changed outside keydrop, or by something without the master key; refusing to start. Restore it from a backup")
 )
 
@@ -49,9 +54,11 @@ const (
 	stateFile = "keydrop.json"
 	// keyCheck is sealed into the state so a wrong master key is caught at
 	// start. keyCheckV1 is the pre-MAC format; keyCheckMAC says the state
-	// file carries an HMAC and must have a valid one. Because it's sealed,
-	// someone without the master key can't strip the MAC and turn the
-	// check back off.
+	// file carries an HMAC and must have a valid one. A v1 key check can't
+	// be made without the master key, but one can be copied from an old
+	// backup, so Open refuses v1 outright instead of trusting (and
+	// upgrading) whatever file carries it; only `keydrop upgrade-data`,
+	// run by the operator, upgrades one.
 	keyCheckV1  = "keydrop-key-check"
 	keyCheckMAC = "keydrop-key-check:v2"
 	// TokenPrefix makes leaked tokens easy to recognise and grep for.
@@ -263,10 +270,9 @@ type Store struct {
 	st     state
 	now    func() time.Time
 	macKey []byte
-	// Migrated is set when Open upgraded a state file written before the
-	// HMAC existed. The old binary can't read it any more (see
-	// Downgrade).
-	Migrated bool
+	// legacy: the state file is in the format before the integrity check
+	// (only ever loaded by OpenExisting).
+	legacy bool
 }
 
 // ParseKey accepts a 32-byte master key as base64 (standard or URL) or hex.
@@ -295,18 +301,16 @@ func GenerateKey() string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-// Open loads (or creates) the state file in dir.
+// Open loads the state file in dir, or creates a new one if there is none.
+// A state file in the format before the integrity check is refused with
+// ErrNeedsUpgrade: the server never upgrades one on its own, because the
+// old format has nothing to check, so anyone who can write the file could
+// put an edited one there to be vouched for.
 func Open(dir string, key []byte) (*Store, error) {
-	block, err := aes.NewCipher(key)
+	s, err := newStore(dir, key)
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
-	s.macKey = s.DeriveKey("state mac")
 	data, err := os.ReadFile(s.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -322,17 +326,64 @@ func Open(dir string, key []byte) (*Store, error) {
 	case err != nil:
 		return nil, err
 	}
+	if err := s.load(data); err != nil {
+		return nil, err
+	}
+	if s.legacy {
+		return nil, ErrNeedsUpgrade
+	}
+	return s, nil
+}
+
+// OpenExisting loads the state file in dir for the data commands
+// (upgrade-data, downgrade-data, rotate-tls), and changes nothing. Unlike
+// Open it accepts the format before the integrity check (Legacy reports
+// it), and it never creates a state file: a missing one is an error, since
+// it usually means the wrong directory.
+func OpenExisting(dir string, key []byte) (*Store, error) {
+	s, err := newStore(dir, key)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("there's no %s in %s: check KEYDROP_DATA_DIR and the volume mount", stateFile, dir)
+	} else if err != nil {
+		return nil, err
+	}
+	if err := s.load(data); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func newStore(dir string, key []byte) (*Store, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
+	s.macKey = s.DeriveKey("state mac")
+	return s, nil
+}
+
+// load parses a state file, checks the master key, and checks the HMAC if
+// the sealed key check says one is required.
+func (s *Store) load(data []byte) error {
 	if err := json.Unmarshal(data, &s.st); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", s.path, err)
+		return fmt.Errorf("reading %s: %w", s.path, err)
 	}
 	pt, err := s.open(s.st.KeyCheck, "keycheck")
 	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC) {
-		return nil, errors.New("master key does not match this data directory")
+		return errors.New("master key does not match this data directory")
 	}
-	if string(pt) == keyCheckMAC {
-		if !hmac.Equal(s.st.MAC, s.mac()) {
-			return nil, ErrIntegrity
-		}
+	s.legacy = string(pt) == keyCheckV1
+	if !s.legacy && !hmac.Equal(s.st.MAC, s.mac()) {
+		return ErrIntegrity
 	}
 	if s.st.Secrets == nil {
 		s.st.Secrets = map[string]*Secret{}
@@ -340,16 +391,35 @@ func Open(dir string, key []byte) (*Store, error) {
 	if s.st.Tokens == nil {
 		s.st.Tokens = map[string]*Token{}
 	}
-	if string(pt) == keyCheckV1 {
-		// Written before the MAC existed: add one, and record in the
-		// sealed key check that it's required from now on.
-		s.st.KeyCheck = s.seal([]byte(keyCheckMAC), "keycheck")
-		if err := s.save(); err != nil {
-			return nil, fmt.Errorf("adding an integrity check to %s: %w", s.path, err)
-		}
-		s.Migrated = true
+	return nil
+}
+
+// Legacy reports whether the state file is in the format before the
+// integrity check (written by an older release, or by Downgrade).
+func (s *Store) Legacy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.legacy
+}
+
+// Upgrade adds the integrity check to a state file in the older format: an
+// HMAC, and a sealed key check that says one is required from now on. It
+// vouches for the file exactly as it is, so it's an explicit operator step
+// (`keydrop upgrade-data`), never automatic. It reports whether anything
+// changed; on a file that already has the check it does nothing.
+func (s *Store) Upgrade() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.legacy {
+		return false, nil
 	}
-	return s, nil
+	snap := s.st.clone()
+	s.st.KeyCheck = s.seal([]byte(keyCheckMAC), "keycheck")
+	if err := s.commit(snap); err != nil {
+		return false, fmt.Errorf("adding an integrity check to %s: %w", s.path, err)
+	}
+	s.legacy = false
+	return true, nil
 }
 
 // mac is the HMAC of the state with its MAC field empty.
@@ -367,14 +437,22 @@ func (s *Store) mac() []byte {
 
 // Downgrade rewrites the state so the release before the integrity check
 // can read it again: the key check goes back to the old format. The MAC
-// stays in the file (the old release ignores it), and the next start of
-// this release checks nothing until it adds a fresh one.
-func (s *Store) Downgrade() error {
+// stays in the file (the old release ignores it) but means nothing any
+// more: this release refuses the file until `keydrop upgrade-data` is run
+// again. It reports whether anything changed.
+func (s *Store) Downgrade() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.legacy {
+		return false, nil
+	}
 	snap := s.st.clone()
 	s.st.KeyCheck = s.seal([]byte(keyCheckV1), "keycheck")
-	return s.commit(snap)
+	if err := s.commit(snap); err != nil {
+		return false, err
+	}
+	s.legacy = true
+	return true, nil
 }
 
 // SealBlob encrypts a file-sized blob kept outside the state (the TLS

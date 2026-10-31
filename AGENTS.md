@@ -38,8 +38,12 @@ isn't worth it.
   data directory. `tls.key` is sealed too, and `keydrop.json` is HMAC'd
   with a key derived from the master key (`Store.DeriveKey`; never reuse
   the encryption key for anything else). Any change to the data format
-  needs an automatic migration, a way back (`keydrop downgrade-data`) and
-  a README note under "Upgrading and rolling back".
+  needs a migration, a way back (`keydrop downgrade-data`) and a README
+  note under "Upgrading and rolling back". The server never upgrades
+  data on start: a format the HMAC doesn't cover is refused, and the
+  operator migrates it with `keydrop upgrade-data` (otherwise anyone who
+  can write the data directory could get an edited old-format file
+  vouched for by restarting the server).
 - **Store mutations** take a snapshot (`s.st.clone()`) and finish with
   `s.commit(snap)`, so a failed save leaves memory as it was.
 - **The web UI has no JavaScript.** The CSP forbids scripts. Don't add

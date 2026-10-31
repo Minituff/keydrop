@@ -129,16 +129,27 @@ Someone with a copy of `data/` but not the master key can't:
 
 - read any secret or variable value, or the authenticator seed;
 - read the TLS private key (`tls.key` is sealed), so they can't pose as
-  the server that agents have pinned;
+  the server that agents have pinned. **Except in copies made before
+  sealing:** a backup of `data/` taken before you ran `keydrop
+  upgrade-data` (or after `downgrade-data`) holds `tls.key` in plaintext,
+  and sealing the live file doesn't change those copies. If such a backup
+  may have been exposed, [rotate the certificate](#rotating-the-tls-certificate);
 - change `keydrop.json` (add a token hash, replace the admin password,
-  grant a namespace): its HMAC no longer matches and keydrop refuses to
-  start with an integrity error.
+  grant a namespace) and have keydrop start on it: its HMAC no longer
+  matches and keydrop refuses to start with an integrity error. Removing
+  the HMAC and pasting in the key check from an older-format copy (a
+  backup from before the upgrade, or a downgraded one) doesn't get around
+  it either: keydrop refuses older-format data outright and never upgrades
+  it on its own, so such a file isn't accepted unless the operator runs
+  `keydrop upgrade-data` on it. Only run that on data you know is your
+  own and unedited.
 
 They **can** still see metadata: secret and variable names, descriptions,
 namespaces, token names, the admin password's PBKDF2 hash, and the audit
 log. And someone who can write to `data/` can put back an **older complete
-copy** of it (an earlier backup verifies fine), or delete it. Protect
-`data/` like any other backup, just not like the key.
+copy** of it in the current format (a backup taken after upgrading
+verifies fine, bringing back revoked tokens or an old password), or
+delete it. Protect `data/` like any other backup, just not like the key.
 
 Limitations, by design for now:
 
@@ -149,15 +160,42 @@ Limitations, by design for now:
 
 ### Upgrading and rolling back
 
-The first start of a release with the sealed TLS key and integrity check
-upgrades the data directory in place, and logs each step:
+Releases before the sealed TLS key and integrity check wrote
+`keydrop.json` without an HMAC and `tls.key` in plaintext. This release
+**won't start on that data**: it stops with "keydrop.json is in the format
+of an older release … run `keydrop upgrade-data` once". It doesn't upgrade
+on its own, because the old format has nothing to check: upgrading vouches
+for the files exactly as they are, which is the operator's decision. So the
+first time, upgrade by hand. With Compose (data in `./data`, the key as the
+`keydrop_master_key` secret, as in `compose.example.yml`):
 
-- A plaintext `tls.key` is sealed with the master key. The key and
-  certificate stay the same, so **the pin agents hold doesn't change**.
-  The sealed copy is written beside it and read back before it replaces
-  the plaintext one.
-- `keydrop.json` gets an HMAC, and the sealed key check records that one
-  is required from now on.
+1. Stop keydrop: `docker compose stop keydrop`.
+2. Back up `data/` (for example `sudo cp -a data data.bak-$(date +%F)`),
+   and keep that copy as safe as the original: its `tls.key` is plaintext.
+3. Point the service at the new image (edit `image:`, then
+   `docker compose pull keydrop`).
+4. Upgrade the data once, with the new image and the same volumes, secret
+   and user: `docker compose run --rm keydrop upgrade-data`.
+   It prints each step: `keydrop.json` gets an HMAC (and the sealed key
+   check records that one is required from now on), and `tls.key` is
+   sealed with the master key. The key and certificate stay the same, so
+   **the pin agents hold doesn't change**; it prints the pin so you can
+   compare. The sealed copy is written beside the old one and read back
+   before it replaces it. Running it again changes nothing.
+5. Start it: `docker compose up -d keydrop`, and check `docker logs
+   keydrop` shows the same `KEYDROP_TLS_PIN=sha256:…` as before.
+6. On an agent, `keydrop whoami` should work without changes.
+
+With plain `docker run`, use the same mounts, environment and user as the
+server's container, with `upgrade-data` as the command:
+
+```sh
+docker run --rm --user 65532:65532 \
+  -v /srv/keydrop/data:/data \
+  -v /srv/keydrop/master.key:/run/secrets/keydrop_master_key:ro \
+  -e KEYDROP_MASTER_KEY_FILE=/run/secrets/keydrop_master_key \
+  ghcr.io/minituff/keydrop:NEW upgrade-data
+```
 
 **Earlier releases can't start on upgraded data:** they refuse with
 "master key does not match this data directory" and never touch it
@@ -170,8 +208,39 @@ docker compose run --rm keydrop downgrade-data
 ```
 
 That writes `tls.key` back in plaintext and the key check in the old
-format; then start the older image. Starting the new one again upgrades
-again. Restoring a backup of `data/` from before the upgrade also works.
+format; then switch `image:` back and start the older image. The new
+release refuses that data again until `upgrade-data` is run again.
+Restoring the backup of `data/` from step 2 also works.
+
+### Rotating the TLS certificate
+
+Do this if a copy of `tls.key` may have leaked: in particular a backup
+made before `upgrade-data`, which holds it in plaintext. With the server
+stopped and the same volumes and environment (`KEYDROP_TLS_HOSTS` sets
+the new certificate's names, as on first start):
+
+```sh
+docker compose stop keydrop
+docker compose run --rm keydrop rotate-tls
+docker compose up -d keydrop
+```
+
+`rotate-tls` makes a new key (sealed) and certificate, keeps the old ones
+as `tls.crt.<time>.bak` and `tls.key.<time>.bak`, and prints the new pin.
+Every agent then fails with "server certificate doesn't match" until it
+has the new pin. On each agent's machine, as the agent's user (its config
+is in `~/.config/keydrop`, or `$XDG_CONFIG_HOME/keydrop`):
+
+```sh
+keydrop login --url "$(cat ~/.config/keydrop/url)" --pin sha256:NEW < ~/.config/keydrop/token
+```
+
+`login` checks the token against the server with the new pin before it
+saves anything, and keeps the token as it was. Replace `KEYDROP_TLS_PIN`
+too, wherever it's set. The `install.sh` command on the **Agents** page
+changes as well (it pins the new key). To undo before anyone has
+re-pinned, stop keydrop and rename the two `.bak` files back. Once every
+agent works, delete them.
 
 Lost the admin password or authenticator? Restart with
 `KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove the variable.

@@ -41,9 +41,15 @@ Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
   genkey                                print a new master key
   healthcheck                           exit 0 if the local server answers (for Docker)
-  downgrade-data                        with the server stopped: rewrite the data directory
-                                         so a release without the sealed TLS key and
-                                         integrity check can read it again
+  upgrade-data                          with the server stopped, once: move a data directory
+                                         from a release before the integrity check to the
+                                         current format (HMAC the state, seal tls.key; the
+                                         pin doesn't change). The server won't start until then
+  downgrade-data                        with the server stopped: undo upgrade-data, so a
+                                         release before the integrity check can read it again
+  rotate-tls                            with the server stopped: replace the self-signed
+                                         certificate (old files kept as .bak); prints the
+                                         new pin, which every agent then needs
 
 REF is namespace/NAME, or just NAME when the token has one namespace. Secret
 names are env-var style: CLOUDFLARE_API_TOKEN.
@@ -62,8 +68,12 @@ func main() {
 		err = cmdServer(args)
 	case "genkey":
 		err = cmdGenkey(args)
+	case "upgrade-data":
+		err = cmdUpgradeData(args)
 	case "downgrade-data":
 		err = cmdDowngradeData(args)
+	case "rotate-tls":
+		err = cmdRotateTLS(args)
 	case "healthcheck":
 		err = cmdHealthcheck(args)
 	case "run":

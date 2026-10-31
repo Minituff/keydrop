@@ -290,14 +290,15 @@ func TestStateMAC(t *testing.T) {
 	}
 }
 
-// A state file from before the MAC is upgraded on open; Downgrade puts it
-// back in the old format, and opening again re-upgrades.
+// A state file from before the MAC is refused by Open; only an explicit
+// Upgrade (keydrop upgrade-data) adds the MAC, and Downgrade puts the old
+// format back.
 func TestStateMACMigration(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, key32())
 	s.PutValue("lab", "CF", []byte("migrate-value"), nil)
-	if err := s.Downgrade(); err != nil {
-		t.Fatal(err)
+	if changed, err := s.Downgrade(); !changed || err != nil {
+		t.Fatalf("downgrade: %v %v", changed, err)
 	}
 	// What the previous release checks: the old key-check plaintext.
 	data, _ := os.ReadFile(filepath.Join(dir, stateFile))
@@ -306,18 +307,70 @@ func TestStateMACMigration(t *testing.T) {
 	if pt, err := s.open(st.KeyCheck, "keycheck"); err != nil || string(pt) != keyCheckV1 {
 		t.Fatalf("downgraded key check: %q %v", pt, err)
 	}
-	// An old file can be edited (that's the gap the MAC closes)...
-	s2, err := Open(dir, key32())
-	if err != nil || !s2.Migrated {
-		t.Fatalf("migrate: %v %v", s2 != nil && s2.Migrated, err)
+	if changed, err := s.Downgrade(); changed || err != nil {
+		t.Fatalf("second downgrade: %v %v", changed, err)
 	}
-	if v, _, _ := s2.Reveal("lab", "CF", "x"); string(v) != "migrate-value" {
+	// The server won't open it, and leaves it alone.
+	if _, err := Open(dir, key32()); !errors.Is(err, ErrNeedsUpgrade) {
+		t.Fatalf("Open on old format: %v", err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, stateFile)); !bytes.Equal(after, data) {
+		t.Fatal("Open changed an old-format file")
+	}
+	s2, err := OpenExisting(dir, key32())
+	if err != nil || !s2.Legacy() {
+		t.Fatalf("OpenExisting: %v", err)
+	}
+	if changed, err := s2.Upgrade(); !changed || err != nil {
+		t.Fatalf("upgrade: %v %v", changed, err)
+	}
+	if changed, err := s2.Upgrade(); changed || err != nil {
+		t.Fatalf("second upgrade: %v %v", changed, err)
+	}
+	s3, err := Open(dir, key32())
+	if err != nil {
+		t.Fatalf("open after upgrade: %v", err)
+	}
+	if v, _, _ := s3.Reveal("lab", "CF", "x"); string(v) != "migrate-value" {
 		t.Fatal("value lost in migration")
 	}
-	// ...and after migration it can't be.
-	s3, err := Open(dir, key32())
-	if err != nil || s3.Migrated {
-		t.Fatalf("second open: %v", err)
+	if _, err := OpenExisting(t.TempDir(), key32()); err == nil {
+		t.Fatal("OpenExisting made a state file in an empty directory")
+	}
+}
+
+// The bypass the MAC must not have: take a v1 key check from an old backup
+// (or a downgraded copy), drop the MAC, edit the tokens and admin hash. The
+// server refuses it rather than upgrading it, so the edit is never vouched
+// for.
+func TestStateMACOldKeyCheckSwapRefused(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	s.PutValue("lab", "CF", []byte("swap-test-value"), nil)
+	s.Downgrade()
+	data, _ := os.ReadFile(filepath.Join(dir, stateFile))
+	var old map[string]any
+	json.Unmarshal(data, &old)
+	oldCheck := old["key_check"]
+
+	dir2 := t.TempDir()
+	s2, _ := Open(dir2, key32())
+	s2.SetAdmin("pbkdf2$real", nil)
+	path := filepath.Join(dir2, stateFile)
+	data, _ = os.ReadFile(path)
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	raw["key_check"] = oldCheck
+	delete(raw, "mac")
+	raw["tokens"] = map[string]any{"evil": map[string]any{"name": "evil", "hash": strings.Repeat("ab", 32), "namespaces": []string{"lab"}}}
+	raw["admin"] = map[string]any{"password_hash": "pbkdf2$attacker"}
+	tampered, _ := json.Marshal(raw)
+	os.WriteFile(path, tampered, 0o600)
+	if _, err := Open(dir2, key32()); !errors.Is(err, ErrNeedsUpgrade) {
+		t.Fatalf("swapped key check: %v", err)
+	}
+	if after, _ := os.ReadFile(path); !bytes.Equal(after, tampered) {
+		t.Fatal("Open rewrote the tampered file")
 	}
 }
 

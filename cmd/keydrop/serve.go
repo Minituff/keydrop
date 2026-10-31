@@ -109,29 +109,128 @@ func directAddress(hosts []string, listen string) string {
 	return "https://" + net.JoinHostPort(pick, port)
 }
 
-// cmdDowngradeData undoes what this release changed in the data directory,
-// so the previous release can start on it: the state file's key check goes
-// back to the old format and tls.key is written back in plaintext. Run it
-// with the server stopped, with the same environment as the server.
-func cmdDowngradeData(args []string) error {
-	fs := flag.NewFlagSet("downgrade-data", flag.ExitOnError)
+// dataCommand opens the data directory for one of the offline data
+// commands, with the same environment as the server.
+func dataCommand(name string, args []string) (string, *store.Store, error) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	fs.Parse(args)
+	if fs.NArg() > 0 {
+		return "", nil, fmt.Errorf("%s takes no arguments; it's configured like the server (KEYDROP_DATA_DIR, KEYDROP_MASTER_KEY_FILE)", name)
+	}
 	dataDir := env("KEYDROP_DATA_DIR", "/data")
 	key, err := masterKey()
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	st, err := store.Open(dataDir, key) // verifies the integrity check first
+	st, err := store.OpenExisting(dataDir, key) // checks the key, and the HMAC if there is one
+	if err != nil {
+		return "", nil, err
+	}
+	return dataDir, st, nil
+}
+
+// cmdUpgradeData moves a data directory written by a release before the
+// integrity check to the current format: keydrop.json gets its HMAC and
+// tls.key is sealed (same key and certificate, so the pin doesn't change).
+// The server never does this on its own: the old format can't be checked,
+// so upgrading vouches for the files exactly as they are, and that's the
+// operator's call. Run it once, with the server stopped and the same
+// environment as the server. Running it again changes nothing.
+func cmdUpgradeData(args []string) error {
+	dataDir, st, err := dataCommand("upgrade-data", args)
 	if err != nil {
 		return err
 	}
-	if _, err := server.UnsealTLSKey(dataDir, st); err != nil {
-		return fmt.Errorf("tls.key: %w", err)
-	}
-	if err := st.Downgrade(); err != nil {
+	changed, err := st.Upgrade()
+	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Done: the previous release can read this data directory. Starting this release again re-seals and re-checks it.")
+	if changed {
+		fmt.Printf("keydrop.json: added the integrity check (HMAC)\n")
+	} else {
+		fmt.Printf("keydrop.json: already has the integrity check, unchanged\n")
+	}
+	fp, sealed, err := server.SealTLSKey(dataDir, st)
+	switch {
+	case err != nil:
+		return fmt.Errorf("tls.key: %w", err)
+	case fp == "":
+		fmt.Printf("tls.key: none in %s (KEYDROP_TLS=files or off), nothing to seal\n", dataDir)
+	case sealed:
+		fmt.Printf("tls.key: sealed with the master key; same key and certificate\n")
+	default:
+		fmt.Printf("tls.key: already sealed, unchanged\n")
+	}
+	if fp != "" {
+		fmt.Printf("Certificate pin (unchanged): %s\n", fp)
+	}
+	fmt.Printf("Done. Start keydrop with this release. To go back to the older one, run `keydrop downgrade-data` first.\n")
+	if sealed {
+		fmt.Printf("Backups of %s made before now still hold tls.key in plaintext: if one may have been exposed, run `keydrop rotate-tls` and re-pin the agents (see the README).\n", dataDir)
+	}
+	return nil
+}
+
+// cmdDowngradeData undoes what upgrade-data did, so a release before the
+// sealed TLS key and integrity check can start on the data directory: the
+// state file's key check goes back to the old format and tls.key is
+// written back in plaintext. Run it with the server stopped, with the same
+// environment as the server.
+func cmdDowngradeData(args []string) error {
+	dataDir, st, err := dataCommand("downgrade-data", args)
+	if err != nil {
+		return err
+	}
+	unsealed, err := server.UnsealTLSKey(dataDir, st)
+	if err != nil {
+		return fmt.Errorf("tls.key: %w", err)
+	}
+	if unsealed {
+		fmt.Printf("tls.key: written back in plaintext; same key and certificate\n")
+	} else {
+		fmt.Printf("tls.key: not sealed (or none), unchanged\n")
+	}
+	changed, err := st.Downgrade()
+	if err != nil {
+		return err
+	}
+	if changed {
+		fmt.Printf("keydrop.json: key check back in the old format\n")
+	} else {
+		fmt.Printf("keydrop.json: already in the old format, unchanged\n")
+	}
+	fmt.Printf("Done: the previous release can read this data directory. This release refuses it until `keydrop upgrade-data` is run again.\n")
+	return nil
+}
+
+// cmdRotateTLS replaces the self-signed certificate with a new key and
+// certificate, keeping the old files as timestamped backups. Every agent
+// then needs the new pin. Run it with the server stopped (a running server
+// keeps serving the old certificate until it restarts).
+func cmdRotateTLS(args []string) error {
+	if m := env("KEYDROP_TLS", "auto"); m != "auto" {
+		return fmt.Errorf("rotate-tls is for the self-signed certificate (KEYDROP_TLS=auto), not KEYDROP_TLS=%s", m)
+	}
+	dataDir, st, err := dataCommand("rotate-tls", args)
+	if err != nil {
+		return err
+	}
+	if st.Legacy() {
+		return store.ErrNeedsUpgrade
+	}
+	hosts := strings.FieldsFunc(env("KEYDROP_TLS_HOSTS", ""), func(r rune) bool { return r == ',' || r == ' ' })
+	fp, backups, err := server.RotateSelfSigned(dataDir, hosts, st, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("New certificate made (sealed key). The old pair is kept as:\n")
+	for _, b := range backups {
+		fmt.Printf("  %s\n", b)
+	}
+	fmt.Printf("New pin: %s\n", fp)
+	fmt.Printf("Start keydrop, then on each agent's machine, as the agent's user:\n")
+	fmt.Printf("  keydrop login --url \"$(cat ~/.config/keydrop/url)\" --pin %s < ~/.config/keydrop/token\n", fp)
+	fmt.Printf("(and replace KEYDROP_TLS_PIN wherever it's set). To undo before re-pinning anyone, stop keydrop and rename the .bak files back.\n")
 	return nil
 }
 
@@ -147,9 +246,6 @@ func cmdServer(args []string) error {
 	st, err := store.Open(dataDir, key)
 	if err != nil {
 		return err
-	}
-	if st.Migrated {
-		log.Printf("Upgraded %s: it now carries an integrity check. Releases before this one can't read it; to go back, run `keydrop downgrade-data` first", filepath.Join(dataDir, "keydrop.json"))
 	}
 	al, err := audit.Open(filepath.Join(dataDir, "audit.jsonl"))
 	if err != nil {
@@ -177,12 +273,9 @@ func cmdServer(args []string) error {
 	switch tlsMode {
 	case "auto":
 		hosts := strings.FieldsFunc(env("KEYDROP_TLS_HOSTS", ""), func(r rune) bool { return r == ',' || r == ' ' })
-		c, fp, migrated, err := server.LoadOrCreateSelfSigned(dataDir, hosts, st)
+		c, fp, err := server.LoadOrCreateSelfSigned(dataDir, hosts, st)
 		if err != nil {
 			return fmt.Errorf("self-signed certificate: %w", err)
-		}
-		if migrated {
-			log.Printf("Sealed tls.key with the master key (same key and certificate, so the pin is unchanged)")
 		}
 		tlsCert = &c
 		certPin = fp

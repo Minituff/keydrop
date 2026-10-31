@@ -288,24 +288,40 @@ every read logged, no way to just look). So an entry is either a
   master key at startup instead of failing later.
 - `tls.key` is stored sealed (AES-GCM, AAD `blob:tls.key`) in a PEM block
   of type `KEYDROP SEALED PRIVATE KEY`, so a copy of the data can't
-  impersonate the pinned server. An older plaintext key is sealed in place
-  on start, keeping the key and certificate (and so the pin). The PEM type
-  ends in ` PRIVATE KEY` on purpose: an older release fails to parse it and
-  refuses to start, instead of making a new certificate. A new certificate
-  is only made when neither `tls.crt` nor `tls.key` exists; with just one
-  of them keydrop refuses to start, since a new certificate would silently
-  change the pin every agent holds.
+  impersonate the pinned server. The server refuses a plaintext `tls.key`
+  (from an older release, or `downgrade-data`) instead of sealing it;
+  `keydrop upgrade-data` seals it in place, keeping the key and
+  certificate (and so the pin). The PEM type ends in ` PRIVATE KEY` on
+  purpose: an older release fails to parse it and refuses to start,
+  instead of making a new certificate. A new certificate is only made when
+  neither `tls.crt` nor `tls.key` exists; with just one of them keydrop
+  refuses to start, since a new certificate would silently change the pin
+  every agent holds. Sealing doesn't reach copies made before it: backups
+  taken before `upgrade-data` hold the plaintext key. `keydrop rotate-tls`
+  replaces the key and certificate (keeping the old pair as `.bak` files)
+  for when one of those may have leaked; agents re-pin with `keydrop login
+  --pin` and their saved token.
 - `keydrop.json` carries an HMAC-SHA256 over the rest of the state, keyed
   with `HKDF(master key, "keydrop state mac")`, separate from the
   encryption key. Without it, write access to the data was enough to add a
   token hash or replace the admin password. The sealed key check says
-  whether a MAC is required (`keydrop-key-check:v2`), so stripping the MAC
-  doesn't turn the check off; a v1 file is upgraded on open. A MAC failure
+  whether a MAC is required (`keydrop-key-check:v2`). A v1 key check
+  (the format before the MAC) can't be forged without the master key, but
+  it can be copied from an old backup or a downgraded copy, so **the
+  server never accepts or upgrades v1 data**: it refuses to start and
+  tells the operator to run `keydrop upgrade-data` once. That command
+  vouches for the file as it is (adds the MAC, seals `tls.key`), so it's
+  an explicit step, not something an attacker who can write the data
+  directory can trigger by restarting the container. An earlier release
+  did upgrade on start, which let anyone with write access to the data
+  directory and any v1 copy swap in the old key check, drop the MAC, edit
+  tokens or the admin hash, and have the edit accepted. A MAC failure
   stops the server. `keydrop downgrade-data` puts the v1 key check back
-  (and unseals `tls.key`) for going back to an older release.
+  (and unseals `tls.key`) for going back to an older release; this
+  release then refuses the data until `upgrade-data` is run again.
 - What the MAC can't stop: putting back an older complete copy of the
-  data, which verifies fine (including a copy from before the upgrade,
-  which then gets re-upgraded). Metadata (names, descriptions, the
+  data in the current format, which verifies fine (revoked tokens and old
+  passwords come back with it). Metadata (names, descriptions, the
   password hash, the audit log) is readable without the key.
 - Every change is made to the in-memory state and saved before the
   method returns; if the save fails, memory goes back to the last saved
