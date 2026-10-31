@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func key32() []byte { return bytes.Repeat([]byte{7}, 32) }
@@ -184,15 +185,15 @@ func TestRollbackKeepsKind(t *testing.T) {
 }
 
 func TestTokenSources(t *testing.T) {
-	src, err := ParseSources("10.1.2.8, 10.1.3.0/24 ::ffff:10.9.9.9\n10.1.2.8 fd00::1")
+	src, err := ParseSources("10.1.2.8, 10.1.3.0/24 ::ffff:10.9.9.9\n10.1.2.8 fd00::1 ::ffff:10.4.0.0/112")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"10.1.2.8/32", "10.1.3.0/24", "10.9.9.9/32", "fd00::1/128"}
+	want := []string{"10.1.2.8/32", "10.1.3.0/24", "10.9.9.9/32", "fd00::1/128", "10.4.0.0/16"}
 	if strings.Join(src, " ") != strings.Join(want, " ") {
 		t.Fatalf("ParseSources = %v", src)
 	}
-	for _, bad := range []string{"10.1.2", "host.lan", "10.0.0.0/33", "fe80::1%eth0"} {
+	for _, bad := range []string{"10.1.2", "host.lan", "10.0.0.0/33", "fe80::1%eth0", "::ffff:0:0/80"} {
 		if _, err := ParseSources(bad); err != ErrBadSource {
 			t.Errorf("ParseSources(%q) accepted", bad)
 		}
@@ -221,5 +222,37 @@ func TestTokenSources(t *testing.T) {
 	}
 	if err := s.SetTokenSources("box", []string{"nope"}); err != ErrBadSource {
 		t.Fatal("bad source stored")
+	}
+	s.LookupToken(tok, "10.5.5.5")
+	if tk := s.ListTokens()[0]; tk.LastUsedFrom != "10.5.5.5" {
+		t.Fatalf("last used from %q", tk.LastUsedFrom)
+	}
+}
+
+func TestPairedTokenCollection(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	now := time.Now()
+	got, _ := s.CreatePairedToken("got", []string{"lab"}, false, nil, now.Add(time.Minute))
+	s.CreatePairedToken("lost", []string{"lab"}, false, nil, now.Add(time.Minute))
+	s.CreateToken("manual", []string{"lab"}, false, nil)
+	if err := s.Collected(got); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Collected("kd_not-a-real-token"); err != ErrNotFound {
+		t.Fatal("collected an unknown token")
+	}
+	if gone := s.RevokeUncollected(now); len(gone) != 0 {
+		t.Fatalf("revoked before the deadline: %v", gone)
+	}
+	s2, err := Open(dir, key32()) // the deadline survives a restart
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone := s2.RevokeUncollected(now.Add(2 * time.Minute)); strings.Join(gone, ",") != "lost" {
+		t.Fatalf("revoked %v, want only lost", gone)
+	}
+	if len(s2.ListTokens()) != 2 {
+		t.Fatalf("tokens left: %v", s2.ListTokens())
 	}
 }

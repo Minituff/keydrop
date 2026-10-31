@@ -136,17 +136,23 @@ which are the places keydrop exists to keep secrets out of. So a machine
    it to a 0600 file.
 
 - **Unauthenticated, so bounded.** Anyone who can reach keydrop can ask to
-  pair, so requests are capped (3 waiting per address, 10 overall) and
+  pair, so requests are capped (3 waiting per address or IPv6 /64, 10
+  overall) and
   expire after 10 minutes. They're held in memory only: a restart drops
   them, and the agent asks again.
 - **The token goes back only to the address that asked**, and only once.
-  The poll secret is 256-bit and stored hashed.
+  The poll secret is 256-bit and stored hashed. A poll from another
+  address gets 403 and a `pair.wrongaddr` log entry, not "expired", so an
+  agent whose address changed knows to ask again from the new one.
 - **No orphan tokens.** If an approved token isn't collected within 10
-  minutes, it's revoked.
+  minutes, it's revoked. The deadline is stored with the token, so this
+  holds across a restart, and the revoke matches that token, never just
+  the name (a newer token of the same name is safe).
 - The claimed host and user are shown as unchecked and cleaned to a safe
   character set; the address is what the admin should trust.
 - Re-pairing under an existing name needs "Replace it", which revokes the
-  old token, so a machine rebuild doesn't leave two working tokens.
+  old token, so a machine rebuild doesn't leave two working tokens. The
+  form is checked before anything is revoked.
 - `keydrop login` (paste a token made by hand) stays for scripts and
   machines that can't wait for an approval.
 
@@ -270,7 +276,9 @@ every read logged, no way to just look). So an entry is either a
 - `KEYDROP_TLS=files` uses your own certificate. `off` is only for running
   behind a TLS-terminating proxy on a private network.
 - `KEYDROP_TRUSTED_PROXIES` limits who may set `X-Forwarded-For`, so the
-  login limiter sees real client IPs.
+  login limiter, allowed sources and pairing see real client IPs. List
+  only the proxy's own address: any host in a trusted range can claim to
+  be any address.
 - **Not designed for the internet.** Reach it over a LAN or a VPN such as
   Tailscale or WireGuard.
 

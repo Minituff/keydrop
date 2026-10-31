@@ -89,6 +89,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		log.Printf("or open %s/setup?code=%s", base, s.setupCode)
 		log.Printf("(the code works once, and only proves you can read this log; a restart before setup makes a new one)")
 	}
+	s.revokeUncollected(time.Now()) // paired tokens orphaned by a restart
 	s.routes()
 	return s
 }

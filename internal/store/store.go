@@ -118,6 +118,10 @@ type Token struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
 	LastUsedFrom string     `json:"last_used_from,omitempty"`
+	// CollectBy is set on a token made by pairing until the agent collects
+	// it. Stored, so a token nobody collected is still revoked after a
+	// restart.
+	CollectBy *time.Time `json:"collect_by,omitempty"`
 	// Label is the optional agent label a request carried (Claude, Codex
 	// sharing one token). Never stored; it only goes into the audit log.
 	Label string `json:"-"`
@@ -154,6 +158,17 @@ func ParseSources(list string) ([]string, error) {
 			}
 			p = netip.PrefixFrom(a, a.BitLen())
 		} else if p, err = netip.ParsePrefix(f); err != nil {
+			return nil, ErrBadSource
+		}
+		if p.Addr().Is4In6() {
+			// Incoming addresses are compared unmapped, so a mapped range
+			// would never match: store it as the IPv4 range it means.
+			if p.Bits() < 96 {
+				return nil, ErrBadSource
+			}
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		if p.Addr().Zone() != "" {
 			return nil, ErrBadSource
 		}
 		p = p.Masked()
@@ -646,18 +661,37 @@ func hashToken(tok string) string {
 // sources limits where it can be used from (see ParseSources); nil is
 // anywhere.
 func (s *Store) CreateToken(name string, namespaces []string, write bool, sources []string) (string, error) {
+	return s.createToken(name, namespaces, write, sources, nil)
+}
+
+// CreatePairedToken is CreateToken for pairing: unless Collected is called
+// with the token by collectBy, RevokeUncollected deletes it.
+func (s *Store) CreatePairedToken(name string, namespaces []string, write bool, sources []string, collectBy time.Time) (string, error) {
+	return s.createToken(name, namespaces, write, sources, &collectBy)
+}
+
+// CheckToken validates a token's settings without creating it, so a caller
+// can check before revoking the token it replaces.
+func CheckToken(name string, namespaces []string, sources []string) error {
 	if !ValidName(name) || len(namespaces) == 0 {
-		return "", ErrBadName
+		return ErrBadName
 	}
 	for _, src := range sources {
 		if _, err := netip.ParsePrefix(src); err != nil {
-			return "", ErrBadSource
+			return ErrBadSource
 		}
 	}
 	for _, n := range namespaces {
 		if !ValidName(n) {
-			return "", ErrBadName
+			return ErrBadName
 		}
+	}
+	return nil
+}
+
+func (s *Store) createToken(name string, namespaces []string, write bool, sources []string, collectBy *time.Time) (string, error) {
+	if err := CheckToken(name, namespaces, sources); err != nil {
+		return "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -671,9 +705,44 @@ func (s *Store) CreateToken(name string, namespaces []string, write bool, source
 	plain := TokenPrefix + base64.RawURLEncoding.EncodeToString(b)
 	s.st.Tokens[name] = &Token{
 		Name: name, Hash: hashToken(plain), Namespaces: namespaces,
-		Write: write, Sources: sources, CreatedAt: s.now().UTC(),
+		Write: write, Sources: sources, CreatedAt: s.now().UTC(), CollectBy: collectBy,
 	}
 	return plain, s.save()
+}
+
+// Collected marks a paired token as handed over. It matches on the token
+// itself, not the name, so a token that was since revoked or replaced
+// returns ErrNotFound and the newer token of that name is untouched.
+func (s *Store) Collected(plain string) error {
+	h := hashToken(plain)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.st.Tokens {
+		if t.Hash == h {
+			t.CollectBy = nil
+			return s.save()
+		}
+	}
+	return ErrNotFound
+}
+
+// RevokeUncollected deletes paired tokens whose collection deadline has
+// passed by now and returns their names.
+func (s *Store) RevokeUncollected(now time.Time) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var gone []string
+	for name, t := range s.st.Tokens {
+		if t.CollectBy != nil && now.After(*t.CollectBy) {
+			delete(s.st.Tokens, name)
+			gone = append(gone, name)
+		}
+	}
+	if len(gone) > 0 {
+		sort.Strings(gone)
+		_ = s.save()
+	}
+	return gone
 }
 
 // RevokeToken deletes a token.
@@ -690,8 +759,8 @@ func (s *Store) RevokeToken(name string) error {
 // LookupToken finds the token matching plain, checks it may be used from
 // ip, and records its use. Use from a disallowed address returns the token
 // (so it can be named in the log) with ErrSource, and isn't recorded as
-// use. Last-used is persisted at most once a minute, or when the address
-// changes, to avoid a disk write per request.
+// use. Last-used is persisted at most once a minute, to avoid a disk write
+// per request.
 func (s *Store) LookupToken(plain, ip string) (Token, error) {
 	if !strings.HasPrefix(plain, TokenPrefix) {
 		return Token{}, ErrNotFound
@@ -705,8 +774,9 @@ func (s *Store) LookupToken(plain, ip string) (Token, error) {
 				return *t, ErrSource
 			}
 			now := s.now().UTC()
-			if t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) > time.Minute || t.LastUsedFrom != ip {
-				t.LastUsedAt, t.LastUsedFrom = &now, ip
+			t.LastUsedFrom = ip
+			if t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) > time.Minute {
+				t.LastUsedAt = &now
 				_ = s.save()
 			}
 			return *t, nil

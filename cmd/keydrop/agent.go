@@ -782,6 +782,9 @@ func cmdPair(args []string) error {
 	statePath := filepath.Join(dir, "pairing")
 
 	var p pendingPair
+	if fi, err := os.Stat(statePath); err == nil && !*fresh && fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s is readable by other users; delete it and run keydrop pair --url URL again", statePath)
+	}
 	if b, err := os.ReadFile(statePath); err == nil && !*fresh {
 		if json.Unmarshal(b, &p) != nil || time.Now().After(p.Expires) || (*u != "" && *u != p.URL) {
 			p = pendingPair{}
@@ -791,6 +794,9 @@ func cmdPair(args []string) error {
 		return errors.New("usage: keydrop pair --url URL [--pin sha256:…]")
 	}
 	if p.Poll == "" {
+		if strings.HasPrefix(*u, "http://") {
+			fmt.Fprintln(os.Stderr, "warning: plain http, so the token crosses the network unencrypted")
+		}
 		c := client.New(*u, "", *pin)
 		host, _ := os.Hostname()
 		name := ""
@@ -812,6 +818,9 @@ func cmdPair(args []string) error {
 		}
 		b, _ := json.Marshal(p)
 		if err := os.WriteFile(statePath, b, 0o600); err != nil {
+			return err
+		}
+		if err := os.Chmod(statePath, 0o600); err != nil { // WriteFile keeps an existing file's mode
 			return err
 		}
 		fmt.Printf("Ask the keydrop admin to approve this machine. Send them this link:\n\n  %s\n\nThe page will show the code %s. The request expires at %s.\n",

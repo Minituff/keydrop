@@ -79,7 +79,7 @@ replacement for Vault or Infisical in a team.
 |---|---|
 | At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The master key comes from a file (Docker secret) and is never stored in the data directory. |
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses. |
-| Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes. |
+| Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
 | Login limits | 5 failures per client and 20 overall per 15 minutes. |
 | Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
@@ -200,7 +200,7 @@ why.
 | `KEYDROP_TLS` | `auto` | `auto` (self-signed, kept in the data dir), `files` (`KEYDROP_TLS_CERT` + `KEYDROP_TLS_KEY`), or `off` (only behind a TLS-terminating proxy). |
 | `KEYDROP_TLS_HOSTS` | — | Extra DNS names/IPs for the self-signed certificate. |
 | `KEYDROP_COOKIE_SECURE` | `true` | Set `false` only if the page is reached over plain HTTP. |
-| `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits apply per real client. |
+| `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
@@ -236,8 +236,8 @@ allowed sources gets 403.
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}` |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days |
-| `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address, 10 overall |
-| `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked. 404 once expired, denied or collected |
+| `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address (IPv6: per /64), 10 overall |
+| `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |
 
 ## Building

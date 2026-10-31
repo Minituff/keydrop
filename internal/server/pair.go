@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -47,22 +48,48 @@ func hashPoll(poll string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// expirePairingsLocked drops old requests. An approved token that was never
-// collected is revoked, so no working token is left that nobody holds.
-// Needs s.pairMu.
+// expirePairingsLocked drops old requests, and revokes approved tokens that
+// were never collected, so no working token is left that nobody holds. The
+// deadline is stored with the token, so this also covers requests lost in a
+// restart, and it can't hit a newer token of the same name. Needs s.pairMu.
 func (s *Server) expirePairingsLocked() {
 	now := s.now()
 	for id, p := range s.pairings {
-		if now.Before(p.Expires()) {
-			continue
-		}
-		delete(s.pairings, id)
-		if p.approved {
-			if s.store.RevokeToken(p.tokenName) == nil {
-				s.audit.Add(audit.Event{Actor: "keydrop", Action: "token.revoke", Target: p.tokenName, Detail: "approved pairing never collected"})
-			}
+		if !now.Before(p.Expires()) {
+			delete(s.pairings, id)
 		}
 	}
+	s.revokeUncollected(now)
+}
+
+func (s *Server) revokeUncollected(now time.Time) {
+	for _, name := range s.store.RevokeUncollected(now) {
+		s.audit.Add(audit.Event{Actor: "keydrop", Action: "token.revoke", Target: name, Detail: "approved pairing never collected"})
+	}
+}
+
+// sourceGroup is what the per-address cap counts: the address, or its /64
+// for IPv6, since one machine usually has a whole /64 to pick from.
+func sourceGroup(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap().WithZone("")
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
+	}
+	return a.String()
+}
+
+// sourcePrefill is the "Allowed from" suggestion for an address.
+func sourcePrefill(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	return a.Unmap().WithZone("").String()
 }
 
 // pendingPairings lists requests waiting for the admin, oldest first.
@@ -131,9 +158,9 @@ func (s *Server) apiPairStart(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 	s.pairMu.Lock()
 	s.expirePairingsLocked()
-	fromIP := 0
+	fromIP, group := 0, sourceGroup(ip)
 	for _, p := range s.pairings {
-		if p.IP == ip {
+		if sourceGroup(p.IP) == group {
 			fromIP++
 		}
 	}
@@ -160,6 +187,8 @@ func (s *Server) apiPairStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiPairPoll hands the token over once, and only to the address that asked.
+// A poll from another address gets 403, not 404, so an agent whose address
+// changed isn't told its request is gone.
 func (s *Server) apiPairPoll(w http.ResponseWriter, r *http.Request) {
 	var b struct{ Poll string }
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.Poll == "" {
@@ -171,7 +200,7 @@ func (s *Server) apiPairPoll(w http.ResponseWriter, r *http.Request) {
 	s.expirePairingsLocked()
 	var p *pairing
 	for _, c := range s.pairings {
-		if subtle.ConstantTimeCompare([]byte(c.pollHash), []byte(h)) == 1 && c.IP == ip {
+		if subtle.ConstantTimeCompare([]byte(c.pollHash), []byte(h)) == 1 {
 			p = c
 		}
 	}
@@ -180,12 +209,24 @@ func (s *Server) apiPairPoll(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "no such pairing request: it expired, was denied, or was already collected")
 		return
 	}
+	if p.IP != ip {
+		code, from := displayCode(p.Code), p.IP
+		s.pairMu.Unlock()
+		s.event(r, "unknown", "pair.wrongaddr", code, "asked from "+from)
+		apiError(w, http.StatusForbidden, "this pairing request was made from "+from+", not "+ip+"; the token is only handed to the address that asked. Run keydrop pair --new from this address")
+		return
+	}
 	if !p.approved {
 		s.pairMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"state": "pending"})
 		return
 	}
 	delete(s.pairings, p.ID)
+	if err := s.store.Collected(p.token); err != nil {
+		s.pairMu.Unlock()
+		apiError(w, http.StatusNotFound, "the approved token was revoked or replaced before it was collected; run keydrop pair again")
+		return
+	}
 	s.pairMu.Unlock()
 	s.event(r, "token:"+p.tokenName, "pair.collect", p.tokenName, "")
 	writeJSON(w, http.StatusOK, map[string]any{"state": "approved", "token": p.token, "name": p.tokenName, "namespaces": p.namespace})
@@ -216,7 +257,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request, _ string, se
 		return
 	}
 	s.renderPair(w, r, se, http.StatusOK, p, url.Values{
-		"name": {suggestName(p.Host)}, "sources": {p.IP},
+		"name": {suggestName(p.Host)}, "sources": {sourcePrefill(p.IP)},
 	}, "")
 }
 
@@ -260,6 +301,10 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 	case err != nil:
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Allowed from: "+err.Error()+".")
 		return
+	case store.CheckToken(name, nss, sources) != nil:
+		// Checked before Replace revokes anything.
+		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Namespaces: lowercase letters, digits, '.', '_' and '-' only.")
+		return
 	}
 
 	s.pairMu.Lock()
@@ -278,15 +323,16 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 			s.event(r, "admin", "token.revoke", name, "replaced by pairing")
 		}
 	}
-	tok, err := s.store.CreateToken(name, nss, write, sources)
+	// The agent gets a fresh window to collect it; after that the token is
+	// revoked unused.
+	now := s.now()
+	tok, err := s.store.CreatePairedToken(name, nss, write, sources, now.Add(pairTTL))
 	if err != nil {
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, err.Error())
 		return
 	}
-	// The agent gets a fresh window to collect it; after that the token is
-	// revoked unused.
 	cur.approved, cur.tokenName, cur.token, cur.namespace = true, name, tok, nss
-	cur.Created = s.now()
+	cur.Created = now
 	detail := "code " + displayCode(cur.Code) + " from " + cur.IP + ", namespaces " + strings.Join(nss, ",")
 	if write {
 		detail += ", write"

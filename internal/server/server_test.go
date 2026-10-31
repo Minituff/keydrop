@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -571,9 +572,13 @@ func TestPairing(t *testing.T) {
 	if _, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); m["state"] != "pending" {
 		t.Fatalf("poll before approval: %v", m)
 	}
-	// The token only goes back to the address that asked.
-	if code, _ := h.apiFrom("10.0.0.6", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); code != http.StatusNotFound {
+	// The token only goes back to the address that asked; another address
+	// is told so (not "expired"), and it's logged.
+	if code, _ := h.apiFrom("10.0.0.6", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": poll}); code != http.StatusForbidden {
 		t.Fatalf("poll from another address: %d", code)
+	}
+	if ev := h.srv.audit.Recent(1)[0]; ev.Action != "pair.wrongaddr" || strings.Contains(ev.Detail+ev.Target, poll) {
+		t.Fatalf("wrong-address poll not logged, or logged the secret: %+v", ev)
 	}
 
 	if _, body := h.get("/tokens"); !strings.Contains(body, shown) || !strings.Contains(body, path) {
@@ -658,12 +663,47 @@ func TestPairing(t *testing.T) {
 	if code, _ := h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", tok, "", nil); code != http.StatusUnauthorized {
 		t.Fatal("replaced token still works")
 	}
+	// Replace with a bad namespace is refused before the old token is revoked.
+	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "keep"})
+	keepPath, keepPoll := m["path"].(string), m["poll"].(string)
+	path = keepPath
+	approve(url.Values{"name": {"keep"}, "namespaces": {"lab"}})
+	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": keepPoll})
+	keepTok := m["token"].(string)
+	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "keep"})
+	path = m["path"].(string)
+	if c := approve(url.Values{"name": {"keep"}, "namespaces": {"Lab"}, "replace": {"yes"}}); c != http.StatusBadRequest {
+		t.Fatalf("bad namespace on replace: %d", c)
+	}
+	if code, _ := h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", keepTok, "", nil); code != 200 {
+		t.Fatal("a refused replace revoked the old token")
+	}
+	h.post(path+"/deny", url.Values{"csrf": {csrf}})
 
 	// Deny.
 	_, m = h.apiFrom("10.0.0.7", "POST", "/api/v1/pair", "", "", map[string]string{"host": "x"})
 	h.post(m["path"].(string)+"/deny", url.Values{"csrf": {csrf}})
 	if code, _ := h.apiFrom("10.0.0.7", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": m["poll"].(string)}); code != http.StatusNotFound {
 		t.Fatal("denied request still pollable")
+	}
+
+	// IPv6: the cap counts the /64, and the pre-fill drops the zone.
+	for i := 1; i <= 3; i++ {
+		h.apiFrom(fmt.Sprintf("2001:db8::%d", i), "POST", "/api/v1/pair", "", "", map[string]string{})
+	}
+	if code, _ := h.apiFrom("2001:db8::ff", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth request from one /64: %d", code)
+	}
+	if got := sourcePrefill("fe80::1%eth0"); got != "fe80::1" {
+		t.Fatalf("pre-fill %q", got)
+	}
+	if got := sourcePrefill("::ffff:10.0.0.5"); got != "10.0.0.5" {
+		t.Fatalf("pre-fill %q", got)
+	}
+	for _, p := range h.srv.pendingPairings() {
+		if strings.HasPrefix(p.IP, "2001:db8::") {
+			h.post("/pair/"+p.ID+"/deny", url.Values{"csrf": {csrf}})
+		}
 	}
 
 	// Caps: three waiting per address.
@@ -688,5 +728,53 @@ func TestPairing(t *testing.T) {
 	}
 	if code, _ := h.apiFrom("10.0.0.9", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
 		t.Fatal("expired requests still count against the cap")
+	}
+}
+
+// An uncollected approval mustn't revoke a newer token of the same name,
+// and must still be revoked if the server restarts before it expires.
+func TestPairingUncollected(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	csrf := h.csrf()
+	start := time.Now()
+	h.srv.now = func() time.Time { return start }
+	pair := func(host string, form url.Values) string {
+		_, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": host})
+		form.Set("csrf", csrf)
+		if c := h.post(m["path"].(string)+"/approve", form).StatusCode; c != http.StatusSeeOther {
+			t.Fatalf("approve: %d", c)
+		}
+		return m["poll"].(string)
+	}
+	pollA := pair("box", url.Values{"name": {"box"}, "namespaces": {"lab"}})
+	h.srv.now = func() time.Time { return start.Add(5 * time.Minute) }
+	pollB := pair("box", url.Values{"name": {"box"}, "namespaces": {"lab"}, "replace": {"yes"}})
+	_, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": pollB})
+	tokB, _ := m["token"].(string)
+	if tokB == "" {
+		t.Fatalf("collect B: %v", m)
+	}
+	// A's token was replaced: collecting it fails instead of handing out a dead token.
+	if code, _ := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair/poll", "", "", map[string]string{"poll": pollA}); code != http.StatusNotFound {
+		t.Fatalf("collect replaced A: %d", code)
+	}
+	h.srv.now = func() time.Time { return start.Add(pairTTL + 6*time.Minute) }
+	h.srv.pendingPairings()
+	if code, _ := h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", tokB, "", nil); code != 200 {
+		t.Fatalf("A's expiry revoked B's collected token: %d", code)
+	}
+
+	// Approved, then a restart loses the request: the token is still revoked.
+	h.srv.now = time.Now
+	pair("gone", url.Values{"name": {"gone"}, "namespaces": {"lab"}})
+	h.srv = New(h.srv.cfg, h.st, h.srv.audit) // as after a restart
+	h.srv.now = func() time.Time { return time.Now().Add(pairTTL + time.Minute) }
+	h.srv.pendingPairings()
+	if _, ok := tokenNamed(h.st.ListTokens(), "gone"); ok {
+		t.Fatal("uncollected token survived a restart")
+	}
+	if _, ok := tokenNamed(h.st.ListTokens(), "box"); !ok {
+		t.Fatal("collected token revoked")
 	}
 }
