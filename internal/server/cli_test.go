@@ -203,6 +203,34 @@ func TestKeyPin(t *testing.T) {
 	}
 }
 
+// With only one of tls.crt and tls.key, start fails instead of making a
+// new certificate (which would change every agent's pin), and nothing is
+// written.
+func TestTLSHalfPairRefused(t *testing.T) {
+	for _, keep := range []string{"tls.crt", "tls.key"} {
+		dir := t.TempDir()
+		st := testSealer(t, dir)
+		if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, st); err != nil {
+			t.Fatal(err)
+		}
+		gone := "tls.key"
+		if keep == "tls.key" {
+			gone = "tls.crt"
+		}
+		os.Remove(filepath.Join(dir, gone))
+		before, _ := os.ReadFile(filepath.Join(dir, keep))
+		if _, _, _, err := LoadOrCreateSelfSigned(dir, nil, st); !errors.Is(err, ErrHalfPair) {
+			t.Fatalf("only %s: got %v, want ErrHalfPair", keep, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, gone)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("only %s: %s was recreated", keep, gone)
+		}
+		if after, _ := os.ReadFile(filepath.Join(dir, keep)); !bytes.Equal(before, after) {
+			t.Fatalf("only %s: it was changed", keep)
+		}
+	}
+}
+
 // A plaintext tls.key from an earlier release is sealed in place, and the
 // certificate (and so every agent's pin) stays the same. Unsealing gives
 // the original back for a downgrade.

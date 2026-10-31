@@ -291,7 +291,10 @@ every read logged, no way to just look). So an entry is either a
   impersonate the pinned server. An older plaintext key is sealed in place
   on start, keeping the key and certificate (and so the pin). The PEM type
   ends in ` PRIVATE KEY` on purpose: an older release fails to parse it and
-  refuses to start, instead of making a new certificate.
+  refuses to start, instead of making a new certificate. A new certificate
+  is only made when neither `tls.crt` nor `tls.key` exists; with just one
+  of them keydrop refuses to start, since a new certificate would silently
+  change the pin every agent holds.
 - `keydrop.json` carries an HMAC-SHA256 over the rest of the state, keyed
   with `HKDF(master key, "keydrop state mac")`, separate from the
   encryption key. Without it, write access to the data was enough to add a

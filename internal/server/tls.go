@@ -43,8 +43,14 @@ const sealedKeyType = "KEYDROP SEALED PRIVATE KEY"
 // keyBlobName binds the sealed key to its role (the AAD).
 const keyBlobName = "tls.key"
 
+// ErrHalfPair: only one of tls.crt and tls.key is in the data directory.
+var ErrHalfPair = errors.New("only one of tls.crt and tls.key is in the data directory, so the certificate can't be loaded; " +
+	"refusing to make a new one, which would change the pin every agent holds. Restore the missing file from a backup. " +
+	"If no agent has paired yet (or you mean to re-pin them all), remove the other file too and a new certificate is made on start")
+
 // LoadOrCreateSelfSigned returns a certificate stored in dir, creating a
-// 10-year ECDSA one on first run. hosts become the SANs. The private key is
+// 10-year ECDSA one on first run (when neither tls.crt nor tls.key exists;
+// one without the other is ErrHalfPair). hosts become the SANs. The private key is
 // stored sealed with the master key; a plaintext tls.key from an earlier
 // release is sealed in place, keeping the same key and certificate, and
 // migrated reports that it was.
@@ -73,6 +79,10 @@ func LoadOrCreateSelfSigned(dir string, hosts []string, sealer Sealer) (c tls.Ce
 		return tls.Certificate{}, "", false, err1
 	case err2 != nil && !errors.Is(err2, os.ErrNotExist):
 		return tls.Certificate{}, "", false, err2
+	case err1 == nil || err2 == nil:
+		// Half a pair: making a new one would silently change the pin
+		// every agent holds.
+		return tls.Certificate{}, "", false, ErrHalfPair
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
