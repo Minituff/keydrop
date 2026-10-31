@@ -106,10 +106,9 @@ func TestCLIDownloads(t *testing.T) {
 		}
 	}
 
-	// Plain HTTP straight to keydrop: no pin.
+	// Plain HTTP straight to keydrop: refused, never an unpinned download.
 	code, _, script := fetch(t, http.DefaultClient, h.ts.URL+"/install.sh")
-	if code != http.StatusOK || !strings.Contains(script, "base='"+h.ts.URL+"'") || !strings.Contains(script, "pin=''") ||
-		!strings.Contains(script, "keydrop v9.9.9") || strings.Contains(script, "--pin sha256") {
+	if code != http.StatusBadRequest || strings.Contains(script, "curl") {
 		t.Fatalf("install.sh over http: %d\n%s", code, script)
 	}
 	// A Host header that could break out of the script's quotes is refused.
@@ -127,9 +126,16 @@ func TestCLIDownloads(t *testing.T) {
 	h.srv.cfg.KeyPin, h.srv.cfg.CertPin = "sha256//KEYPIN=", "sha256:certpin"
 	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")}
 	_, _, script = fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5")
-	if !strings.Contains(script, "base='https://secrets.example.com'") || !strings.Contains(script, "pin=''") || strings.Contains(script, "--pin sha256") {
+	if !strings.Contains(script, "base='https://secrets.example.com'") || !strings.Contains(script, "pin=''") || strings.Contains(script, "--pin sha256") ||
+		!strings.Contains(script, "--proto =https") {
 		t.Fatalf("install.sh via proxy:\n%s", script)
 	}
+	// A proxy with an http public URL would mean an unverified download.
+	h.srv.cfg.PublicURL = "http://secrets.example.com"
+	if code, _, _ := fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5"); code != http.StatusBadRequest {
+		t.Fatalf("install.sh via an http proxy URL: %d", code)
+	}
+	h.srv.cfg.PublicURL = "https://secrets.example.com"
 	h.srv.cfg.TrustedProxies = nil
 
 	// The Agents page shows the install commands and download links.
@@ -291,5 +297,46 @@ func TestVersionHeader(t *testing.T) {
 		if v := resp.Header.Get("X-Keydrop-Version"); v != "" {
 			t.Errorf("%s without a token shows the version %q", path, v)
 		}
+	}
+}
+
+// One address can't take every download slot.
+func TestDownloadSlotsPerAddress(t *testing.T) {
+	h := newHarness(t)
+	dir, _ := fakeCLIDir(t)
+	cli, err := LoadCLI(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.srv.cfg.CLI = cli
+	downloadsMu.Lock()
+	downloadsByAddr["127.0.0.1"] = downloadsPerAddr // two slow downloads in progress
+	downloadsMu.Unlock()
+	t.Cleanup(func() {
+		downloadsMu.Lock()
+		delete(downloadsByAddr, "127.0.0.1")
+		downloadsMu.Unlock()
+	})
+	if code, _ := h.get("/cli/keydrop-linux-amd64"); code != http.StatusServiceUnavailable {
+		t.Fatalf("third download from one address: %d", code)
+	}
+	downloadsMu.Lock()
+	downloadsByAddr["127.0.0.1"] = 0
+	downloadsMu.Unlock()
+	if code, _ := h.get("/cli/keydrop-linux-amd64"); code != http.StatusOK {
+		t.Fatalf("download: %d", code)
+	}
+}
+
+// A huge ?days= can't overflow into "nothing expires".
+func TestExpiringDaysBounded(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, false, nil)
+	exp := time.Now().Add(400 * 24 * time.Hour)
+	h.st.PutValue("lab", "SOON", []byte("expiring-value"), &store.Meta{Expires: &exp})
+	_, _, body := h.api("GET", "/api/v1/expiring?days=9999999999999", tok, nil)
+	if !strings.Contains(string(body), "lab/SOON") {
+		t.Fatalf("huge days lost the secret: %s", body)
 	}
 }

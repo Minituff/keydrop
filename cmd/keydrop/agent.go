@@ -18,7 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
+	"unicode/utf8"
 
 	"github.com/minituff/keydrop/internal/client"
 	"github.com/minituff/keydrop/internal/mask"
@@ -77,7 +77,7 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 			tags = append(tags, "expires "+s.Expires.Format("2006-01-02"))
 		}
 	}
-	line := s.Ref
+	line := clean(s.Ref, false)
 	if s.Value != nil { // only variables carry a value
 		line += "=" + printable(*s.Value)
 	}
@@ -85,21 +85,23 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 		line += "  [" + strings.Join(tags, ", ") + "]"
 	}
 	fmt.Fprintln(w, line)
+	// Descriptions are written by people and other agents, and agents read
+	// this output: no terminal escapes or fake lines.
 	if s.Description != "" {
-		for _, l := range strings.Split(s.Description, "\n") {
+		for _, l := range strings.Split(clean(s.Description, true), "\n") {
 			fmt.Fprintln(w, "    "+l)
 		}
 	}
 	if s.Usage != "" {
-		fmt.Fprintln(w, "    usage: "+s.Usage)
+		fmt.Fprintln(w, "    usage: "+clean(s.Usage, false))
 	}
 	if long {
 		fmt.Fprintf(w, "    updated %s", ago(s.UpdatedAt))
 		if s.LastReadAt != nil {
-			fmt.Fprintf(w, ", last read %s by %s", ago(*s.LastReadAt), s.LastReadBy)
+			fmt.Fprintf(w, ", last read %s by %s", ago(*s.LastReadAt), clean(s.LastReadBy, false))
 		}
 		if s.RequestedBy != "" {
-			fmt.Fprintf(w, ", requested by %s", s.RequestedBy)
+			fmt.Fprintf(w, ", requested by %s", clean(s.RequestedBy, false))
 		}
 		fmt.Fprintln(w)
 	}
@@ -114,7 +116,7 @@ func cmdWhoami(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s @ %s\nnamespaces: %s\nwrite: %v\n", w.Name, c.URL, strings.Join(w.Namespaces, ", "), w.Write)
+	fmt.Printf("%s @ %s\nnamespaces: %s\nwrite: %v\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), w.Write)
 	return nil
 }
 
@@ -260,7 +262,7 @@ func cmdRequest(args []string) error {
 		return err
 	}
 	fmt.Println("Requested. The human can fill it in here:")
-	fmt.Println(link)
+	fmt.Println(clean(link, false))
 	fmt.Println("Then: keydrop wait " + pos[0])
 	return nil
 }
@@ -302,9 +304,12 @@ func cmdWait(args []string) error {
 
 func cmdExpiring(args []string) error {
 	fs := flag.NewFlagSet("expiring", flag.ExitOnError)
-	days := fs.Int("days", 14, "look this many days ahead")
+	days := fs.Int("days", 14, "look this many days ahead (0 to 36500)")
 	check := fs.Bool("check", false, "exit 1 if anything is expiring (for health checks)")
 	parse(fs, args)
+	if *days < 0 || *days > 36500 {
+		return errors.New("--days must be between 0 and 36500")
+	}
 	c, err := newClient()
 	if err != nil {
 		return err
@@ -359,12 +364,18 @@ func parseEnvFlag(e string) (binding, error) {
 	return binding{v, ref}, nil
 }
 
-// childEnv is the command's environment: ours without the agent's token,
-// plus the secrets (which win over inherited variables of the same name).
+// childEnv is the command's environment: ours without any KEYDROP_*
+// settings (the token, where the token file is, the URL and pin), plus the
+// secrets (which win over inherited variables of the same name). A secret
+// bound to a KEYDROP_ name is still passed, since it was asked for.
+//
+// This keeps the token out of the child's way, not out of its reach: the
+// child runs as the same user and can read the token file. run isn't a
+// sandbox.
 func childEnv(environ []string, binds []binding, values map[string]string) []string {
 	var env []string
 	for _, kv := range environ {
-		if !strings.HasPrefix(kv, "KEYDROP_TOKEN=") { // the child never needs the agent's token
+		if !strings.HasPrefix(kv, "KEYDROP_") {
 			env = append(env, kv)
 		}
 	}
@@ -494,7 +505,7 @@ func cmdGet(args []string) error {
 		if sec.Value == nil {
 			return fmt.Errorf("%s is a secret, so it isn't printed: use keydrop run -e %s, or get --to-file for a file", sec.Ref, sec.Name)
 		}
-		fmt.Println(*sec.Value)
+		fmt.Println(forTerminal(*sec.Value))
 		return nil
 	}
 	purpose := "get --raw"
@@ -509,26 +520,63 @@ func cmdGet(args []string) error {
 		if !variable {
 			fmt.Fprintln(os.Stderr, "keydrop: printing a secret; it's now in this terminal's output")
 		}
-		fmt.Print(v)
+		fmt.Print(forTerminal(v))
 		return nil
 	}
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if *force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	}
-	f, err := os.OpenFile(*toFile, flags, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(v); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
+	if err := writeValueFile(*toFile, v, *force); err != nil {
 		return err
 	}
 	fmt.Println("wrote", pos[0], "to", *toFile)
 	return nil
+}
+
+// writeValueFile writes v to path with mode 600. Without force it refuses
+// an existing path (a symlink included). With force it writes a new file
+// beside it and renames it into place, so the result is always a fresh
+// 0600 file: an existing file's looser mode isn't kept, and a symlink at
+// path is replaced, not followed.
+func writeValueFile(path, v string, force bool) error {
+	if !force {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		if _, err := f.WriteString(v); err != nil {
+			f.Close()
+			os.Remove(path)
+			return err
+		}
+		return f.Close()
+	}
+	if fi, err := os.Lstat(path); err == nil && fi.IsDir() {
+		return fmt.Errorf("%s is a directory", path)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".keydrop-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(v); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// forTerminal is v as is when stdout is a pipe or file (scripts get exact
+// bytes), and quoted if it holds escapes when stdout is a terminal.
+func forTerminal(v string) string {
+	if isTerminal(os.Stdout) {
+		return printable(v)
+	}
+	return v
 }
 
 func isTerminal(f *os.File) bool {
@@ -555,6 +603,10 @@ func readSecretLine(prompt string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
+// maxPutValue is the largest value put accepts: the server takes request
+// bodies up to 128 KiB, and JSON escaping can double a value's size.
+const maxPutValue = 60 << 10
+
 func cmdPut(args []string) error {
 	fs := flag.NewFlagSet("put", flag.ExitOnError)
 	desc := fs.String("desc", "", "description")
@@ -575,11 +627,18 @@ func cmdPut(args []string) error {
 		}
 		v = line
 	} else {
-		b, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, maxPutValue+1))
 		if err != nil {
 			return err
 		}
+		if len(b) > maxPutValue {
+			return fmt.Errorf("the value is over %d KiB; keydrop is for credentials, not files", maxPutValue>>10)
+		}
 		v = string(b)
+	}
+	if !utf8.ValidString(v) {
+		// JSON would silently replace the invalid bytes.
+		return errors.New("the value isn't text (not valid UTF-8); store binary values base64-encoded, e.g. base64 < key.bin | keydrop put REF")
 	}
 	if !*keepWS {
 		v = strings.TrimSpace(v)
@@ -741,7 +800,7 @@ func cmdLogin(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Logged in as %s (namespaces: %s). Saved to %s\n", w.Name, strings.Join(w.Namespaces, ", "), dir)
+	fmt.Printf("Logged in as %s (namespaces: %s). Saved to %s\n", clean(w.Name, false), clean(strings.Join(w.Namespaces, ", "), false), dir)
 	return nil
 }
 
@@ -829,9 +888,9 @@ func cmdPair(args []string) error {
 			return err
 		}
 		fmt.Printf("Ask the keydrop admin to approve this machine. Send them this link:\n\n  %s\n\nThe page will show the code %s. The request expires at %s.\n",
-			p.Link, p.Code, p.Expires.Local().Format("15:04"))
+			clean(p.Link, false), clean(p.Code, false), p.Expires.Local().Format("15:04"))
 	} else {
-		fmt.Printf("Still waiting for approval of code %s: %s\n", p.Code, p.Link)
+		fmt.Printf("Still waiting for approval of code %s: %s\n", clean(p.Code, false), clean(p.Link, false))
 	}
 	fmt.Println("Waiting… (if this is interrupted, run keydrop pair again to keep waiting)")
 
@@ -851,7 +910,7 @@ func cmdPair(args []string) error {
 			if _, err := saveLogin(p.URL, res.Token, p.Pin); err != nil {
 				return fmt.Errorf("approved, but saving the token failed (ask the admin to revoke %s and pair again): %w", res.Name, err)
 			}
-			fmt.Printf("Approved as %s (namespaces: %s). Saved to %s\n", res.Name, strings.Join(res.Namespaces, ", "), dir)
+			fmt.Printf("Approved as %s (namespaces: %s). Saved to %s\n", clean(res.Name, false), clean(strings.Join(res.Namespaces, ", "), false), dir)
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -861,12 +920,39 @@ func cmdPair(args []string) error {
 	}
 }
 
-// printable quotes a variable's value in a list if it holds control
-// characters, so a value with a newline or a terminal escape can't fake
-// extra lines in an agent's output.
+// printable quotes a variable's value if it holds anything but printable
+// characters, so a value with a newline, a terminal escape or a
+// bidirectional override can't fake output in an agent's terminal.
 func printable(v string) string {
-	if strings.IndexFunc(v, unicode.IsControl) >= 0 {
+	if strings.IndexFunc(v, func(r rune) bool { return !strconv.IsPrint(r) }) >= 0 || !utf8.ValidString(v) {
 		return strconv.Quote(v)
 	}
 	return v
+}
+
+// clean makes text from the server safe to print: control characters
+// (terminal escapes included), bidirectional overrides and other
+// non-printing characters are shown as \x.. / \u.... escapes, so they're
+// visible and inert. multiline keeps newlines; tabs become spaces.
+func clean(s string, multiline bool) string {
+	var b strings.Builder
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		switch {
+		case r == utf8.RuneError && size == 1: // not UTF-8
+			fmt.Fprintf(&b, "\\x%02x", s[0])
+		case r == '\n' && multiline:
+			b.WriteByte('\n')
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x80 && !strconv.IsPrint(r):
+			fmt.Fprintf(&b, "\\x%02x", r)
+		case !strconv.IsPrint(r):
+			fmt.Fprintf(&b, "\\u%04x", r)
+		default:
+			b.WriteRune(r)
+		}
+		s = s[size:]
+	}
+	return b.String()
 }

@@ -2,9 +2,14 @@ package main
 
 import (
 	"flag"
+	"log"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/minituff/keydrop/internal/store"
 )
 
 func TestParseEnvFile(t *testing.T) {
@@ -68,7 +73,7 @@ func TestParseEnvFlag(t *testing.T) {
 
 func TestChildEnv(t *testing.T) {
 	env := childEnv(
-		[]string{"PATH=/bin", "KEYDROP_TOKEN=kd_fake", "TOKEN=inherited", "KEYDROP_URL=x"},
+		[]string{"PATH=/bin", "KEYDROP_TOKEN=kd_fake", "TOKEN=inherited", "KEYDROP_URL=x", "KEYDROP_TOKEN_FILE=/x/token", "KEYDROP_TLS_PIN=sha256:x"},
 		[]binding{{"TOKEN", "CF"}, {"GH_PAT", "lab/GH_PAT"}},
 		map[string]string{"CF": "fake-cf-value", "lab/GH_PAT": "fake-gh-value"},
 	)
@@ -77,8 +82,10 @@ func TestChildEnv(t *testing.T) {
 		k, v, _ := strings.Cut(kv, "=")
 		got[k] = v
 	}
-	if _, ok := got["KEYDROP_TOKEN"]; ok {
-		t.Error("agent token passed to the child")
+	for k := range got {
+		if strings.HasPrefix(k, "KEYDROP_") {
+			t.Errorf("%s passed to the child", k)
+		}
 	}
 	if got["TOKEN"] != "fake-cf-value" || got["GH_PAT"] != "fake-gh-value" || got["PATH"] != "/bin" {
 		t.Errorf("got %v", got)
@@ -91,10 +98,61 @@ func TestPrintable(t *testing.T) {
 		"a\nlab/FAKE=1":            `"a\nlab/FAKE=1"`,
 		"\x1b[2Jcleared":           `"\x1b[2Jcleared"`,
 		"zone id with spaces ok ü": "zone id with spaces ok ü",
+		"abc\u202edcba":            `"abc\u202edcba"`,
 	} {
 		if got := printable(in); got != want {
 			t.Errorf("printable(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// Descriptions and other server text reach agent terminals inert.
+func TestClean(t *testing.T) {
+	for _, tc := range []struct {
+		in        string
+		multiline bool
+		want      string
+	}{
+		{"Cloudflare token, zone ü", false, "Cloudflare token, zone ü"},
+		{"\x1b[2J\x1b]0;title\x07hi", false, `\x1b[2J\x1b]0;title\x07hi`},
+		{"line one\r\nfake: line", true, "line one\\x0d\nfake: line"},
+		{"line one\nfake", false, `line one\x0afake`},
+		{"rtl\u202eevil", false, `rtl\u202eevil`},
+		{"bad \xff byte", false, `bad \xff byte`},
+		{"\u009b31m", false, `\u009b31m`},
+	} {
+		if got := clean(tc.in, tc.multiline); got != tc.want {
+			t.Errorf("clean(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// --force replaces a symlink rather than writing through it, and the file
+// is always 0600.
+func TestWriteValueFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	os.WriteFile(target, []byte("untouched"), 0o644)
+	link := filepath.Join(dir, "value")
+	os.Symlink(target, link)
+	if err := writeValueFile(link, "fake-value", false); err == nil {
+		t.Fatal("wrote through an existing symlink without --force")
+	}
+	if err := writeValueFile(link, "fake-value", true); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "untouched" {
+		t.Fatal("followed the symlink")
+	}
+	fi, _ := os.Lstat(link)
+	if fi.Mode()&os.ModeSymlink != 0 || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("result: %v", fi.Mode())
+	}
+	loose := filepath.Join(dir, "loose")
+	os.WriteFile(loose, []byte("old"), 0o644)
+	writeValueFile(loose, "fake-value", true)
+	if fi, _ := os.Stat(loose); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("kept mode %v", fi.Mode().Perm())
 	}
 }
 
@@ -112,5 +170,27 @@ func TestDirectAddress(t *testing.T) {
 		if got := directAddress(tc.hosts, tc.listen); got != tc.want {
 			t.Errorf("directAddress(%v, %q) = %q, want %q", tc.hosts, tc.listen, got, tc.want)
 		}
+	}
+}
+
+// A master key file others can read is warned about.
+func TestMasterKeyModeWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.key")
+	os.WriteFile(path, []byte(store.GenerateKey()), 0o644)
+	t.Setenv("KEYDROP_MASTER_KEY_FILE", path)
+	var out strings.Builder
+	log.SetOutput(&out)
+	defer log.SetOutput(os.Stderr)
+	if _, err := masterKey(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "mode 0644") {
+		t.Fatalf("no warning: %q", out.String())
+	}
+	out.Reset()
+	os.Chmod(path, 0o400)
+	masterKey()
+	if out.String() != "" {
+		t.Fatalf("warned about 0400: %q", out.String())
 	}
 }

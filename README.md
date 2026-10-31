@@ -99,7 +99,10 @@ replacement for Vault or Infisical in a team.
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-docker run --rm ghcr.io/minituff/keydrop genkey > master.key && chmod 600 master.key
+docker run --rm ghcr.io/minituff/keydrop genkey > master.key
+# Compose mounts the file as it is on the host, and the container runs as
+# uid 65532, so give it the key (and only it):
+sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 # edit KEYDROP_PUBLIC_URL and KEYDROP_TLS_HOSTS, then:
 docker compose -f compose.example.yml up -d
@@ -230,10 +233,16 @@ CLI and API don't, and refuse a lower-case name.
 
 `keydrop get NAME` prints a variable and refuses a secret. For a file (a
 kubeconfig, a PEM): `keydrop get NAME --to-file PATH` writes it with mode
-600. `keydrop get NAME --raw` prints a secret, which defeats the point; it
-exists for the rare pipe that needs it.
+600 (with `--force` it replaces the file, and a symlink there is replaced
+rather than followed). `keydrop get NAME --raw` prints a secret, which
+defeats the point; it exists for the rare pipe that needs it.
+
+`keydrop run` removes every `KEYDROP_*` variable from the command's
+environment, but the command runs as the same user and could read the
+token file: `run` keeps the token out of the way, it isn't a sandbox.
 
 To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
+`put` takes text up to 60 KiB; base64 a binary value first.
 
 To migrate an existing `.env` (needs a token with write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
@@ -278,7 +287,9 @@ why.
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
-override the files written by `keydrop pair` / `keydrop login`.
+override the files written by `keydrop pair` / `keydrop login`. A pin
+needs an `https://` URL; with `http://` the CLI refuses rather than skip
+the check.
 `KEYDROP_AGENT` sets the agent label shown in the log.
 
 ### Behind a reverse proxy
@@ -313,8 +324,8 @@ allowed sources gets 403.
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |
-| `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself) |
-| `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 4 downloads at a time |
+| `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself). Only over https, or through a trusted proxy with an https `KEYDROP_PUBLIC_URL` |
+| `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 8 downloads at a time, 2 per address |
 
 Authenticated responses carry `X-Keydrop-Version`, the server's build.
 

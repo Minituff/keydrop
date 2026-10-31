@@ -113,7 +113,8 @@ func main() {
 		if asExit(err, &ec) {
 			os.Exit(int(ec))
 		}
-		fmt.Fprintln(os.Stderr, "keydrop:", strings.TrimPrefix(err.Error(), "keydrop: "))
+		// Errors can carry server text: print it inert.
+		fmt.Fprintln(os.Stderr, "keydrop:", clean(strings.TrimPrefix(err.Error(), "keydrop: "), true))
 		os.Exit(1)
 	}
 }

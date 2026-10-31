@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 )
@@ -101,8 +102,38 @@ func KeyPin(der []byte) (string, error) {
 }
 
 // downloads caps concurrent CLI downloads: they're unauthenticated and
-// each is several megabytes.
-var downloads = make(chan struct{}, 4)
+// each is several megabytes. Each address (IPv6: /64) gets at most
+// downloadsPerAddr of the slots, and a reader that stalls for
+// downloadIdle is cut off, so a few slow clients can't hold them all.
+var downloads = make(chan struct{}, 8)
+
+const (
+	downloadsPerAddr = 2
+	downloadIdle     = 30 * time.Second
+	downloadMax      = 10 * time.Minute
+)
+
+var (
+	downloadsMu     sync.Mutex
+	downloadsByAddr = map[string]int{}
+)
+
+// deadlineWriter pushes the write deadline forward before each write, so
+// a stalled reader times out after downloadIdle, and none lasts past end.
+type deadlineWriter struct {
+	w   http.ResponseWriter
+	rc  *http.ResponseController
+	end time.Time
+}
+
+func (d deadlineWriter) Write(p []byte) (int, error) {
+	dl := time.Now().Add(downloadIdle)
+	if dl.After(d.end) {
+		dl = d.end
+	}
+	d.rc.SetWriteDeadline(dl)
+	return d.w.Write(p)
+}
 
 func (s *Server) cliBuild(name string) (CLIBuild, bool) {
 	for _, b := range s.cfg.CLI {
@@ -128,6 +159,23 @@ func (s *Server) handleCLI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such build; see /install.sh or the Agents page", http.StatusNotFound)
 		return
 	}
+	addr := sourceGroup(s.clientIP(r))
+	downloadsMu.Lock()
+	if downloadsByAddr[addr] >= downloadsPerAddr {
+		downloadsMu.Unlock()
+		w.Header().Set("Retry-After", "10")
+		http.Error(w, "too many downloads from this address at once, try again shortly", http.StatusServiceUnavailable)
+		return
+	}
+	downloadsByAddr[addr]++
+	downloadsMu.Unlock()
+	defer func() {
+		downloadsMu.Lock()
+		if downloadsByAddr[addr]--; downloadsByAddr[addr] <= 0 {
+			delete(downloadsByAddr, addr)
+		}
+		downloadsMu.Unlock()
+	}()
 	select {
 	case downloads <- struct{}{}:
 		defer func() { <-downloads }()
@@ -147,12 +195,12 @@ func (s *Server) handleCLI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "build unavailable", http.StatusInternalServerError)
 		return
 	}
-	// The server's write timeout suits API calls, not a slow link.
-	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Minute))
+	// The server's write timeout suits API calls, not a slow link: allow
+	// up to downloadMax in all, but no stall longer than downloadIdle.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+b.Name+`"`)
 	w.Header().Set("Content-Length", strconv.FormatInt(b.Size, 10))
-	io.Copy(w, zr)
+	io.CopyBuffer(deadlineWriter{w, http.NewResponseController(w), time.Now().Add(downloadMax)}, zr, make([]byte, 32<<10))
 }
 
 // safeHost is what can go into a shell script unquoted-safe: a hostname or
@@ -163,17 +211,24 @@ var safeHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(:[0-9]+)?$|^\[[0-9A-Fa-f:.]+
 // fetched from. Directly from keydrop's own self-signed certificate it
 // pins the key; through a proxy it uses the public URL and normal
 // certificate checks.
-func (s *Server) installTarget(r *http.Request) (base, keyPin, certPin string, ok bool) {
+//
+// It never hands out a script that downloads over plain HTTP: errMsg says
+// why instead.
+func (s *Server) installTarget(r *http.Request) (base, keyPin, certPin, errMsg string) {
 	if s.viaProxy(r) {
-		return strings.TrimRight(s.cfg.PublicURL, "/"), "", "", true
+		pub := strings.TrimRight(s.cfg.PublicURL, "/")
+		if !strings.HasPrefix(pub, "https://") || s.cfg.PublicURLGuess {
+			return "", "", "", "set KEYDROP_PUBLIC_URL to the proxy's https:// address to install through it"
+		}
+		return pub, "", "", ""
 	}
 	if !safeHost.MatchString(r.Host) {
-		return "", "", "", false
+		return "", "", "", "unexpected Host header"
 	}
 	if r.TLS == nil {
-		return "http://" + r.Host, "", "", true
+		return "", "", "", "the installer is only offered over https (it would download the CLI unverified); fetch install.sh with https"
 	}
-	return "https://" + r.Host, s.cfg.KeyPin, s.cfg.CertPin, true
+	return "https://" + r.Host, s.cfg.KeyPin, s.cfg.CertPin, ""
 }
 
 // viaProxy reports whether the request came from a trusted proxy.
@@ -210,9 +265,9 @@ name="keydrop-$os-$arch"
 fetch() {
   if [ -n "$pin" ]; then
     # -k skips the CA check; --pinnedpubkey replaces it with this server's key.
-    curl -fsSk --pinnedpubkey "$pin" -o "$2" "$base/cli/$1"
+    curl -fsSk --proto =https --pinnedpubkey "$pin" -o "$2" "$base/cli/$1"
   else
-    curl -fsS -o "$2" "$base/cli/$1"
+    curl -fsS --proto =https -o "$2" "$base/cli/$1"
   fi
 }
 
@@ -246,9 +301,9 @@ func (s *Server) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this server has no CLI builds to hand out (KEYDROP_CLI_DIR isn't set)", http.StatusNotFound)
 		return
 	}
-	base, keyPin, certPin, ok := s.installTarget(r)
-	if !ok {
-		http.Error(w, "unexpected Host header", http.StatusBadRequest)
+	base, keyPin, certPin, errMsg := s.installTarget(r)
+	if errMsg != "" {
+		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")

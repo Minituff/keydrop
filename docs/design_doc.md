@@ -194,11 +194,27 @@ log, not for access control.
 - **What masking can promise:** accident prevention for honest tools. It
   doesn't catch hex, JSON-escaped, case-changed, truncated or split
   output, or anything the command sends to a file or the network.
-- `run` removes `KEYDROP_TOKEN` from the child's environment, forwards
-  signals, and exits with the child's exit code.
+- `run` removes every `KEYDROP_*` variable (token, token file, URL, pin)
+  from the child's environment, forwards signals, and exits with the
+  child's exit code. That keeps the token out of the child's way, not out
+  of its reach: the child runs as the same user and can read
+  `~/.config/keydrop/token`. `run` isn't a sandbox. `run --no-mask` is
+  recorded in the audit log.
 - A plain `get` only prints variables. For a secret it refuses and points
-  at `run -e`. `get --to-file` (0600) covers config files. `get --raw`
-  exists for the rare pipe, and is easy to block with an agent hook.
+  at `run -e`. `get --to-file` (0600) covers config files; with `--force`
+  it writes a new 0600 file and renames it into place, so it never keeps a
+  looser mode or writes through a symlink. `get --raw` exists for the rare
+  pipe, and is easy to block with an agent hook.
+- Everything the CLI prints that came from the server (descriptions,
+  usage, variable values on a terminal, names, error messages) has control
+  characters, terminal escapes and bidirectional overrides shown as
+  visible escapes. Descriptions are written by other people and agents,
+  and agents read this output.
+- `put` takes text up to 60 KiB from stdin, and refuses anything that
+  isn't valid UTF-8 rather than letting JSON mangle it: base64 a binary
+  value first.
+- A pin with an `http://` URL is an error, not silently unchecked, and a
+  pinned client won't follow a redirect away from https.
 
 ### Variables
 Not everything an agent needs is secret: an API base URL, an account ID, a
@@ -367,10 +383,15 @@ trusted proxy the script uses the public URL and normal certificate
 checks. The checksum file comes over the same channel, so it catches a
 corrupted download, not a malicious server; the pin is what does that.
 The script inserts its own URL into the download commands, so a Host header
-that isn't a plain host[:port] is refused rather than quoted.
+that isn't a plain host[:port] is refused rather than quoted. It's only
+served when the downloads would be verified: over https straight to
+keydrop (pinned), or through a trusted proxy whose `KEYDROP_PUBLIC_URL` is
+https. Over plain http it's refused, and curl runs with `--proto =https`
+so a redirect can't downgrade it.
 
 The downloads are unauthenticated (they hold nothing secret) and capped at
-4 at a time. Authenticated API responses carry `X-Keydrop-Version`; the
+8 at a time, 2 per address (IPv6: /64); a reader that stalls for 30
+seconds is cut off, and none runs past 10 minutes. Authenticated API responses carry `X-Keydrop-Version`; the
 CLI warns once if it differs. The header isn't sent to anyone without a
 token, so the server doesn't announce its version.
 

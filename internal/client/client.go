@@ -57,6 +57,7 @@ type Client struct {
 	// (KEYDROP_AGENT, e.g. "claude"). It only shows in the audit log.
 	Label string
 
+	pin string
 	who *Whoami
 }
 
@@ -118,6 +119,10 @@ func FromEnv() (*Client, error) {
 // New builds a client. If pin is set ("sha256:<hex>"), the server's
 // certificate must match it exactly instead of chaining to a public CA,
 // which is how self-signed servers are trusted.
+//
+// A pin only means something over https: with an http:// URL every request
+// fails (ErrPinNeedsHTTPS) rather than silently going unverified, and a
+// redirect away from https is refused.
 func New(baseURL, token, pin string) *Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if pin != "" {
@@ -131,8 +136,21 @@ func New(baseURL, token, pin string) *Client {
 			},
 		}
 	}
-	return &Client{URL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+	hc := &http.Client{Transport: tr, Timeout: 30 * time.Second}
+	if pin != "" {
+		hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return ErrPinNeedsHTTPS
+			}
+			return nil
+		}
+	}
+	return &Client{URL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: hc, pin: pin}
 }
+
+// ErrPinNeedsHTTPS: a certificate pin is set but the URL is plain http, so
+// there's no certificate to check.
+var ErrPinNeedsHTTPS = errors.New("a TLS pin is set but the URL isn't https://, so it can't be checked; use the https:// URL")
 
 // APIError is a non-2xx response.
 type APIError struct {
@@ -149,6 +167,9 @@ func IsNotFound(err error) bool {
 }
 
 func (c *Client) do(method, path string, body, out any) error {
+	if c.pin != "" && !strings.HasPrefix(strings.ToLower(c.URL), "https://") {
+		return ErrPinNeedsHTTPS
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)

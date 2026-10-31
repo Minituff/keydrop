@@ -1,6 +1,10 @@
 # Example deployment. Before the first start:
 #   mkdir -p data && sudo chown 65532:65532 data
-#   docker run --rm ghcr.io/minituff/keydrop genkey > master.key && chmod 600 master.key
+#   docker run --rm ghcr.io/minituff/keydrop genkey > master.key
+#   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+# (Compose mounts the secret file with its host owner and mode, and keydrop
+# runs as uid 65532, so a 600 file owned by you would be unreadable to it.
+# keydrop warns at start if the key file is readable by anyone else.)
 # Back up master.key somewhere other than ./data: without it the data is unreadable.
 services:
   keydrop:

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -26,5 +27,13 @@ func TestCheckVersion(t *testing.T) {
 		if got := strings.Count(out.String(), "\n"); got != map[bool]int{true: 1, false: 0}[tc.warn] {
 			t.Errorf("CLI %q, server %q: %q", tc.cli, tc.server, out.String())
 		}
+	}
+}
+
+// A pin with an http:// URL fails instead of going unverified.
+func TestPinNeedsHTTPS(t *testing.T) {
+	c := New("http://10.0.0.5:8443", "kd_fake", "sha256:00")
+	if _, err := c.Whoami(); !errors.Is(err, ErrPinNeedsHTTPS) {
+		t.Fatalf("got %v", err)
 	}
 }
