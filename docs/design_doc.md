@@ -181,6 +181,113 @@ which are the places keydrop exists to keep secrets out of. So a machine
 - `keydrop login` (paste a token made by hand) stays for scripts and
   machines that can't wait for an approval.
 
+### Token expiry and renewal
+- Every token has a lifetime, picked when it's made (pairing approval or
+  "New agent"): 30, 90 (the default), 180 or 365 days, or never.
+  `ExpiresAt` is nil for never. Tokens made before expiry existed have
+  none and keep working; the Agents page says "no expiry".
+- **An expired token gets exactly the 401 an unknown one gets**
+  (`invalid token`), so a caller learns nothing from the difference. The
+  unauthenticated audit file records `token expired` with the name, for
+  the admin. The check is in the one token check (`LookupToken`), so no
+  endpoint can forget it.
+- Every authenticated answer carries `X-Keydrop-Token-Expires` (RFC 3339
+  or `never`). The CLI warns once per run in the last 14 days, the same
+  window the Agents page marks as "soon". `whoami` prints
+  `expires: 2027-01-30 (in 90 days)` or `expires: never`. Days round up.
+- The Agents page shows each token's expiry, a Renew form with a lifetime
+  picker, and a warning on tokens unused for 30 days or more. Expired
+  tokens stay listed until the admin revokes them.
+- **Renewal is asked for by the agent and granted by the admin.** `keydrop
+  renew` (`POST /api/v1/token/renew`) records a request on the token:
+  one per token, asking again is a no-op that says so, and status checks
+  and requests are rate-limited per (token, address). The Inbox shows it
+  with Approve (with a lifetime) and Decline. If the request came from an
+  address other than where the token was last used, the Inbox says so in
+  red: a stolen token asking to be renewed looks exactly like this.
+- An expired token can call only `GET`/`POST /api/v1/token/renew` and
+  `POST /api/v1/token/collect`, and only for 30 days after it expired
+  (`RenewalGrace`). After that it's dead and the agent pairs again. Allowed
+  sources still apply to those calls.
+- **Approval replaces the token** (as does the Agents page's Renew, which
+  needs no request). The token's hash becomes the new token's at once, so
+  the old token stops working for anything but collecting; the store
+  keeps a `Rotation` with the old hash, the new token sealed under the
+  master key (AAD `rotation:<name>:<new hash>`, so it can't be moved to
+  another token), the address that asked, and `CollectBy` (7 days). The
+  plaintext of the new token is never stored and never shown to the
+  admin. Fail-safe: if the save fails nothing changes, and a file with
+  the rotation stripped refuses to load (the v4 key check, below).
+- **Collecting** (`POST /api/v1/token/collect` with the old token) returns
+  the new one, only to the address that asked for the renewal (the
+  address the token was last used from, for an admin Renew). Anything
+  else is refused with 403, written to the audit log as
+  `token.collect.refused` and sent as an alert. Collecting can be
+  repeated until the new token is first used, so an answer lost on the
+  way doesn't lose the token; its first use deletes the rotation, and the
+  old token is then just unknown. Collects have their own rate limit, so
+  renew polling can't use it up. A token whose rotation isn't collected
+  within 7 days is deleted (audited) and the agent pairs again.
+- The CLI collects on its own: any command that gets a 401 first re-reads
+  the token file (another process may have collected), then asks the
+  renewal status, and collects an approved renewal. It holds a lock on
+  `<token file>.lock`, re-reads the file under the lock, and writes the
+  new token with a temp file in the same directory (mode 600), fsync,
+  rename and a directory fsync; the config file's url and pin are
+  untouched. It prints `keydrop: token renewed; new token saved to
+  <path>` and never the token. A token given in `KEYDROP_TOKEN` isn't
+  collected, since there's nowhere to keep the new one. `keydrop renew
+  --wait` waits for the admin.
+- **Pairing and renewal are the only two ways a token is handed over.**
+  Both hand it over only to the address that asked, and only after the
+  admin approved it in the UI.
+
+### Canary secrets
+- The admin can mark a secret as a canary: a decoy that no agent should
+  ever use, so any use is an alarm. Only the admin's pages show the flag.
+  **To an agent a canary is indistinguishable from a real secret:** the
+  same list entries, the same responses and errors, the same work per
+  call, and no field, header or timing that differs.
+- A touch is any agent call on the canary: a reveal or `run`, a write,
+  a status, a flag or a note (a write that turns it into a variable
+  still counts, and keeps the flag). Each one writes an audit entry marked
+  canary, updates the Inbox and sends an alert. An agent can't clear the
+  flag; only the admin clears it, or turns the secret into a variable
+  from the UI. Limitation: `keydrop vars` lists variable values
+  without recording a touch, so if an agent's write turns a canary into a
+  variable, from then on only calls on that name count.
+- The Inbox keeps one entry per (canary, token): first and last touch, a
+  count, and the first 5 addresses. The first touch is never overwritten.
+  Entries are capped at 100; past that, new ones are only counted (the
+  audit log has them all). The admin dismisses entries.
+- **Alerts** go to `KEYDROP_ALERT_WEBHOOK` (Discord-compatible: a JSON
+  `{"content": ...}` with `allowed_mentions` empty, so a name can't ping
+  anyone). The body names the canary, the token, the address and the
+  time, never a value or a token. The URL is a credential: it's never
+  logged, shown, put in an error or the audit log; Settings shows only
+  whether it's set, and has a test button. Sending is asynchronous, from
+  one goroutine with a queue of 32 and a 5-second timeout: at most one
+  alert per canary and token every 10 minutes, and a global budget of 5
+  at once then one a minute. What's over the budget is counted and sent
+  as one summary later. A 429 is waited out for its `Retry-After`, at
+  most 30 seconds and twice. Refused token collects use the same path.
+- **Revoke on read** (Settings, off by default) revokes a token the moment
+  it touches a canary. It stops a stolen token at once, but it also
+  tells whoever holds the token that the secret was a trap (their next
+  call fails) and lets anyone who can make an agent read a name revoke
+  that agent. Off, the canary stays quiet and the admin decides.
+
+### Duplicate values
+- When the admin saves a secret whose value equals another secret's, the
+  page says `NAME has the same value as OTHER_NS/OTHER_NAME. If that was a
+  paste mistake, replace it.` with links to both. The save still happens:
+  some secrets really are equal. Batches are checked within themselves
+  too. Values are compared in constant time against every stored value;
+  two variables that match aren't reported (a shared username is normal),
+  a secret that matches anything is. The message names keys only, never
+  a value.
+  Agents never see it.
+
 ### Allowed sources
 A token can be limited to addresses and CIDR ranges. Use from anywhere
 else gets 403 and a `token.denied` log entry, and isn't counted as "last
@@ -343,8 +450,9 @@ every read logged, no way to just look). So an entry is either a
   `=` must be followed by something other than `=` or the end, so base64
   padding passes. "Save it exactly as pasted" skips the check (and the
   trimming).
-- There are no webhooks or chat notifications: telling a person about
-  anything is the job of whatever runs the agents, not of keydrop.
+- The one outgoing notification is the canary alert (below). Everything
+  else, including telling a person what an agent did, is the job of
+  whatever runs the agents, not of keydrop.
 
 ### Groups
 - A group belongs to a namespace. It has an id (a slug made from its
@@ -521,6 +629,24 @@ limited to what it needs:
   setting and batch links. When that release rewrites the file, those are
   gone; the keys and their values stay. The e2e suite starts both older
   releases on grouped data, lets them rewrite it, and opens the result.
+- **A fourth MAC for expiry, renewals and canaries.** The release before
+  them (b0b9efe) checks `mac3` over everything it parses, so `mac3` now
+  covers `v3View()` (the state with `expires_at`, `lifetime`, `renewal`,
+  `rotation`, per-secret `canary` and the `canary` state zeroed) and
+  `mac4` (`HKDF(master key, "state mac v4")`) covers everything. Unlike
+  the earlier optional fields, these restrict access: stripping a token's
+  expiry or rotation would revive it. So stripping isn't accepted: the
+  first save that writes any of them seals a new key check,
+  `keydrop-key-check:v4`, which says `mac4` is required whatever the file
+  holds, and only `keydrop downgrade-data` takes it back. The previous
+  release doesn't know that key check and refuses to start ("master key
+  does not match") until `downgrade-data` is run. `downgrade-data` goes
+  back one format per run: from v4 it drops these fields (tokens stop
+  expiring, pending renewal requests are dropped, tokens with an
+  uncollected rotation are deleted since only the new token would work,
+  canaries become ordinary secrets, the canary Inbox entries go; the
+  audit log keeps everything) and lists by name what it dropped; run
+  again, it goes back to the v1 key check as before.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
@@ -666,7 +792,11 @@ code. The full list is in the README.
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a
   Docker build on every push and pull request, and the end-to-end suite
   (`go test -tags e2e ./e2e/...`) as a separate job with the full history,
-  since its upgrade test builds the release before the integrity check. Pushes to `dev` then
+  since its upgrade test builds the release before the integrity check.
+  The suite also builds a test binary with the `e2eclock` tag, whose
+  clock (server and CLI) reads an offset from `KEYDROP_E2E_CLOCK_FILE`,
+  to test expiry and the renewal windows without waiting; release builds
+  don't include it. Pushes to `dev` then
   publish `ghcr.io/minituff/keydrop:dev` and `:dev-<sha>` (amd64), for a
   test deployment that pins the digest. The image's version is
   `dev-<sha>`, matching the tag. CI also starts the image, installs the CLI

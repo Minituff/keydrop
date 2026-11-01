@@ -135,6 +135,44 @@ replacement for Vault or Infisical in a team.
     namespace, and a token flooding one evicts its own events first.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
+- **Tokens expire.** Each token gets a lifetime when you approve or make
+  it: 30, 90 (the default), 180 or 365 days, or never. The **Agents** page
+  shows "expires in N days", "expired" or "no expiry", points out tokens
+  unused for 30 days or more, and keeps expired tokens listed until you
+  revoke them. An expired token gets the same 401 as an unknown one (the
+  log says "token expired"). From 14 days before expiry every command
+  warns on stderr; `keydrop whoami` shows `expires: 2027-01-30 (in 90
+  days)` or `expires: never`.
+- **Renewal is a new token.** `keydrop renew` asks you to renew the token
+  (also up to 30 days after it expired); the request shows in the
+  **Inbox**, where you approve it with a lifetime or decline it. Approving,
+  or pressing **Renew** on the Agents page, replaces the token at once:
+  the old one can then only *collect* the new one, once (repeatable until
+  the new one is first used, in case an answer was lost), only from the
+  address that asked, within 7 days. `keydrop renew --wait` waits and
+  collects; otherwise the agent's next command does, saves the new token
+  over the token file (atomically, mode 600) and carries on, printing
+  `keydrop: token renewed; new token saved to <path>`. A renewal not
+  collected in 7 days revokes the token: pair the agent again. Nothing
+  renews without you.
+- **Canaries.** Tick **Canary** when you add a secret (or on its page) to
+  make it a decoy no agent should need. To agents it's an ordinary
+  secret. When an agent reads it (or writes, flags, notes or sets a status
+  on it), the log marks it *canary*, the **Inbox** shows one entry per
+  canary and token (first and last time, count, addresses) until you
+  dismiss it, and, with `KEYDROP_ALERT_WEBHOOK` set, keydrop posts an
+  alert (at most one per canary and token every 10 minutes; at most 5 at
+  once and one a minute after that, the rest summed up in one message).
+  Settings shows whether a webhook is configured, sends a test alert, and
+  can **revoke a token that reads a canary**. That's off by default,
+  because the revocation tells whoever holds the token which secret was
+  the canary. Variables can't be canaries.
+- **Duplicate values.** When you save a value in the web page (Add,
+  replace, filling a request, a batch card or a pasted file), keydrop
+  compares it in constant time with every other stored value and warns:
+  "NAME has the same value as OTHER_NS/OTHER_NAME. If that was a paste
+  mistake, replace it." The save still happens; nothing is stored about
+  it, and values are never shown.
 - **An audit log** of every login, change and secret read (which agent,
   which secret, which command, and whether `run --no-mask` was used). It's
   `data/audit.jsonl`, rotated at 10 MiB with five old copies kept
@@ -151,8 +189,9 @@ replacement for Vault or Infisical in a team.
 | | |
 |---|---|
 | At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
-| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses. |
-| Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. |
+| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses, and expires after its lifetime (unless set to never). |
+| Renewal | Approved by the admin only. Approval replaces the token; the new one is kept sealed with the master key until the agent collects it with the old token, from the address that asked, within 7 days. The Inbox flags a request made from an address other than the token's last one; a collect from another address is refused, logged and alerted. |
+| Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. Pairing and renewal are the only ways a token is handed to an agent. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
 | Login limits | 5 failures per client and 20 overall per 15 minutes; each attempt is counted before the password is checked, so parallel guesses don't get extra tries. A browser that has logged in before carries a signed device cookie and is exempt from the overall limit, so failures from elsewhere on the network can't lock the owner out. |
 | Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
@@ -283,6 +322,33 @@ don't need `upgrade-data`. An older release that has the integrity check
 starts on data this release wrote, and ignores what it doesn't know. When
 it next saves, those fields are gone: rolling back loses groups (the keys
 stay, ungrouped), and requests stop being linked as one batch.
+
+**Token expiry, renewal and canaries are different.** Once any of them is
+in use (and a token made with the default lifetime counts), the sealed key
+check records that their integrity check is required, so the file can't
+be rolled back by deleting those fields. The release before them then
+refuses the data ("master key does not match this data directory") until
+you run `downgrade-data` with this release, the server stopped:
+
+```sh
+docker compose run --rm keydrop downgrade-data
+```
+
+It goes back one format at a time and lists by name what it drops:
+
+- **expiry:** every token stops expiring;
+- **renewal requests** waiting in the Inbox;
+- **renewals approved but not collected:** those tokens are deleted (the
+  old token no longer works and the new one was never handed over), so
+  pair those agents again. Collected renewals are kept: only the new
+  token works;
+- **canaries:** the flag on each secret, the Inbox's canary entries (the
+  audit log keeps them), and "revoke a token that reads a canary".
+
+Then switch `image:` back and start the older image. This release still
+starts on that data and picks the features up again when you use them.
+To go back past the integrity check as well, run `downgrade-data` a
+second time.
 
 ### Rotating the TLS certificate
 
@@ -445,6 +511,7 @@ why.
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
+| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible; Slack and ntfy accept it too). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only whether one is set. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
 override the files written by `keydrop pair` / `keydrop login`. A pin
@@ -478,9 +545,12 @@ get 429, as do puts and requests past theirs, and a request past a token's
 
 | | |
 |---|---|
-| `GET /api/v1/whoami` | Token name, namespaces, `permission` (`read`, `add` or `write`) and the older `write` flag |
+| `GET /api/v1/whoami` | Token name, namespaces, `permission` (`read`, `add` or `write`), the older `write` flag, and `expires_at` (null: never) |
+| `POST /api/v1/token/renew` | Ask the admin to renew this token → `{"state","expires_at","expired","created"}`; `state` is `pending`, `approved` (collect it), or `never` (it doesn't expire). Asking again changes nothing. Works for an expired token up to 30 days after expiry, and for a renewed one until the new token is used |
+| `GET /api/v1/token/renew` | Where this token's renewal stands, same answer (`none` when there's no request; adds `collect_by` once approved) |
+| `POST /api/v1/token/collect` | With the old token, once approved: `{"token","name","namespaces","expires_at"}`. Only from the address that asked (403 otherwise, logged and alerted); repeatable until the new token is first used; 401 after 7 days |
 | `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`; `group` is `{"slug","name","color","auto"}` when the key is in one) |
-| `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending` |
+| `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending`. `last_read_at`/`last_read_by` only when this token read it last |
 | `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged); adds `"status"` when the key isn't ok. Marks the value as no longer new to this token |
 | `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000; 500 kept per namespace). Flag reasons aren't included |
 | `POST /api/v1/secrets/{ns}/{name}/status` | `{"status","replaced_by"}`; `ok` clears it. 403 if the admin set the current status; `replaced_by` must exist in the namespace |
@@ -498,7 +568,10 @@ get 429, as do puts and requests past theirs, and a request past a token's
 | `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself). Only over https, or through a trusted proxy with an https `KEYDROP_PUBLIC_URL` |
 | `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 8 downloads at a time, 2 per address |
 
-Authenticated responses carry `X-Keydrop-Version`, the server's build.
+Authenticated responses carry `X-Keydrop-Version`, the server's build,
+and `X-Keydrop-Token-Expires` (RFC 3339, or `never`). An expired or
+replaced token gets 401 `invalid token`, like an unknown one, except on the
+renewal endpoints.
 
 ## Building
 

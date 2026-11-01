@@ -237,7 +237,8 @@ keydrop whoami
 keydrop secrets
 ```
 
-`whoami` prints the name, namespaces and permission the person chose.
+`whoami` prints the name, namespaces and permission the person chose,
+and when the token expires.
 `secrets` lists the keys you can use, with what each is for, never their
 values. An empty list is fine for a new install.
 
@@ -269,6 +270,10 @@ values. An empty list is fine for a new install.
 - `keydrop flag NAME "reason"`: ask the person to look at a key.
 - `keydrop note NAME "text"`: propose a note for other agents; they see it
   once the person approves it.
+- `keydrop renew`: when keydrop says the token expires soon or has
+  expired, ask the person to renew it, then tell them to approve it in
+  keydrop's Inbox. `keydrop renew --wait` waits and saves the new token;
+  any other command after the approval does that too.
 
 Rules:
 
@@ -310,6 +315,9 @@ never need to see them.
 - Changes to keys show up in `keydrop history`. If a key stops working,
   `keydrop status NAME expired` (or `revoked`, `leaked`) tells other agents,
   and `keydrop flag NAME "reason"` asks the human to look.
+- If keydrop says the token expires soon or has expired, run `keydrop
+  renew` and ask the user to approve it in keydrop's Inbox. Never try to
+  get a token any other way.
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.

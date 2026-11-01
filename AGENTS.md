@@ -28,11 +28,27 @@ isn't worth it.
 - **Agents never get admin rights.** Tokens can't create tokens, change
   grants, or reach the UI. Pairing only *asks*: a token exists only after
   the admin approves in the UI.
-- **Every token check goes through `store.LookupToken(token, ip)`**, which
-  enforces allowed sources. Don't add a second way to authenticate a
-  token. The only unauthenticated API endpoints are `/api/v1/pair` and
-  `/api/v1/pair/poll`; keep them capped, and hand a token over only once,
-  only to the address that asked.
+- **Every token check goes through `store.LookupToken`** (in the server,
+  `agentAuth`), which enforces allowed sources, expiry and rotation.
+  Don't add a second way to authenticate a token. An expired or replaced
+  token gets the same 401 as an unknown one. An expired token may call
+  only the renewal endpoints (`/api/v1/token/renew`, `/api/v1/token/collect`),
+  and only within `RenewalGrace`; a replaced one only those too. The only
+  unauthenticated API endpoints are `/api/v1/pair` and `/api/v1/pair/poll`;
+  keep them capped.
+- **Pairing and renewal are the only ways a token is handed over.** Both
+  need the admin's approval in the UI, and both hand the token only to the
+  address that asked. A renewed token is sealed under the master key until
+  collected; it's never stored in plaintext or shown to the admin. The CLI
+  writes a collected token atomically (lock, temp file, fsync, rename) and
+  never prints it.
+- **A canary is indistinguishable to agents.** No API response, error,
+  header or code path may differ between a canary and an ordinary secret
+  as seen by the token. Every agent call on one (read, write, status, flag,
+  note) is a touch; agents can't clear the flag.
+- **The alert webhook URL is a credential.** Never log, show or return it,
+  and never put a value or a token in an alert body. Alerts go through the
+  one `alerter` (rate-limited, async); don't add another sender.
 - **Encryption at rest:** AES-256-GCM per value, with the namespace, name and
   field bound as additional data. The master key is never written to the
   data directory. `tls.key` is sealed too, and `keydrop.json` is HMAC'd
@@ -47,14 +63,17 @@ isn't worth it.
 - **Optional fields need no migration, but must keep the previous
   release reading the file.** `mac` covers `legacyView()` (the 038a737
   format), `mac2` covers `v2View()` (the 733cf9f format, which checks
-  `mac2` over everything it parses) and `mac3` covers everything. A new
-  optional field goes outside every older view. This release checks
-  `mac3` over all it parses, so once it has shipped, the next new field
-  needs a `v3View` that zeroes it and a fourth MAC, the same way
-  `v2View`/`mac3` were added. Never add a plain new field an existing MAC
-  covers. Each gets a case in
-  `TestOlderReleaseReadsNewerFile`. The e2e suite starts both older
-  releases (`rollbackCommit`, `v2RollbackCommit`) on data this one wrote. A fix-up of data the
+  `mac2` over everything it parses), `mac3` covers
+  `v3View()` (the b0b9efe format) and `mac4` covers everything. A new
+  optional field goes outside every older view. This
+  release checks `mac4` over all it parses, so once it has shipped, the
+  next new field needs a `v4View` that zeroes it and a fifth MAC, the same
+  way `v3View`/`mac4` were added. Never add a plain new field an existing
+  MAC covers. A field that restricts access (like expiry, rotations,
+  canaries) must not be strippable: tie it to a sealed key check the way
+  `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in
+  `TestOlderReleaseReadsNewerFile`. The e2e suite starts the older
+  releases (`rollbackCommit`, `v2RollbackCommit`, `v3RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
   only on a file whose MAC verified, and may change only what that
   release could also have written, or `ext`.
