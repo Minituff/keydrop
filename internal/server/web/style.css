@@ -10,7 +10,7 @@
 
 *{box-sizing:border-box}
 html{-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
-body{margin:0;font:14px/1.5 "Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+body{margin:0;padding:0 env(safe-area-inset-right) 0 env(safe-area-inset-left);font:14px/1.5 "Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
 a{color:var(--accent-fg);text-decoration:none;transition:color .15s}
 a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--accent-fg);outline-offset:2px;border-radius:6px}
@@ -225,10 +225,13 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
      page bounces at either end. The frame is position:fixed with inset 0
      rather than 100dvh tall: some Android browsers draw the page behind
      the gesture bar, and 100dvh then reaches under it, hiding the tab
-     labels; a fixed box ends where a fixed bottom bar would. */
+     labels; a fixed box ends where a fixed bottom bar would.
+     viewport-fit=cover (layout.html) is what makes Chrome on Android
+     report the gesture bar as env(safe-area-inset-bottom), which the tab
+     bar pads by; without it the inset reads 0 there. */
   body.shell{overflow:hidden;overscroll-behavior:none}
   .app{display:flex;flex-direction:column;height:100%;background:none}
-  .shell .app{position:fixed;inset:0;height:auto}
+  .shell .app{position:fixed;inset:0;height:auto;padding:0 env(safe-area-inset-right) 0 env(safe-area-inset-left)}
   .side{display:none}
   .mtop{display:flex;flex:none;align-items:center;gap:10px;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}
