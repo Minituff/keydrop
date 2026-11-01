@@ -185,19 +185,25 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
 
 @media (max-width:700px){
   body{font-size:15px}
-  .app{display:block;background:none}
+  /* An app frame, not a scrolling page: the body never scrolls, main does,
+     and the top bar and tab bar are ordinary flex rows. A position:fixed
+     tab bar drifts in mobile browsers while their toolbars slide and the
+     page bounces at either end. */
+  body.shell{height:100vh;height:100dvh;overflow:hidden;overscroll-behavior:none}
+  .app{display:flex;flex-direction:column;height:100%;background:none}
   .side{display:none}
-  .mtop{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:2;padding:10px 14px;background:var(--side);color:#fff}
+  .mtop{display:flex;flex:none;align-items:center;gap:10px;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}
   .mtop .pill{margin-left:auto;display:flex;align-items:center;gap:4px;font-size:13px;padding:6px 10px;border-radius:99px;background:var(--side-on);color:#fff;white-space:nowrap}
   .mtop :focus-visible{outline-color:#fff}
-  .tabs{display:flex;flex-direction:row;position:fixed;bottom:0;left:0;right:0;z-index:2;background:var(--card);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+  .tabs{display:flex;flex:none;flex-direction:row;background:var(--card);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
   .tabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--muted);position:relative;padding:4px 0;white-space:nowrap}
   .tabs a:hover{text-decoration:none}
   .tabs a .ic{width:22px;height:22px}
   .tabs a.on{color:var(--accent-fg);font-weight:600}
   .tabs a .n{position:absolute;top:0;left:calc(50% + 6px);margin:0;font-size:10px;min-width:0;padding:0 5px}
-  main{padding:16px 14px 96px;max-width:none}
+  main{padding:16px 14px 28px;max-width:none}
+  .shell main{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
   main.narrow{padding:24px 14px}
   .top{gap:10px;margin-bottom:14px}
   .top .button{order:2}
