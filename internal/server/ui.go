@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -141,6 +142,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		n, _ := s.inboxCounts()
 		data["InboxCount"] = n
 		data["Dups"] = s.takeDups(se)
+		data["Refresh"] = s.sessionRefresh(r, se)
 	}
 	if f, ok := flashes[r.URL.Query().Get("msg")]; ok {
 		data["Flash"] = f
@@ -153,6 +155,34 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		log.Printf("render %s: %v", name, err)
 	}
 }
+
+// sessionRefresh is the meta refresh for a logged-in page: a few seconds
+// after its session would time out, the page reloads by itself, so an
+// expired session lands on the login page instead of looking logged in
+// until the next click. No JavaScript: the browser does it. If another tab
+// kept the session alive, the reload just shows the page again. A server
+// restart ends every session too; a page can't see that without polling.
+func (s *Server) sessionRefresh(r *http.Request, se *session) string {
+	s.mu.Lock()
+	end := se.seen.Add(sessionIdle)
+	if abs := se.created.Add(sessionAbsolute); abs.Before(end) {
+		end = abs
+	}
+	s.mu.Unlock()
+	secs := int(end.Sub(s.now())/time.Second) + 5
+	if secs < 5 {
+		secs = 5
+	}
+	// Reload the same page if it was a plain GET of a simple path; anything
+	// else (a page shown after a POST, a query) goes to the start page.
+	url := "/"
+	if r.Method == http.MethodGet && safeRefreshPath.MatchString(r.URL.Path) {
+		url = r.URL.Path
+	}
+	return fmt.Sprintf("%d;url=%s", secs, url)
+}
+
+var safeRefreshPath = regexp.MustCompile(`^/[A-Za-z0-9/_.\-]*$`)
 
 func (s *Server) message(w http.ResponseWriter, r *http.Request, status int, title, msg string) {
 	s.render(w, r, "message", status, nil, page{"Title": title, "Message": msg})
@@ -900,6 +930,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	}
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
 	data["AutoGroups"] = s.store.AutoGroups()
+	data["Version"] = s.cfg.Version
 	data["AlertsConfigured"] = s.alerts.configured()
 	data["AlertDest"] = s.alerts.destination(false)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()

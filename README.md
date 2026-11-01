@@ -209,7 +209,7 @@ replacement for Vault or Infisical in a team.
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. Pairing and renewal are the only ways a token is handed to an agent. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
 | Login limits | 5 failures per client and 20 overall per 15 minutes; each attempt is counted before the password is checked, so parallel guesses don't get extra tries. A browser that has logged in before carries a signed device cookie and is exempt from the overall limit, so failures from elsewhere on the network can't lock the owner out. |
-| Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
+| Sessions | `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 h idle and 8 h maximum, kept in memory (a restart logs everyone out). Each page reloads itself (meta refresh, no JavaScript) just after its session would end, so it lands on the login page instead of looking logged in. CSRF token on every form, and cross-site requests (`Sec-Fetch-Site`) are refused. |
 | Headers | Strict CSP (no scripts at all), `X-Frame-Options: DENY`, `no-referrer`, `no-store`. |
 | Transport | TLS by default with a self-signed certificate. The CLI pins its SHA-256 fingerprint, so there's no public CA and no DNS dependency. |
 | Container | distroless (no shell), non-root, read-only filesystem and no capabilities in the example compose file. |

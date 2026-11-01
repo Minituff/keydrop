@@ -232,6 +232,11 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
   body.shell{overflow:hidden;overscroll-behavior:none}
   .app{display:flex;flex-direction:column;height:100%;background:none}
   .shell .app{position:fixed;inset:0;height:auto;padding:0 env(safe-area-inset-right) 0 env(safe-area-inset-left)}
+  /* The tab bar itself is pinned with bottom:0, the one placement that
+     showed in full on every phone so far; main scrolls behind it and is
+     padded by its height so nothing ends up hidden under it. */
+  .shell .tabs{position:fixed;left:0;right:0;bottom:0;z-index:2}
+  .shell main{padding-bottom:calc(92px + env(safe-area-inset-bottom))}
   .side{display:none}
   .mtop{display:flex;flex:none;align-items:center;gap:10px;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}

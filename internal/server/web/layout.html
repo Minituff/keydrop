@@ -8,7 +8,8 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}} · keydrop</title>
-<link rel="stylesheet" href="/static/style.css?v={{cssv}}">
+{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">
+{{end}}<link rel="stylesheet" href="/static/style.css?v={{cssv}}">
 </head>
 <body class="{{if .CSRF}}shell{{else}}bare{{end}}">
 <svg class="sprite" aria-hidden="true" focusable="false"><defs>
