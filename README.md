@@ -20,6 +20,25 @@ Basic-auth header), keydrop replaces it in the output with
 One small container plus one CLI binary. Written in Go with **no third-party
 dependencies**, so the whole thing can be audited in an afternoon.
 
+## Quick start
+
+Paste this into your agent (Claude Code, Codex, …):
+
+> Read https://github.com/Minituff/keydrop/blob/main/docs/agents.md and help me set up keydrop.
+
+That sentence is the whole setup. The agent installs the server (or uses
+the one you have), installs the CLI and pairs its machine, and stops when
+it needs you: to save the master key in your password manager, to create
+the admin login in your browser, and to approve the pairing. You can read
+everything it will be told first: the steps are in full in
+[docs/agents.md](docs/agents.md).
+
+Already running keydrop? **Agents → Set up an agent** gives a shorter
+prompt with your server's address and certificate pins filled in.
+
+The rest of this page explains how keydrop works and how to do each step
+by hand.
+
 ## What it's for, and what it isn't
 
 **It protects against accidents:** a key pasted into chat (and stored in the
@@ -131,7 +150,7 @@ replacement for Vault or Infisical in a team.
 | Transport | TLS by default with a self-signed certificate. The CLI pins its SHA-256 fingerprint, so there's no public CA and no DNS dependency. |
 | Container | distroless (no shell), non-root, read-only filesystem and no capabilities in the example compose file. |
 
-## Quick start (server)
+## Installing the server by hand
 
 ```sh
 mkdir keydrop && cd keydrop
@@ -296,7 +315,7 @@ approve (that release wrote it straight into the description), and marks
 filled requests' descriptions as written by the agent that asked. It
 does this again after the previous release has rewritten the file.
 
-## Quick start (agent)
+## Pairing an agent by hand
 
 0. Install the CLI. The server hands out its own build for Linux and
    macOS (amd64 and arm64), so the CLI is always the server's version and
@@ -383,7 +402,7 @@ it under **Agents**. Empty means anywhere. Behind a reverse proxy, set
 
 **Several agents, one token.** Agents on one machine (Claude Code and
 Codex, say) can share its token. Set `KEYDROP_AGENT=claude` in each one's
-environment and the log shows `token:homelab-box (claude)`. It's a label,
+environment and the log shows `token:my-box (claude)`. It's a label,
 not an identity: anything with the token can set it.
 
 Without pairing, you can still create a token by hand under **Agents** and
