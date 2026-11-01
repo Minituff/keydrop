@@ -16,7 +16,7 @@
   <label>Namespaces <small>(comma-separated)</small>
     <input name="namespaces" required list="namespaces" value="{{.Form.Get "namespaces"}}" placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <datalist id="namespaces">{{range .Namespaces}}<option value="{{.}}">{{end}}</datalist>
-  <label class="check"><input type="checkbox" name="write" value="yes"{{if eq (.Form.Get "write") "yes"}} checked{{end}}> Can create and replace secrets in these namespaces</label>
+  <label>Permission {{template "permission" (or (.Form.Get "permission") "read")}}</label>
   <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
     <input name="sources" value="{{.Form.Get "sources"}}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <button>Approve</button>

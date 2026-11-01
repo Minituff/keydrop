@@ -41,3 +41,9 @@
 <p>Or enter this key by hand:</p>
 <p><code class="secret">{{.OTPSecret}}</code></p>
 {{end}}
+
+{{define "permission"}}<select name="permission">
+  <option value="read"{{if eq . "read"}} selected{{end}}>read: read only</option>
+  <option value="add"{{if eq . "add"}} selected{{end}}>add: create new keys, replace only its own</option>
+  <option value="write"{{if eq . "write"}} selected{{end}}>write: create and replace any key</option>
+</select>{{end}}

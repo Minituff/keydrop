@@ -321,12 +321,17 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 		return
 	}
 	form := url.Values{}
-	for _, k := range []string{"name", "namespaces", "write", "sources", "replace"} {
+	for _, k := range []string{"name", "namespaces", "permission", "write", "sources", "replace"} {
 		form.Set(k, strings.TrimSpace(r.PostFormValue(k)))
 	}
-	name, nss, write := form.Get("name"), splitList(form.Get("namespaces")), form.Get("write") == "yes"
+	name, nss := form.Get("name"), splitList(form.Get("namespaces"))
+	perm, permOK := formPermission(form)
+	form.Set("permission", string(perm))
 	sources, err := store.ParseSources(form.Get("sources"))
 	switch {
+	case !permOK:
+		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Permission: read, add or write.")
+		return
 	case !store.ValidName(name):
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Name: lowercase letters, digits, '.', '_' and '-' only.")
 		return
@@ -361,17 +366,14 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 	// The agent gets a fresh window to collect it; after that the token is
 	// revoked unused.
 	now := s.now()
-	tok, err := s.store.CreatePairedToken(name, nss, write, sources, now.Add(pairTTL))
+	tok, err := s.store.CreatePairedToken(name, nss, perm, sources, now.Add(pairTTL))
 	if err != nil {
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, err.Error())
 		return
 	}
 	cur.approved, cur.tokenName, cur.token, cur.namespace = true, name, tok, nss
 	cur.Created = now
-	detail := "code " + displayCode(cur.Code) + " from " + cur.IP + ", namespaces " + strings.Join(nss, ",")
-	if write {
-		detail += ", write"
-	}
+	detail := "code " + displayCode(cur.Code) + " from " + cur.IP + ", namespaces " + strings.Join(nss, ",") + ", " + string(perm)
 	detail += ", allowed from " + sourcesText(sources)
 	s.event(r, "admin", "pair.approve", name, detail)
 	http.Redirect(w, r, "/tokens?msg=paired", http.StatusSeeOther)
@@ -391,6 +393,36 @@ func (s *Server) handlePairDeny(w http.ResponseWriter, r *http.Request, _ string
 	}
 	s.event(r, "admin", "pair.deny", displayCode(p.Code), "from "+p.IP)
 	http.Redirect(w, r, "/tokens?msg=denied", http.StatusSeeOther)
+}
+
+// formPermission reads the permission field: read, add or write. A form
+// with only the older write checkbox still works.
+func formPermission(form url.Values) (store.Permission, bool) {
+	switch p := store.Permission(form.Get("permission")); {
+	case p == "":
+		if form.Get("write") == "yes" {
+			return store.PermWrite, true
+		}
+		return store.PermRead, true
+	case p.Valid():
+		return p, true
+	}
+	return store.PermRead, false
+}
+
+func (s *Server) handleTokenPermission(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	name := r.PathValue("name")
+	perm, ok := formPermission(url.Values{"permission": {r.PostFormValue("permission")}})
+	if !ok || r.PostFormValue("permission") == "" {
+		s.renderTokens(w, r, se, http.StatusBadRequest, "Permission: read, add or write.")
+		return
+	}
+	if err := s.store.SetTokenPermission(name, perm); err != nil {
+		s.renderTokens(w, r, se, http.StatusNotFound, "There's no agent called "+name+".")
+		return
+	}
+	s.event(r, "admin", "token.permission", name, string(perm))
+	http.Redirect(w, r, "/tokens?msg=permission", http.StatusSeeOther)
 }
 
 func sourcesText(src []string) string {

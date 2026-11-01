@@ -27,7 +27,9 @@ never need to see them.
 - Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
   lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
   takes them like secrets.
-- New keys show up in `keydrop inbox`. Deal with them, then `keydrop ack NAME`.
+- Changes to keys show up in `keydrop history`. If a key stops working,
+  `keydrop status NAME expired` (or `revoked`, `leaked`) tells other agents,
+  and `keydrop flag NAME "reason"` asks the human to look.
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.
@@ -55,7 +57,7 @@ In `.claude/settings.json`:
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "keydrop inbox --quiet" } ] }
+      { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
     ],
     "PreToolUse": [
       {
@@ -66,10 +68,11 @@ In `.claude/settings.json`:
 }
 ```
 
-- **SessionStart:** whatever `keydrop inbox` prints becomes context at the
-  start of the session. The agent sees "1 new secret: homelab/CLOUDFLARE_API_TOKEN,
-  'DNS edit token, replace the old one in the Traefik stack'" without being
-  asked. `--quiet` prints nothing when there's nothing new.
+- **SessionStart:** whatever `keydrop history` prints becomes context at the
+  start of the session: the keys created, replaced or marked in the last
+  three days, with who and when. `--quiet` prints nothing when there's
+  nothing. (`keydrop inbox --quiet`, the old hook, still works for one
+  release and prints a deprecation note.)
 - **PreToolUse guard:** a small script that blocks commands that would print
   a value. For example, `keydrop-guard`:
 

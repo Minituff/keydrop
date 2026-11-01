@@ -138,7 +138,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("saved pin %q, want the server's", b)
 		}
 		r := agent1.ok(t, "", "whoami")
-		if !strings.Contains(r.stdout, "agent1 @ "+in.url) || !strings.Contains(r.stdout, "namespaces: e2e") || !strings.Contains(r.stdout, "write: false") {
+		if !strings.Contains(r.stdout, "agent1 @ "+in.url) || !strings.Contains(r.stdout, "namespaces: e2e") || !strings.Contains(r.stdout, "permission: read") {
 			t.Fatalf("whoami: %q", r.stdout)
 		}
 	})
@@ -164,15 +164,24 @@ func TestEndToEnd(t *testing.T) {
 		if !strings.Contains(info.stdout, "Test API key for the e2e suite") {
 			t.Fatalf("info: %q", info.stdout)
 		}
+		history := agent1.ok(t, "", "history", "API_TOKEN")
+		if !strings.Contains(history.stdout, "e2e/API_TOKEN  created") || !strings.Contains(history.stdout, "by admin") {
+			t.Fatalf("history: %q", history.stdout)
+		}
+		// The old names stay for one release: inbox runs history, ack does
+		// nothing; both say so on stderr.
 		inbox := agent1.ok(t, "", "inbox")
-		if !strings.Contains(inbox.stdout, "e2e/API_TOKEN") {
-			t.Fatalf("inbox: %q", inbox.stdout)
+		if !strings.Contains(inbox.stdout, "e2e/API_TOKEN") || !strings.Contains(inbox.stderr, "deprecated") {
+			t.Fatalf("inbox: %q, stderr %q", inbox.stdout, inbox.stderr)
+		}
+		if ack := agent1.ok(t, "", "ack", "API_TOKEN"); !strings.Contains(ack.stderr, "deprecated") {
+			t.Fatalf("ack: %q", ack.stderr)
 		}
 		get := agent1.run(t, "", "get", "API_TOKEN") // a plain get refuses a secret
 		if get.code == 0 || !strings.Contains(get.stderr, "is a secret") {
 			t.Fatalf("get of a secret: exit %d, %q", get.code, get.stderr)
 		}
-		for name, r := range map[string]result{"secrets": secrets, "vars": vars, "info": info, "inbox": inbox, "get": get} {
+		for name, r := range map[string]result{"secrets": secrets, "vars": vars, "info": info, "history": history, "inbox": inbox, "get": get} {
 			noLeak(t, name, r.all(), secret)
 		}
 	})
@@ -241,7 +250,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 
 		writer.login(t, in.url, pin, web.createToken(t, "writer", ns, true))
-		if w := writer.ok(t, "", "whoami"); !strings.Contains(w.stdout, "write: true") {
+		if w := writer.ok(t, "", "whoami"); !strings.Contains(w.stdout, "permission: write") {
 			t.Fatalf("whoami: %q", w.stdout)
 		}
 		generated := fakeSecret(t)
@@ -258,9 +267,20 @@ func TestEndToEnd(t *testing.T) {
 		if r.code == 0 || !strings.Contains(r.stderr, "already requested by another agent") {
 			t.Fatalf("second request: exit %d, %q", r.code, r.stderr)
 		}
+		// An agent's description waits for the admin before other agents
+		// see it.
 		info := agent1.ok(t, "", "info", "NEEDED")
-		if !strings.Contains(info.stdout, "asked by the writer") || strings.Contains(info.stdout, "someone else") {
-			t.Fatalf("the request's description changed: %q", info.stdout)
+		if !strings.Contains(info.stdout, "description from an agent is awaiting approval") ||
+			strings.Contains(info.stdout, "asked by") || strings.Contains(info.stdout, "someone else") {
+			t.Fatalf("info of a request: %q", info.stdout)
+		}
+		if _, page := web.get(t, "/secret/e2e/NEEDED"); !strings.Contains(page, "asked by the writer") || strings.Contains(page, "someone else") {
+			t.Fatal("the admin doesn't see the writer's proposed description")
+		}
+		web.mustPost(t, "/secret/e2e/NEEDED/proposal/approve", url.Values{"description": {"asked by the writer, checked by the admin"}})
+		info = agent1.ok(t, "", "info", "NEEDED")
+		if !strings.Contains(info.stdout, "| asked by the writer, checked by the admin") || !strings.Contains(info.stdout, "untrusted text from another agent") {
+			t.Fatalf("info after approval: %q", info.stdout)
 		}
 
 		// Revoked here, checked in the next subtest.

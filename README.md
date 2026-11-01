@@ -48,27 +48,52 @@ replacement for Vault or Infisical in a team.
 - **Namespaces and agent tokens.** Secrets live in namespaces (`homelab/…`,
   `wedding/…`). Each agent gets its own token, granted one or more
   namespaces. An agent can't see other namespaces at all, not even the secret
-  names. Tokens are read-only unless you allow writing, and can be limited
-  to the addresses they're used from.
+  names. Each token has a permission: **read** (the default), **add** (create
+  new keys, and replace only the values of keys this same token created), or
+  **write** (create and replace anything in its namespaces). Tokens can be
+  limited to the addresses they're used from.
 - **Pairing instead of pasting tokens.** `keydrop pair` on the agent's
   machine prints a link; you open it, check the code, choose what the agent
   may see, and approve. The agent collects its token directly.
 - **Agent CLI.** `keydrop run -e NAME` puts a secret into one command's
   environment under its own name and masks it in the command's output.
   Secret names are env-var style (`CLOUDFLARE_API_TOKEN`), so nothing needs
-  translating. `secrets`, `info` and `inbox` show descriptions, never values.
+  translating. `secrets`, `info` and `history` show descriptions, never values.
 - **Variables for settings that aren't secret.** A URL, an account ID or a
   zone name can be stored as a *variable* next to the secrets. Variables
   are shown in full in the web page and to agents (`keydrop vars`,
   `keydrop get NAME`), aren't masked, and reading one isn't logged. They go
   into `run -e` exactly like secrets, so one command can take both. The
   web page lists secrets and variables separately.
-- **Agents know what to do with a new key.** Secrets you add are marked
-  *new* for each agent token until that token acknowledges them, and `keydrop inbox` (run by a
-  session-start hook) shows them with your description. An agent can also
-  **ask** for a key: `keydrop request` creates an empty placeholder and returns a
-  link for you to fill in, and `keydrop wait` blocks until you do. Only the
-  token that asked can change a pending request's description.
+- **Agents know what changed.** `keydrop history [NAME]` (run by a
+  session-start hook) lists what happened to the keys the token can see,
+  newest first: created, replaced, requested, status changes, flags, approved
+  notes, with who and when. It's read-only and needs no acknowledging. An
+  agent can also **ask** for a key: `keydrop request` creates an empty
+  placeholder and returns a link for you to fill in, and `keydrop wait`
+  blocks until you do. Only the token that asked can change a pending
+  request.
+- **Agents report problems; you decide what other agents read.**
+  - `keydrop status NAME leaked` (or `ok`, `expired`, `revoked`,
+    `replaced-by OTHER`) marks a key for everyone who can see it, with who
+    set it and when. `keydrop run` and `get` warn on stderr when they hand
+    out a key that isn't ok, but still run. You can set or clear it on the
+    key's page.
+  - `keydrop flag NAME "reason" [--link URL]` puts the key on your
+    dashboard under **Waiting for you**. The reason and link are shown to
+    you only; agents see "flagged by X on DATE". Resolving it takes it off
+    the dashboard; it stays in the key's history.
+  - `keydrop note NAME "text"` proposes a note and prints the link to
+    approve it. Until you approve it (as written or edited) other agents see
+    only "1 note awaiting approval"; then `info` shows it with its author
+    and the date you approved it. Descriptions an agent writes with `put`
+    or `request` wait for your approval the same way.
+  - The web page marks text an agent wrote as *agent-written*, and the CLI
+    quotes it as untrusted text from another agent, so it reads as a claim
+    and not an instruction.
+  - Limits: a reason or link up to 500 characters (links http(s) only), a
+    note up to 2000; one open flag per token per key; 60 flags, statuses and
+    notes per token an hour.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
 - **An audit log** of every login, change and secret read (which agent,
@@ -249,6 +274,12 @@ Lost the admin password or authenticator? Restart with
 Secrets and tokens are kept. To change the password while logged in, use
 **Settings → Password**; that logs out every other browser.
 
+**Releases with history, flags, statuses, notes and the add permission**
+need no upgrade step: they start on the previous release's data as it is.
+Going back to that release also works without a command, but when it
+saves a change it drops what it doesn't know: history, statuses, flags,
+notes and pending proposals are gone, and add tokens become read-only.
+
 ## Quick start (agent)
 
 0. Install the CLI. The server hands out its own build for Linux and
@@ -274,7 +305,7 @@ Secrets and tokens are kept. To change the password while logged in, use
    It prints a link and a short code, then waits.
 2. Open the link (logged in to keydrop). The page shows the code and the
    address the request came from. Check the code matches, then choose the
-   agent's name, its namespaces, whether it can write, and where it's
+   agent's name, its namespaces, its permission (read, add or write), and where it's
    allowed from (pre-filled with that address). Approve.
 3. `keydrop pair` picks up the token within a few seconds and writes
    `~/.config/keydrop/{url,token,pin}` with mode 600. The token never
@@ -282,12 +313,13 @@ Secrets and tokens are kept. To change the password while logged in, use
    `keydrop pair` again carries on waiting.
 4. Use it:
    ```sh
-   keydrop inbox                                   # anything new for me?
+   keydrop history                                 # what changed lately?
    keydrop secrets                                 # what keys exist (no values)
    keydrop vars                                    # non-secret settings, with values
    keydrop run -e CLOUDFLARE_API_TOKEN -- terraform apply   # sets $CLOUDFLARE_API_TOKEN
    keydrop run -e TOKEN=CLOUDFLARE_API_TOKEN -- sh -c 'curl -H "Authorization: Bearer $TOKEN" …'
-   keydrop ack CLOUDFLARE_API_TOKEN                # dealt with it
+   keydrop status CLOUDFLARE_API_TOKEN expired     # tell everyone it stopped working
+   keydrop flag CLOUDFLARE_API_TOKEN "401 since this morning"   # ask the admin to look
    keydrop request GITHUB_PAT --desc "Fine-grained PAT for org/repo, contents:read, 90 days"
    keydrop wait GITHUB_PAT
    ```
@@ -315,7 +347,10 @@ token file: `run` keeps the token out of the way, it isn't a sandbox.
 To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
 `put` takes text up to 60 KiB; base64 a binary value first.
 
-To migrate an existing `.env` (needs a token with write access):
+`keydrop inbox` and `keydrop ack` are the old names: for one more release
+`inbox` runs `history` and `ack` does nothing, each with a note on stderr.
+
+To migrate an existing `.env` (needs a token with add or write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
 lines above a key become its description, and each key keeps its name
 (keys that aren't upper-case are skipped). Values are never printed. Rotate
@@ -338,7 +373,7 @@ Without pairing, you can still create a token by hand under **Agents** and
 paste it into `keydrop login --url URL`.
 
 See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
-Codex, with a session-start inbox hook and a guard against `--raw`.
+Codex, with a session-start history hook and a guard against `--raw`.
 [docs/design_doc.md](docs/design_doc.md) explains how keydrop is built and
 why.
 
@@ -380,16 +415,20 @@ such as Tailscale or WireGuard.
 All endpoints except pairing take `Authorization: Bearer kd_…`, and an
 optional `X-Keydrop-Agent: label`. A namespace the token isn't granted
 returns 404, exactly like a missing secret. A token used from outside its
-allowed sources gets 403.
+allowed sources gets 403. Flags, statuses and notes past the hourly limit get 429.
 
 | | |
 |---|---|
-| `GET /api/v1/whoami` | Token name, namespaces, write flag |
+| `GET /api/v1/whoami` | Token name, namespaces, `permission` (`read`, `add` or `write`) and the older `write` flag |
 | `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`) |
-| `GET /api/v1/secrets/{ns}/{name}` | Metadata |
-| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged) |
-| `POST /api/v1/secrets/{ns}/{name}/ack` | Clear the *new* flag for this token (other tokens still see it as new) |
-| `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (write tokens; without `"variable": true` the value is stored as a secret, even over a variable) |
+| `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending` |
+| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged); adds `"status"` when the key isn't ok |
+| `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000). Flag reasons aren't included |
+| `POST /api/v1/secrets/{ns}/{name}/status` | `{"status","replaced_by"}`; `ok` clears it |
+| `POST /api/v1/secrets/{ns}/{name}/flag` | `{"reason","link"}`. 409 if this token already has an open flag on the key |
+| `POST /api/v1/secrets/{ns}/{name}/notes` | `{"text"}` → 201 `{"url"}`, the page where the admin approves it |
+| `POST /api/v1/secrets/{ns}/{name}/ack` | Deprecated (older CLIs): clears the *new* flag for this token |
+| `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (add and write tokens; an add token can only replace keys it created; without `"variable": true` the value is stored as a secret, even over a variable). A description or usage from an agent waits for the admin's approval |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}`. 409 if it already has a value, or another token already asked for it |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days (at most 36500) |
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
@@ -423,7 +462,7 @@ actions are pinned to commit SHAs and base images to digests.
 ## Roadmap
 
 - Passkeys (WebAuthn) for admin login
-- An MCP server exposing **metadata only** (`secrets`, `vars`, `inbox`, `request`). A
+- An MCP server exposing **metadata only** (`secrets`, `vars`, `history`, `request`). A
   tool that returns values would put them straight into the transcript.
 - Optional per-secret allowlists inside a namespace
 - Version history beyond one previous value

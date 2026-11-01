@@ -70,6 +70,12 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 	if s.New {
 		tags = append(tags, "new")
 	}
+	if s.Status != nil {
+		tags = append(tags, clean(s.Status.String(), false))
+	}
+	if len(s.Flags) > 0 {
+		tags = append(tags, "flagged")
+	}
 	if s.Expires != nil {
 		if time.Now().After(*s.Expires) {
 			tags = append(tags, "EXPIRED "+s.Expires.Format("2006-01-02"))
@@ -86,16 +92,49 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 	}
 	fmt.Fprintln(w, line)
 	// Descriptions are written by people and other agents, and agents read
-	// this output: no terminal escapes or fake lines.
-	if s.Description != "" {
-		for _, l := range strings.Split(clean(s.Description, true), "\n") {
-			fmt.Fprintln(w, "    "+l)
+	// this output: no terminal escapes or fake lines. Text an agent wrote
+	// is quoted and labelled, so it reads as a claim, not an instruction.
+	if s.DescriptionBy != "" && (s.Description != "" || s.Usage != "") {
+		fmt.Fprintf(w, "    description written by agent %s, approved by the admin (untrusted text from another agent):\n", clean(s.DescriptionBy, false))
+		quote(w, s.Description)
+		if s.Usage != "" {
+			quote(w, "usage: "+s.Usage)
+		}
+	} else {
+		if s.Description != "" {
+			for _, l := range strings.Split(clean(s.Description, true), "\n") {
+				fmt.Fprintln(w, "    "+l)
+			}
+		}
+		if s.Usage != "" {
+			fmt.Fprintln(w, "    usage: "+clean(s.Usage, false))
 		}
 	}
-	if s.Usage != "" {
-		fmt.Fprintln(w, "    usage: "+clean(s.Usage, false))
-	}
 	if long {
+		if st := s.Status; st != nil {
+			fmt.Fprintf(w, "    status: %s (set by %s, %s)\n", clean(st.String(), false), clean(st.By, false), st.At.Local().Format("2006-01-02"))
+		}
+		for _, f := range s.Flags {
+			fmt.Fprintf(w, "    flagged by %s on %s\n", clean(f.By, false), f.At.Local().Format("2006-01-02"))
+		}
+		for _, n := range s.Notes {
+			edited := ""
+			if n.Edited {
+				edited = ", edited by the admin"
+			}
+			fmt.Fprintf(w, "    note from agent %s, %s, approved by the admin %s%s (untrusted text from another agent):\n",
+				clean(n.By, false), n.At.Local().Format("2006-01-02"), n.ApprovedAt.Local().Format("2006-01-02"), edited)
+			quote(w, n.Text)
+		}
+		if n := s.PendingNotes; n > 0 {
+			fmt.Fprintf(w, "    %d note%s awaiting approval\n", n, plural(n))
+		}
+		if s.DescriptionPending {
+			fmt.Fprintln(w, "    a description from an agent is awaiting approval")
+		}
+		if s.CreatedBy != "" {
+			fmt.Fprintf(w, "    created by %s\n", clean(s.CreatedBy, false))
+		}
 		fmt.Fprintf(w, "    updated %s", ago(s.UpdatedAt))
 		if s.LastReadAt != nil {
 			fmt.Fprintf(w, ", last read %s by %s", ago(*s.LastReadAt), clean(s.LastReadBy, false))
@@ -116,8 +155,23 @@ func cmdWhoami(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s @ %s\nnamespaces: %s\nwrite: %v\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), w.Write)
+	fmt.Printf("%s @ %s\nnamespaces: %s\npermission: %s\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), clean(w.Perm(), false))
 	return nil
+}
+
+// quote prints agent-written text indented behind "| ", so it can't pass
+// for keydrop's own output.
+func quote(w io.Writer, text string) {
+	for _, l := range strings.Split(clean(text, true), "\n") {
+		fmt.Fprintln(w, "      | "+l)
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // cmdList lists secrets ("secrets") or variables ("vars"), never both, so
@@ -182,66 +236,147 @@ func cmdInfo(args []string) error {
 	return nil
 }
 
-// cmdInbox is meant for an agent's session-start hook: it says what's new
-// and what's still waiting, with the descriptions that say what to do.
-func cmdInbox(args []string) error {
-	fs := flag.NewFlagSet("inbox", flag.ExitOnError)
-	quiet := fs.Bool("quiet", false, "print nothing when the inbox is empty")
-	parse(fs, args)
+// cmdHistory lists changes to the keys this token can see, newest first:
+// who did what, and when. It changes nothing on the server.
+func cmdHistory(args []string) error {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	limit := fs.Int("limit", 20, "show at most this many changes (up to 1000)")
+	since := fs.Duration("since", 0, "only changes newer than this, e.g. 72h")
+	ns := fs.String("namespace", "", "only this namespace")
+	quiet := fs.Bool("quiet", false, "print nothing when there are no changes")
+	pos := parse(fs, args)
+	if len(pos) > 1 {
+		return errors.New("usage: keydrop history [NAME] [--limit 20] [--since 72h]")
+	}
+	name := ""
+	if len(pos) == 1 {
+		name = pos[0]
+		if n, nm, ok := strings.Cut(name, "/"); ok {
+			*ns, name = n, nm
+		}
+	}
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
-	all, err := c.List(nil)
+	events, err := c.History(*ns, name, *limit)
 	if err != nil {
 		return err
 	}
-	var fresh, waiting []client.Secret
-	for _, s := range all {
-		switch {
-		case s.Pending:
-			waiting = append(waiting, s)
-		case s.New:
-			fresh = append(fresh, s)
+	shown := 0
+	for _, e := range events {
+		if *since > 0 && time.Since(e.At) > *since {
+			continue
 		}
+		line := e.At.Local().Format("2006-01-02 15:04") + "  " + clean(e.Ref, false) + "  " + clean(e.Action, false)
+		if e.Detail != "" {
+			line += " " + clean(e.Detail, false)
+		}
+		fmt.Println(line + "  by " + clean(e.Actor, false))
+		shown++
 	}
-	if len(fresh) == 0 && len(waiting) == 0 {
-		if !*quiet {
-			fmt.Println("keydrop inbox: nothing new.")
-		}
-		return nil
-	}
-	if len(fresh) > 0 {
-		fmt.Printf("keydrop: %d new secret(s). Read each description for what to do, use them with `keydrop run`, then `keydrop ack REF`.\n", len(fresh))
-		for _, s := range fresh {
-			printSecret(os.Stdout, s, true)
-		}
-	}
-	if len(waiting) > 0 {
-		fmt.Printf("keydrop: %d request(s) still waiting for the human:\n", len(waiting))
-		for _, s := range waiting {
-			printSecret(os.Stdout, s, true)
-		}
+	if shown == 0 && !*quiet {
+		fmt.Println("(no changes)")
 	}
 	return nil
 }
 
+// cmdInbox is the old name of history, kept for one release so session
+// hooks that run `keydrop inbox --quiet` keep working.
+func cmdInbox(args []string) error {
+	fmt.Fprintln(os.Stderr, "keydrop: `inbox` is deprecated and will be removed; use `keydrop history`")
+	return cmdHistory(args)
+}
+
+// cmdAck is a no-op kept for one release: history has no per-token state
+// to clear.
 func cmdAck(args []string) error {
-	fs := flag.NewFlagSet("ack", flag.ExitOnError)
+	fmt.Fprintln(os.Stderr, "keydrop: `ack` is deprecated and does nothing; `keydrop history` shows changes without needing an ack")
+	return nil
+}
+
+// cmdFlag asks the admin to look at a key. The reason and link are the
+// admin's only; other agents see who flagged it and when.
+func cmdFlag(args []string) error {
+	fs := flag.NewFlagSet("flag", flag.ExitOnError)
+	reason := fs.String("reason", "", "why (seen only by the admin)")
+	link := fs.String("link", "", "an http(s) link with more (seen only by the admin)")
 	pos := parse(fs, args)
-	if len(pos) == 0 {
-		return errors.New("usage: keydrop ack REF...")
+	if len(pos) >= 2 && *reason == "" {
+		*reason = strings.Join(pos[1:], " ")
+		pos = pos[:1]
+	}
+	if len(pos) != 1 {
+		return errors.New(`usage: keydrop flag REF ["reason"] [--link URL]`)
 	}
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
-	for _, ref := range pos {
-		if err := c.Ack(ref); err != nil {
+	if err := c.Flag(pos[0], *reason, *link); err != nil {
+		return err
+	}
+	fmt.Println("Flagged for the admin:", pos[0])
+	return nil
+}
+
+// cmdStatus sets a key's status: ok, expired, revoked, leaked, or
+// replaced-by NAME.
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	pos := parse(fs, args)
+	usage := errors.New("usage: keydrop status REF ok|expired|revoked|leaked|replaced-by NAME")
+	if len(pos) < 2 {
+		return usage
+	}
+	status, repl := pos[1], ""
+	switch {
+	case status == "replaced-by" && len(pos) == 3:
+		repl = pos[2]
+	case len(pos) != 2:
+		return usage
+	}
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	if err := c.SetStatus(pos[0], status, repl); err != nil {
+		return err
+	}
+	fmt.Println(pos[0], "is now", strings.TrimSpace(status+" "+repl))
+	return nil
+}
+
+// cmdNote proposes a note. Other agents see it only once the admin
+// approves it, at the link printed.
+func cmdNote(args []string) error {
+	fs := flag.NewFlagSet("note", flag.ExitOnError)
+	pos := parse(fs, args)
+	if len(pos) < 2 {
+		return errors.New(`usage: keydrop note REF "text"   (- reads the text from stdin)`)
+	}
+	text := strings.Join(pos[1:], " ")
+	if text == "-" {
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, store.MaxText+1))
+		if err != nil {
 			return err
 		}
-		fmt.Println("acked", ref)
+		text = string(b)
 	}
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	link, err := c.Note(pos[0], text)
+	if err != nil {
+		return err
+	}
+	if link == "" {
+		fmt.Println("Note sent. Other agents see it once the admin approves it on", pos[0]+"'s page.")
+		return nil
+	}
+	fmt.Println("Note sent. Other agents see it once the admin approves it here:")
+	fmt.Println(clean(link, false))
 	return nil
 }
 
@@ -328,6 +463,15 @@ func cmdExpiring(args []string) error {
 }
 
 // ---- run ----
+
+// warnStatus says on stderr when a key about to be used is marked expired,
+// revoked, leaked or replaced. It doesn't stop anything.
+func warnStatus(ref string, st *store.Status) {
+	if st == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "keydrop: warning: %s is marked %s (by %s, %s)\n", ref, clean(st.String(), false), clean(st.By, false), st.At.Local().Format("2006-01-02"))
+}
 
 type multiFlag []string
 
@@ -426,10 +570,12 @@ func cmdRun(args []string) (int, error) {
 	values := map[string]string{}
 	var m mask.Masker
 	for ref := range refs {
-		v, variable, err := c.Reveal(ref, purpose)
+		rv, err := c.RevealStatus(ref, purpose)
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", ref, err)
 		}
+		v, variable := rv.Value, rv.Kind == "variable"
+		warnStatus(ref, rv.Status)
 		if strings.ContainsRune(v, 0) {
 			return 0, fmt.Errorf("%s: the value contains a NUL byte, which can't go in an environment variable; use get --to-file", ref)
 		}
@@ -512,10 +658,12 @@ func cmdGet(args []string) error {
 	if *toFile != "" {
 		purpose = "get --to-file"
 	}
-	v, variable, err := c.Reveal(pos[0], purpose)
+	rv, err := c.RevealStatus(pos[0], purpose)
 	if err != nil {
 		return err
 	}
+	v, variable := rv.Value, rv.Kind == "variable"
+	warnStatus(pos[0], rv.Status)
 	if *raw {
 		if !variable {
 			fmt.Fprintln(os.Stderr, "keydrop: printing a secret; it's now in this terminal's output")

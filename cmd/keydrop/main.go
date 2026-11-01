@@ -20,22 +20,30 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   secrets [--new] [--pending]           list secrets this token can see (no values)
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
-  inbox                                 secrets that are new since an agent last acked them
-  ack REF...                            mark secrets as dealt with
+  history [NAME] [--since 72h]          recent changes to what this token can see: who
+                                         did what, when (values never shown)
+  flag REF ["reason"] [--link URL]      ask the admin to look at a key (the reason
+                                         and link are the admin's only)
+  status REF ok|expired|revoked|leaked|replaced-by NAME
+                                        mark a key's state for everyone; run warns
+                                         when it uses one that isn't ok
+  note REF "text"                       propose a note on a key; other agents see it
+                                         once the admin approves (prints the link)
   request REF --desc TEXT [--usage U]   ask the human for a secret; prints a link
   wait REF [--timeout 30m]              wait until a requested secret has a value
   expiring [--days 14] [--check]        secrets expiring soon (--check: exit 1 if any)
   get NAME                              print a variable (refuses secrets)
   get REF --to-file PATH                write a value to a 0600 file
   get REF --raw                         print a secret (avoid: it ends up in logs)
-  put REF [--var] [--desc …]            store a value read from stdin (write tokens;
-                                         --var: a variable, not a secret)
-  import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (write tokens)
+  put REF [--var] [--desc …]            store a value read from stdin (add or write
+                                         tokens; --var: a variable, not a secret)
+  import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (add or write tokens)
   pair --url URL [--pin sha256:…]       ask the admin for a token; prints a link to
                                          approve, waits, then saves it (run again
                                          to keep waiting)
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
-  whoami                                show the token's name and namespaces
+  whoami                                show the token's name, namespaces and permission
+  inbox, ack                            deprecated: inbox runs history, ack does nothing
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
@@ -88,6 +96,14 @@ func main() {
 		err = cmdList("variable", args)
 	case "info":
 		err = cmdInfo(args)
+	case "history":
+		err = cmdHistory(args)
+	case "flag":
+		err = cmdFlag(args)
+	case "status":
+		err = cmdStatus(args)
+	case "note":
+		err = cmdNote(args)
 	case "inbox":
 		err = cmdInbox(args)
 	case "ack":

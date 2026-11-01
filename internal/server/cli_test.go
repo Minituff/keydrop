@@ -359,7 +359,7 @@ func TestInstallCommands(t *testing.T) {
 func TestVersionHeader(t *testing.T) {
 	h := newHarness(t)
 	h.srv.cfg.Version = "v9.9.9"
-	tok, err := h.st.CreateToken("box", []string{"lab"}, false, nil)
+	tok, err := h.st.CreateToken("box", []string{"lab"}, store.PermRead, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func TestDownloadSlotsPerAddress(t *testing.T) {
 func TestExpiringDaysBounded(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
-	tok, _ := h.st.CreateToken("agent", []string{"lab"}, false, nil)
+	tok, _ := h.st.CreateToken("agent", []string{"lab"}, store.PermRead, nil)
 	exp := time.Now().Add(400 * 24 * time.Hour)
 	h.st.PutValue("lab", "SOON", []byte("expiring-value"), &store.Meta{Expires: &exp})
 	_, _, body := h.api("GET", "/api/v1/expiring?days=9999999999999", tok, nil)

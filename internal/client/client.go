@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/minituff/keydrop/internal/server"
+	"github.com/minituff/keydrop/internal/store"
 )
 
 // Secret is the metadata the API returns.
@@ -27,6 +28,20 @@ type Whoami struct {
 	Name       string   `json:"name"`
 	Namespaces []string `json:"namespaces"`
 	Write      bool     `json:"write"`
+	// Permission is read, add or write; empty from a server that predates
+	// it (then Write says which).
+	Permission string `json:"permission"`
+}
+
+// Perm is the token's permission, from either field.
+func (w Whoami) Perm() string {
+	switch {
+	case w.Permission != "":
+		return w.Permission
+	case w.Write:
+		return "write"
+	}
+	return "read"
 }
 
 // Version is this CLI's build version, set by main. When it differs from
@@ -267,26 +282,83 @@ func (c *Client) Get(ref string) (*Secret, error) {
 // Reveal returns a value, and whether it's a variable (which isn't
 // masked). purpose is recorded in the audit log for a secret.
 func (c *Client) Reveal(ref, purpose string) (value string, variable bool, err error) {
+	r, err := c.RevealStatus(ref, purpose)
+	return r.Value, r.Kind == "variable", err
+}
+
+// Revealed is a value with its kind, and its status when it isn't ok.
+type Revealed struct {
+	Ref    string        `json:"ref"`
+	Value  string        `json:"value"`
+	Kind   string        `json:"kind"`
+	Status *store.Status `json:"status"`
+}
+
+// RevealStatus is Reveal with the key's status, so a caller can warn
+// about using a key marked leaked or replaced.
+func (c *Client) RevealStatus(ref, purpose string) (Revealed, error) {
+	var out Revealed
 	ns, name, err := c.Resolve(ref)
 	if err != nil {
-		return "", false, err
+		return out, err
 	}
-	var out struct{ Value, Kind string }
 	p := secretPath(ns, name) + "/reveal"
 	if purpose != "" {
 		p += "?purpose=" + url.QueryEscape(purpose)
 	}
 	err = c.do("POST", p, nil, &out)
-	return out.Value, out.Kind == "variable", err
+	return out, err
 }
 
-// Ack clears a secret's "new" flag.
-func (c *Client) Ack(ref string) error {
+// HistoryEvent is one change in the history.
+type HistoryEvent = server.APIEvent
+
+// History lists changes to keys the token can see, newest first. ns and
+// name filter when set.
+func (c *Client) History(ns, name string, limit int) ([]HistoryEvent, error) {
+	q := url.Values{}
+	if ns != "" {
+		q.Set("namespace", ns)
+	}
+	if name != "" {
+		q.Set("name", name)
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprint(limit))
+	}
+	var out []HistoryEvent
+	return out, c.do("GET", "/api/v1/history?"+q.Encode(), nil, &out)
+}
+
+// Flag asks the admin to look at a key. reason and link are seen only by
+// the admin.
+func (c *Client) Flag(ref, reason, link string) error {
 	ns, name, err := c.Resolve(ref)
 	if err != nil {
 		return err
 	}
-	return c.do("POST", secretPath(ns, name)+"/ack", nil, nil)
+	return c.do("POST", secretPath(ns, name)+"/flag", map[string]string{"reason": reason, "link": link}, nil)
+}
+
+// SetStatus sets a key's status: ok, expired, revoked, leaked, or
+// replaced-by with replacedBy.
+func (c *Client) SetStatus(ref, status, replacedBy string) error {
+	ns, name, err := c.Resolve(ref)
+	if err != nil {
+		return err
+	}
+	return c.do("POST", secretPath(ns, name)+"/status", map[string]string{"status": status, "replaced_by": replacedBy}, nil)
+}
+
+// Note proposes a note and returns the admin's approval link.
+func (c *Client) Note(ref, text string) (string, error) {
+	ns, name, err := c.Resolve(ref)
+	if err != nil {
+		return "", err
+	}
+	var out struct{ URL string }
+	err = c.do("POST", secretPath(ns, name)+"/notes", map[string]string{"text": text}, &out)
+	return out.URL, err
 }
 
 // PutOptions are the optional fields for Put.

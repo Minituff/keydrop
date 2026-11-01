@@ -99,8 +99,23 @@ main way the human tells the agent what to do.
 ### Namespaces and agent tokens
 Secrets live in namespaces (`homelab/CLOUDFLARE_API_TOKEN`,
 `wedding/CONVEX_DEPLOY_KEY`).
-Each agent has its own token, granted one or more namespaces, read-only
-unless writing is allowed.
+Each agent has its own token, granted one or more namespaces, with one
+permission:
+
+- **read** (the default): use and list keys, request, flag, set a status,
+  propose notes.
+- **add**: also create new keys, and replace the value only of keys this
+  same token created (`ext.created_by`). It can't overwrite the admin's
+  keys, another token's keys, or fill a placeholder another token
+  requested. It's for agents that generate their own credentials, without
+  letting them replace one a person relies on.
+- **write**: create and replace anything in its namespaces.
+
+The token keeps `write` in the file and adds `add`; a token with neither is
+read-only, so tokens made before the add permission keep exactly what they
+had. A revoke clears `created_by` for that token's keys, so a new token
+with the same name doesn't inherit them. The admin changes a token's
+permission under **Agents**.
 
 - An agent can't see other namespaces at all. A secret in a namespace the
   token isn't granted returns 404, exactly like one that doesn't exist, so
@@ -250,25 +265,69 @@ every read logged, no way to just look). So an entry is either a
   old secret as a variable. The API reads the kind under the same lock as
   the value, so a kind change mid-read can't skip the audit log.
 
-### Telling the agent about new keys
-- **Push (the human adds a key):** the secret is marked *new* until an agent
-  runs `keydrop ack`. Each token has its own inbox: an ack records the
-  token's name on the current value (`acked_by`, cleared when the value
-  changes), so one agent's ack doesn't hide a change from another, and a
-  read-only token's ack changes nothing anyone else sees except the
-  admin's "no agent has picked it up yet" badge. `keydrop inbox` lists new secrets with their
-  descriptions, and is designed to run from a session-start hook. There
-  are no webhooks or chat notifications: telling a person about anything
-  is the job of whatever runs the agents, not of keydrop.
+### Telling the agent what changed
+- **Push (the human adds a key):** `keydrop history [NAME]` lists what
+  happened to the keys a token can see, newest first: created, replaced,
+  details changed, requested, deleted, rolled back, status, flagged, flag
+  resolved, note approved or removed, description approved. It runs from a
+  session-start hook. It's read-only: there's no per-token "seen" state,
+  so nothing an agent does hides a change from another agent. History is
+  kept in `keydrop.json` (the newest 1000 events), filtered per token by
+  namespace on the server; a key the token can't see gives the same empty
+  answer as one that doesn't exist. Before history, each secret had a
+  *new* flag per token (`acked_by`) and `keydrop inbox`/`keydrop ack`; the
+  CLI keeps those names for one release (`inbox` runs `history`, `ack`
+  does nothing), and the server keeps `?new=1` and `POST …/ack` for older
+  CLIs.
 - **Pull (the agent needs a key):** `keydrop request NAME --desc …` creates
   an empty placeholder and returns a link to it. The agent sends the link
   to the human, who opens it on their phone and pastes the value.
   `keydrop wait NAME` returns once it has one. In practice most keys start
   as "I need a token for X", so this is probably the most-used flow.
   Read-only tokens may request. Only the token that made a pending request
-  can change its description (another gets 409), because other agents
-  read that text: it mustn't be a channel for one agent to instruct
-  another.
+  can change it (another gets 409).
+- There are no webhooks or chat notifications: telling a person about
+  anything is the job of whatever runs the agents, not of keydrop.
+
+### What agents can say about a key
+Other agents read what one agent writes, so agent text mustn't be a
+channel for one agent to instruct another. Each kind of annotation is
+limited to what it needs:
+
+- **Status** (`ok`, `expired`, `revoked`, `leaked`, `replaced-by NAME`, the
+  name validated like any secret name). Any token that can see the key
+  sets it, without approval: it's one of a fixed set of words, so there's
+  nothing to inject, and a leaked key should be marked at once. Everyone
+  sees it with who and when (`secrets`, `info`, `history`, the UI).
+  `run` and `get` warn on stderr when handing out a key that isn't ok, and
+  still run: refusing would break the agent's work over a claim another
+  agent made. The admin sets or clears it on the key's page.
+- **Flags** are a message to the admin: a reason (≤500 characters) and an
+  optional http(s) link (≤500). The text is shown to the admin only, on the
+  dashboard under **Waiting for you** until resolved, then in the key's
+  history. Agents see "flagged by X on DATE", in `info` and `history`
+  without the text. One open flag per token per key (409), 20 open per
+  token and 200 in all.
+- **Notes** (≤2000 characters) are proposed by an agent and shown to
+  other agents only after the admin approves them, as written or edited;
+  while pending, other agents see "N notes awaiting approval". Approved
+  notes show with their author, the approval date, and whether the admin
+  edited them. One pending note per token per key, 20 pending per token,
+  50 notes per key.
+- **Descriptions** an agent writes (`put --desc/--usage`, `request
+  --desc`) go into a *proposal* beside the description, not into it, and
+  follow the same approval as notes; the admin can approve (edited or
+  not) or reject it. Descriptions on requests made before this release
+  were written straight into the description and stay as they are.
+- Flags, statuses and notes share a per-token rate limit, 60 an hour (in
+  memory, so a restart resets it), then 429. All text is checked for
+  control characters, escaped in HTML (the UI marks agent-written text
+  with an *agent-written* badge, and links get `rel="noopener noreferrer
+  nofollow"`), and the CLI quotes it under "untrusted text from another
+  agent" with no terminal escapes.
+- Every admin action on them (status, resolve, approve, edit, reject,
+  remove) is a CSRF-checked POST and is audit-logged, as are the agent
+  calls.
 
 ### Audit log
 - Anyone who can reach keydrop can cause some events without a credential
@@ -326,6 +385,22 @@ every read logged, no way to just look). So an entry is either a
   stops the server. `keydrop downgrade-data` puts the v1 key check back
   (and unseals `tls.key`) for going back to an older release; this
   release then refuses the data until `upgrade-data` is run again.
+- **Two MACs, so the previous release can still read the file.** The
+  fields added since then (`history`, per-secret `ext` with status, flags,
+  notes, proposals and `created_by`, and the token's `add`) are optional.
+  `mac` is computed over the state with those fields zeroed, which
+  marshals byte for byte as the previous release writes it, so that
+  release verifies it and starts. `mac2` (keyed with `HKDF(master key,
+  "state mac v2")`) covers the whole state and is written whenever a newer
+  field is set; when either is present, `mac2` must verify. Stripping
+  *every* newer field and `mac2` gives a file the previous release could
+  have written, which is accepted: that's the same as putting back an older
+  copy (below), and can only drop annotations or turn an add token into a
+  read-only one. When the previous release rewrites the file it drops all
+  of them (history, statuses, flags, notes, proposals), and add tokens
+  become read-only. Every new optional field has to go in `ext` or be
+  zeroed in `legacyView`, or the previous release stops verifying the
+  file.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
@@ -460,7 +535,9 @@ code. The full list is in the README.
 v0.1 (MVP), not yet released:
 
 - **Done:** server, web UI, admin password + optional TOTP, namespaced agent
-  tokens, `run` with masking, variables, `secrets`/`vars`/`info`/`inbox`/`ack`,
+  tokens (read, add, write), `run` with masking, variables,
+  `secrets`/`vars`/`info`/`history`, statuses, flags, notes with admin
+  approval,
   `request`/`wait`, `get --to-file`, `put`, `import`, `expiring`,
   change password, pairing, allowed sources, agent labels, audit log,
   TLS with pinning, Dockerfile, CI and release
@@ -470,8 +547,11 @@ v0.1 (MVP), not yet released:
   through the forms, pairing, listing without values, `run` masking (plain,
   base64, Basic auth), exit codes, environment and argv, write and
   read-only tokens, requests, revoke, a wrong pin, `get --to-file`, a
-  restart, `upgrade-data`/`downgrade-data` against the previous release,
-  and `rotate-tls` with re-pinning.
+  restart, `upgrade-data`/`downgrade-data` against the previous format,
+  `rotate-tls` with re-pinning, add-token limits, flag text hidden from
+  agents, statuses and the `run` warning, note approval, the `inbox` alias,
+  and the previous release starting on (and rewriting) data this one
+  wrote.
 - **Not yet checked:** the UI in a real browser (phone especially), the
   Docker image build, and the CI and release workflows.
 
@@ -480,13 +560,13 @@ v0.1 (MVP), not yet released:
 1. **Before v0.1.0:** check the UI on a phone, confirm the Docker build and
    CI, choose a license.
 2. **Agent integrations:** ship the example hook scripts from
-   [agents.md](agents.md) (session-start inbox, the `--raw` guard) as
+   [agents.md](agents.md) (session-start history, the `--raw` guard) as
    files rather than docs.
 3. **Later:**
    - Passkeys (WebAuthn) for admin login.
    - Trusted proxy-header auth (Authelia, Authentik), deliberately left
      out of v1 because a misconfigured proxy would bypass the login.
-   - An MCP server exposing **metadata only** (`secrets`, `vars`, `inbox`, `request`).
+   - An MCP server exposing **metadata only** (`secrets`, `vars`, `history`, `request`).
      A tool that returns values would put them in the transcript.
    - `--stdin-to CMD` (for example `docker login --password-stdin`).
    - Optional per-secret allowlists inside a namespace.

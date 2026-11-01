@@ -24,8 +24,9 @@ var webFS embed.FS
 type expiryInfo struct{ Text, Class string }
 
 var funcs = template.FuncMap{
-	"join": strings.Join,
-	"code": displayCode,
+	"join":     strings.Join,
+	"statuses": func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
+	"code":     displayCode,
 	"fmtTime": func(t time.Time) string {
 		if t.IsZero() {
 			return "—"
@@ -91,6 +92,11 @@ var flashes = map[string]string{
 	"paired":     "Approved. The agent collects its token within a few seconds.",
 	"denied":     "Pairing request denied.",
 	"sources":    "Allowed sources saved.",
+	"permission": "Permission saved.",
+	"status":     "Status saved.",
+	"resolved":   "Flag resolved.",
+	"approved":   "Approved.",
+	"rejected":   "Removed.",
 	"totpon":     "Authenticator turned on. Logging in now needs a code.",
 	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
 	"password":   "Password changed. Any other logged-in browsers were logged out.",
@@ -390,7 +396,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *ses
 	}
 	s.render(w, r, "dashboard", status, se, page{
 		"Title": "Secrets", "Pending": pending, "Groups": groups, "Vars": vars,
-		"Namespaces": nss, "DefaultNS": def, "Error": errMsg,
+		"Namespaces": nss, "DefaultNS": def, "Error": errMsg, "Attention": s.store.NeedsAttention(),
 	})
 }
 
@@ -500,9 +506,14 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 			readers = append(readers, t.Name)
 		}
 	}
+	ext := store.SecretExt{}
+	if sec.Ext != nil {
+		ext = *sec.Ext
+	}
 	s.render(w, r, "secret", status, se, page{
 		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
-		"Readers": readers, "Error": errMsg, "Value": value,
+		"Readers": readers, "Error": errMsg, "Value": value, "X": ext,
+		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
 	})
 }
 
@@ -627,13 +638,17 @@ func splitList(s string) []string {
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	nss := splitList(r.PostFormValue("namespaces"))
-	write := r.PostFormValue("write") == "yes"
+	perm, ok := formPermission(url.Values{"permission": {r.PostFormValue("permission")}, "write": {r.PostFormValue("write")}})
+	if !ok {
+		s.renderTokens(w, r, se, http.StatusBadRequest, "Permission: read, add or write.")
+		return
+	}
 	sources, err := store.ParseSources(r.PostFormValue("sources"))
 	if err != nil {
 		s.renderTokens(w, r, se, http.StatusBadRequest, "Allowed from: "+err.Error()+".")
 		return
 	}
-	tok, err := s.store.CreateToken(name, nss, write, sources)
+	tok, err := s.store.CreateToken(name, nss, perm, sources)
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, store.ErrExists) {
@@ -642,10 +657,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 		s.renderTokens(w, r, se, http.StatusBadRequest, msg)
 		return
 	}
-	detail := "namespaces " + strings.Join(nss, ",")
-	if write {
-		detail += ", write"
-	}
+	detail := "namespaces " + strings.Join(nss, ",") + ", " + string(perm)
 	detail += ", allowed from " + sourcesText(sources)
 	s.event(r, "admin", "token.create", name, detail)
 	u := s.cfg.PublicURL
@@ -812,4 +824,64 @@ func kindChange(variable bool) string {
 		return "now a variable"
 	}
 	return "now a secret"
+}
+
+// ---- status, flags, notes and proposals ----
+
+// annotated runs an admin action on a key and goes back to its page, or
+// shows the error there.
+func (s *Server) annotated(w http.ResponseWriter, r *http.Request, se *session, err error, action, detail, msg string) {
+	ns, name := r.PathValue("ns"), r.PathValue("name")
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		if _, ok := s.store.GetSecret(ns, name); !ok {
+			s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
+			return
+		}
+		s.renderSecret(w, r, se, http.StatusNotFound, "That was already dealt with.")
+		return
+	case err != nil:
+		s.renderSecret(w, r, se, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.event(r, "admin", action, ns+"/"+name, detail)
+	s.back(w, r, msg)
+}
+
+func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	value, repl := r.PostFormValue("status"), strings.ToUpper(strings.TrimSpace(r.PostFormValue("replaced_by")))
+	if value != "replaced-by" {
+		repl = ""
+	}
+	err := s.store.SetStatus(r.PathValue("ns"), r.PathValue("name"), value, repl, "admin")
+	detail := value
+	if repl != "" {
+		detail += " " + repl
+	}
+	s.annotated(w, r, se, err, "secret.status", detail, "status")
+}
+
+func (s *Server) handleResolveFlag(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	err := s.store.ResolveFlag(r.PathValue("ns"), r.PathValue("name"), r.PathValue("id"))
+	s.annotated(w, r, se, err, "secret.flag.resolve", "", "resolved")
+}
+
+func (s *Server) handleApproveNote(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	err := s.store.ApproveNote(r.PathValue("ns"), r.PathValue("name"), r.PathValue("id"), r.PostFormValue("text"))
+	s.annotated(w, r, se, err, "secret.note.approve", "", "approved")
+}
+
+func (s *Server) handleRemoveNote(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	err := s.store.RemoveNote(r.PathValue("ns"), r.PathValue("name"), r.PathValue("id"))
+	s.annotated(w, r, se, err, "secret.note.remove", "", "rejected")
+}
+
+func (s *Server) handleApproveProposal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	err := s.store.ApproveProposal(r.PathValue("ns"), r.PathValue("name"), r.PostFormValue("description"), r.PostFormValue("usage"))
+	s.annotated(w, r, se, err, "secret.proposal.approve", "", "approved")
+}
+
+func (s *Server) handleRejectProposal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	err := s.store.RejectProposal(r.PathValue("ns"), r.PathValue("name"))
+	s.annotated(w, r, se, err, "secret.proposal.reject", "", "rejected")
 }

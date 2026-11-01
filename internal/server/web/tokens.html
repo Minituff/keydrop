@@ -14,13 +14,18 @@
 <ul class="list">
 {{range .Tokens}}
   <li><div>
-    <strong>{{.Name}}</strong> {{if .Write}}<span class="badge">can write</span>{{end}}
+    <strong>{{.Name}}</strong> <span class="badge">{{.Permission}}</span>
     <span class="desc">namespaces: {{join .Namespaces ", "}}</span>
     <small>created {{fmtTime .CreatedAt}} · last used {{since .LastUsedAt}}{{if .LastUsedFrom}} from {{.LastUsedFrom}}{{end}}</small>
     <form method="post" action="/tokens/{{.Name}}/sources" class="inline">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <label>Allowed from{{if not .Sources}} <span class="badge">anywhere</span>{{end}}
         <input name="sources" value="{{join .Sources ", "}}" placeholder="anywhere" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <button class="small">Save</button>
+    </form>
+    <form method="post" action="/tokens/{{.Name}}/permission" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Permission {{template "permission" .Permission}}</label>
       <button class="small">Save</button>
     </form>
     <form method="post" action="/tokens/{{.Name}}/revoke" class="inline">
@@ -53,7 +58,7 @@
     <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="homelab-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <label>Namespaces <small>(comma-separated)</small>
     <input name="namespaces" required placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <label class="check"><input type="checkbox" name="write" value="yes"> Can create and replace secrets in these namespaces</label>
+  <label>Permission {{template "permission" "read"}}</label>
   <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
     <input name="sources" placeholder="10.0.0.5, 10.0.1.0/24" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <button>Create token</button>

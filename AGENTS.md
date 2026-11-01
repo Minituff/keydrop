@@ -44,6 +44,19 @@ isn't worth it.
   operator migrates it with `keydrop upgrade-data` (otherwise anyone who
   can write the data directory could get an edited old-format file
   vouched for by restarting the server).
+- **Optional fields need no migration, but must keep the previous
+  release reading the file.** `mac` covers `legacyView()` (the state with
+  every field added since then zeroed), so the previous release still
+  verifies it; `mac2` covers everything. A new optional field goes in
+  `Secret.Ext` (or another field `legacyView` zeroes and `hasNewer` checks),
+  never as a plain new field the MAC covers, and gets a case in
+  `TestOlderReleaseReadsNewerFile`. The e2e suite starts the previous
+  release (`rollbackCommit`) on data this one wrote.
+- **Agent text is untrusted.** Anything an agent writes that other agents
+  read (notes, descriptions) waits for the admin's approval; flag text is
+  for the admin only. Escape it in HTML, mark it as agent-written, and
+  quote it in the CLI. New agent-writable fields need a size limit and go
+  through the annotation rate limit.
 - **Store mutations** take a snapshot (`s.st.clone()`) and finish with
   `s.commit(snap)`, so a failed save leaves memory as it was.
 - **The web UI has no JavaScript.** The CSP forbids scripts. Don't add

@@ -26,6 +26,8 @@ form.inline { display:inline-flex; gap:.5rem; align-items:center; margin:.5rem 0
 .flash { padding:.75rem 1rem; border-radius:8px; background:color-mix(in srgb, var(--ok) 15%, transparent); }
 .error { padding:.75rem 1rem; border-radius:8px; background:color-mix(in srgb, var(--danger) 15%, transparent); }
 .badge { display:inline-block; font-size:.8rem; padding:.1rem .5rem; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+.badge.agent { border-style:dashed; }
+.agent-text { border-left:3px dashed var(--line); padding-left:.6rem; white-space:pre-wrap; overflow-wrap:anywhere; }
 .badge.new { border-color:var(--accent); color:var(--accent); }
 .badge.soon { border-color:var(--warn); color:var(--warn); } .badge.expired { border-color:var(--danger); color:var(--danger); }
 .request { border-color:var(--accent); }

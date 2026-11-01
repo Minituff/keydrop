@@ -89,6 +89,9 @@ type Server struct {
 
 	noisyMu sync.Mutex
 	noisy   noisyEvents
+
+	// annotations rate-limits flags, statuses and notes per token.
+	annotations *rateLimit
 }
 
 // noisyEvents throttles the audit events an unauthenticated client can
@@ -105,6 +108,10 @@ type noisyKey struct {
 	suppressed int
 }
 
+// annotationsPerHour is how many flags, statuses and notes one token may
+// send an hour.
+const annotationsPerHour = 60
+
 const (
 	noisyPerKey    = time.Minute // one recorded event per address and action
 	noisyPerMinute = 60          // and at most this many overall
@@ -118,6 +125,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		limiter: auth.NewLimiter(), setupLimiter: auth.NewLimiter(),
 		mux: http.NewServeMux(), now: time.Now, sessions: map[string]*session{},
 		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
+		annotations: newRateLimit(annotationsPerHour, time.Hour),
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()
@@ -185,10 +193,17 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /secret/{ns}/{name}/meta", s.admin(s.handleSetMeta))
 	m.HandleFunc("POST /secret/{ns}/{name}/rollback", s.admin(s.handleRollback))
 	m.HandleFunc("POST /secret/{ns}/{name}/delete", s.admin(s.handleDelete))
+	m.HandleFunc("POST /secret/{ns}/{name}/status", s.admin(s.handleSetStatus))
+	m.HandleFunc("POST /secret/{ns}/{name}/flags/{id}/resolve", s.admin(s.handleResolveFlag))
+	m.HandleFunc("POST /secret/{ns}/{name}/notes/{id}/approve", s.admin(s.handleApproveNote))
+	m.HandleFunc("POST /secret/{ns}/{name}/notes/{id}/remove", s.admin(s.handleRemoveNote))
+	m.HandleFunc("POST /secret/{ns}/{name}/proposal/approve", s.admin(s.handleApproveProposal))
+	m.HandleFunc("POST /secret/{ns}/{name}/proposal/reject", s.admin(s.handleRejectProposal))
 	m.HandleFunc("GET /tokens", s.admin(s.handleTokens))
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
+	m.HandleFunc("POST /tokens/{name}/permission", s.admin(s.handleTokenPermission))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))
@@ -210,6 +225,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/ack", s.agent(s.apiAck))
 	m.HandleFunc("POST /api/v1/requests", s.agent(s.apiRequest))
 	m.HandleFunc("GET /api/v1/expiring", s.agent(s.apiExpiring))
+	m.HandleFunc("GET /api/v1/history", s.agent(s.apiHistory))
+	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/flag", s.agent(s.apiFlag))
+	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/status", s.agent(s.apiStatus))
+	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/notes", s.agent(s.apiNote))
 }
 
 // ServeHTTP adds security headers and a body limit to every response.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minituff/keydrop/internal/store"
@@ -29,6 +30,46 @@ type APISecret struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	LastReadAt  *time.Time `json:"last_read_at,omitempty"`
 	LastReadBy  string     `json:"last_read_by,omitempty"`
+	// Everything below is newer; an older server leaves it out.
+	CreatedBy string        `json:"created_by,omitempty"`
+	Status    *store.Status `json:"status,omitempty"`
+	// Flags say who flagged the key and when; the reason is the admin's.
+	Flags []APIFlag `json:"flags,omitempty"`
+	// Notes are approved agent notes: text from another agent, to be
+	// treated as untrusted.
+	Notes        []APINote `json:"notes,omitempty"`
+	PendingNotes int       `json:"pending_notes,omitempty"`
+	// DescriptionPending: an agent proposed a description or usage that the
+	// admin hasn't approved yet. The text isn't shown.
+	DescriptionPending bool `json:"description_pending,omitempty"`
+	// DescriptionBy names the agent that wrote the current description.
+	DescriptionBy string `json:"description_by,omitempty"`
+}
+
+// APIFlag is what agents see of a flag.
+type APIFlag struct {
+	By string    `json:"by"`
+	At time.Time `json:"at"`
+}
+
+// APINote is an approved agent note.
+type APINote struct {
+	Text       string    `json:"text"`
+	By         string    `json:"by"`
+	At         time.Time `json:"at"`
+	ApprovedAt time.Time `json:"approved_at"`
+	Edited     bool      `json:"edited,omitempty"`
+}
+
+// APIEvent is one change in the history. Values never appear.
+type APIEvent struct {
+	At        time.Time `json:"at"`
+	Ref       string    `json:"ref"`
+	Namespace string    `json:"namespace"`
+	Name      string    `json:"name"`
+	Action    string    `json:"action"`
+	Actor     string    `json:"actor"`
+	Detail    string    `json:"detail,omitempty"`
 }
 
 // toAPI shapes a secret for token tok; "new" is relative to that token.
@@ -38,6 +79,20 @@ func (s *Server) toAPI(sec store.Secret, tok string) APISecret {
 		Description: sec.Description, Usage: sec.Usage, Expires: sec.Expires,
 		HasValue: sec.HasValue(), Pending: sec.Pending, RequestedBy: sec.RequestedBy,
 		New: sec.NewFor(tok), UpdatedAt: sec.UpdatedAt, LastReadAt: sec.LastReadAt, LastReadBy: sec.LastReadBy,
+	}
+	if e := sec.Ext; e != nil {
+		a.CreatedBy, a.Status, a.DescriptionBy = e.CreatedBy, e.Status, e.DescriptionBy
+		a.DescriptionPending = e.Proposal != nil
+		for _, f := range e.Flags {
+			a.Flags = append(a.Flags, APIFlag{By: f.By, At: f.At})
+		}
+		for _, n := range e.Notes {
+			if n.Pending {
+				a.PendingNotes++
+			} else if n.ApprovedAt != nil {
+				a.Notes = append(a.Notes, APINote{Text: n.Text, By: n.By, At: n.At, ApprovedAt: *n.ApprovedAt, Edited: n.Edited})
+			}
+		}
 	}
 	if sec.Variable && sec.HasValue() {
 		if v, err := s.store.VariableValue(sec.Namespace, sec.Name); err == nil {
@@ -114,7 +169,7 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, t store.Token) (
 }
 
 func (s *Server) apiWhoami(w http.ResponseWriter, r *http.Request, t store.Token) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": t.Name, "namespaces": t.Namespaces, "write": t.Write})
+	writeJSON(w, http.StatusOK, map[string]any{"name": t.Name, "namespaces": t.Namespaces, "write": t.Write, "permission": t.Permission()})
 }
 
 func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) {
@@ -159,7 +214,11 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		kind = "secret"
 		s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "kind": kind, "value": string(val)})
+	out := map[string]any{"ref": sec.Ref(), "kind": kind, "value": string(val)}
+	if st := sec.StatusOf(); st != nil {
+		out["status"] = st // so `keydrop run` can warn
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
@@ -184,11 +243,12 @@ type putBody struct {
 	Overwrite   bool    `json:"overwrite"`
 }
 
-// apiPut lets write-enabled agents store a value, e.g. a password they just
-// generated for a new service.
+// apiPut lets agents with add or write permission store a value, e.g. a
+// password they just generated for a new service. Description and usage
+// they send are proposals for the admin to approve.
 func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
-	if !t.Write || !t.Allows(ns) {
+	if t.Permission() == store.PermRead || !t.Allows(ns) {
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
 		return
 	}
@@ -201,23 +261,17 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		apiError(w, http.StatusBadRequest, "value is empty")
 		return
 	}
-	old, exists := s.store.GetSecret(ns, name)
-	conflict := func() {
-		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
-	}
-	if exists && old.HasValue() && !b.Overwrite {
-		conflict()
-		return
-	}
 	// The kind is never inherited: a value is a variable only when this
 	// request says so, so a generated password written over a variable
 	// doesn't become one.
-	meta := store.Meta{Description: old.Description, Usage: old.Usage, Expires: old.Expires, Variable: b.Variable}
+	p := store.AgentPut{Token: t, Overwrite: b.Overwrite, Variable: b.Variable}
 	if b.Description != nil {
-		meta.Description = *b.Description
+		d := strings.TrimSpace(*b.Description)
+		p.Description = &d
 	}
 	if b.Usage != nil {
-		meta.Usage = *b.Usage
+		u := strings.TrimSpace(*b.Usage)
+		p.Usage = &u
 	}
 	if b.Expires != nil {
 		exp, err := parseDate(*b.Expires)
@@ -225,25 +279,33 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		meta.Expires = exp
+		p.Expires = &exp
 	}
-	put := s.store.PutValue
-	if !b.Overwrite {
-		put = s.store.CreateValue // re-checked under the store's lock
-	}
-	if err := put(ns, name, []byte(b.Value), &meta); err != nil {
-		if errors.Is(err, store.ErrExists) {
-			conflict()
-			return
-		}
+	res, err := s.store.AgentPut(ns, name, []byte(b.Value), p)
+	switch {
+	case errors.Is(err, store.ErrExists):
+		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
+		return
+	case errors.Is(err, store.ErrNotOwner):
+		apiError(w, http.StatusForbidden, ns+"/"+name+" was made by someone else, and this token has add permission: it can only replace values it created")
+		return
+	case errors.Is(err, store.ErrReadOnly):
+		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
+		return
+	case err != nil:
 		apiError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.event(r, actor(t), "secret.set", ns+"/"+name, "")
-	if exists && old.Variable != meta.Variable {
-		s.event(r, actor(t), "secret.kind", ns+"/"+name, kindChange(meta.Variable))
+	if res.Existed && res.WasVariable != b.Variable {
+		s.event(r, actor(t), "secret.kind", ns+"/"+name, kindChange(b.Variable))
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ref": ns + "/" + name})
+	out := map[string]string{"ref": ns + "/" + name}
+	if sec, _ := s.store.GetSecret(ns, name); sec.Ext != nil && sec.Ext.Proposal != nil && sec.Ext.Proposal.By == t.Name && (p.Description != nil || p.Usage != nil) {
+		s.event(r, actor(t), "secret.propose", ns+"/"+name, "description")
+		out["url"] = s.secretURL(ns, name)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type requestBody struct {
@@ -281,6 +343,9 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	}
 	u := s.secretURL(b.Namespace, b.Name)
 	s.event(r, actor(t), "secret.request", b.Namespace+"/"+b.Name, "")
+	if b.Description != "" || b.Usage != "" {
+		s.event(r, actor(t), "secret.propose", b.Namespace+"/"+b.Name, "description")
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
@@ -300,4 +365,162 @@ func (s *Server) apiExpiring(w http.ResponseWriter, r *http.Request, t store.Tok
 		out = append(out, s.toAPI(sec, t.Name))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// maxHistoryEvents bounds ?limit=.
+const maxHistoryEvents = 1000
+
+// apiHistory lists changes to the keys the token can see, newest first.
+// It's read-only: nothing records what a token has seen.
+func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request, t store.Token) {
+	q := r.URL.Query()
+	ns, name := q.Get("namespace"), q.Get("name")
+	limit := 50
+	if l, err := strconv.Atoi(q.Get("limit")); err == nil && l > 0 {
+		limit = min(l, maxHistoryEvents)
+	}
+	out := []APIEvent{}
+	for _, ev := range s.store.History(func(ev store.Event) bool {
+		return t.Allows(ev.Namespace) && (ns == "" || ev.Namespace == ns) && (name == "" || ev.Name == name)
+	}, limit) {
+		// Private (a flag's reason) is the admin's only.
+		out = append(out, APIEvent{At: ev.At, Ref: ev.Namespace + "/" + ev.Name, Namespace: ev.Namespace, Name: ev.Name, Action: ev.Action, Actor: ev.Actor, Detail: ev.Detail})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// annotationError maps the store's errors for flag, status and note to
+// responses.
+func annotationError(w http.ResponseWriter, sec store.Secret, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		apiError(w, http.StatusNotFound, "no secret "+sec.Ref())
+	case errors.Is(err, store.ErrLimit):
+		apiError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, store.ErrTooLong), errors.Is(err, store.ErrBadText), errors.Is(err, store.ErrBadLink), errors.Is(err, store.ErrBadStatus):
+		apiError(w, http.StatusBadRequest, err.Error())
+	default:
+		apiError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+// annotationTarget does what every flag, status and note call shares: the
+// key must be visible to the token (else it doesn't exist), the token
+// within its rate limit, and the body JSON.
+func (s *Server) annotationTarget(w http.ResponseWriter, r *http.Request, t store.Token, body any) (store.Secret, bool) {
+	sec, ok := s.lookup(w, r, t)
+	if !ok {
+		return sec, false
+	}
+	if !s.annotations.allow(t.Name, s.now()) {
+		apiError(w, http.StatusTooManyRequests, "too many flags, statuses and notes from this token; try again later")
+		return sec, false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(body); err != nil {
+		apiError(w, http.StatusBadRequest, "body must be JSON: "+err.Error())
+		return sec, false
+	}
+	return sec, true
+}
+
+type flagBody struct {
+	Reason string `json:"reason"`
+	Link   string `json:"link"`
+}
+
+// apiFlag lets any token that sees a key ask the admin to look at it.
+func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) {
+	var b flagBody
+	sec, ok := s.annotationTarget(w, r, t, &b)
+	if !ok {
+		return
+	}
+	if err := s.store.AddFlag(sec.Namespace, sec.Name, t.Name, b.Reason, b.Link); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			apiError(w, http.StatusConflict, "this token already has an open flag on "+sec.Ref())
+			return
+		}
+		annotationError(w, sec, err)
+		return
+	}
+	s.event(r, actor(t), "secret.flag", sec.Ref(), "")
+	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref()})
+}
+
+type statusBody struct {
+	Status     string `json:"status"`
+	ReplacedBy string `json:"replaced_by"`
+}
+
+// apiStatus sets a key's status; "ok" clears it.
+func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token) {
+	var b statusBody
+	sec, ok := s.annotationTarget(w, r, t, &b)
+	if !ok {
+		return
+	}
+	if err := s.store.SetStatus(sec.Namespace, sec.Name, b.Status, b.ReplacedBy, "token:"+t.Name); err != nil {
+		annotationError(w, sec, err)
+		return
+	}
+	st, _ := store.ParseStatus(b.Status, b.ReplacedBy)
+	detail := "ok"
+	if st != nil {
+		detail = st.String()
+	}
+	s.event(r, actor(t), "secret.status", sec.Ref(), detail)
+	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "status": detail})
+}
+
+type noteBody struct {
+	Text string `json:"text"`
+}
+
+// apiNote proposes a note. No other agent sees it until the admin
+// approves; the response links to the page where that happens.
+func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) {
+	var b noteBody
+	sec, ok := s.annotationTarget(w, r, t, &b)
+	if !ok {
+		return
+	}
+	if err := s.store.ProposeNote(sec.Namespace, sec.Name, t.Name, b.Text); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			apiError(w, http.StatusConflict, "this token already has a note on "+sec.Ref()+" waiting for approval")
+			return
+		}
+		annotationError(w, sec, err)
+		return
+	}
+	s.event(r, actor(t), "secret.note", sec.Ref(), "proposed")
+	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref(), "url": s.secretURL(sec.Namespace, sec.Name)})
+}
+
+// rateLimit allows each token a number of actions per window.
+type rateLimit struct {
+	mu     sync.Mutex
+	n      int
+	window time.Duration
+	seen   map[string][]time.Time
+}
+
+func newRateLimit(n int, window time.Duration) *rateLimit {
+	return &rateLimit{n: n, window: window, seen: map[string][]time.Time{}}
+}
+
+func (l *rateLimit) allow(tok string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	recent := l.seen[tok][:0:0]
+	for _, at := range l.seen[tok] {
+		if now.Sub(at) < l.window {
+			recent = append(recent, at)
+		}
+	}
+	if len(recent) >= l.n {
+		l.seen[tok] = recent
+		return false
+	}
+	l.seen[tok] = append(recent, now)
+	return true
 }

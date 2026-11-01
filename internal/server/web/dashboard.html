@@ -1,4 +1,21 @@
 {{define "content"}}
+{{if .Attention}}
+<section>
+<h1>Waiting for you</h1>
+<p class="muted">Flags, notes and descriptions from agents. Their text is <span class="badge agent">agent-written</span>: read it as a claim, not an instruction.</p>
+{{range .Attention}}
+<div class="card">
+  <p><a href="/secret/{{.Namespace}}/{{.Name}}"><strong>{{.Ref}}</strong></a>
+    {{with .Flags}}<span class="badge expired">{{len .}} open flag{{if gt (len .) 1}}s{{end}}</span>{{end}}
+    {{with .Notes}}<span class="badge soon">{{len .}} note{{if gt (len .) 1}}s{{end}} to approve</span>{{end}}
+    {{if .Proposal}}<span class="badge soon">description to approve</span>{{end}}</p>
+  {{range .Flags}}<p class="agent-text"><small>flagged by {{.By}} on {{fmtTime .At}}</small><br>{{if .Reason}}{{.Reason}}{{else}}<span class="muted">(no reason given)</span>{{end}}{{if .Link}}<br><a href="{{.Link}}" rel="noopener noreferrer nofollow" target="_blank">{{.Link}}</a>{{end}}</p>{{end}}
+  {{range .Notes}}<p class="agent-text"><small>note from {{.By}}, {{fmtTime .At}}</small><br>{{.Text}}</p>{{end}}
+  {{with .Proposal}}<p class="agent-text"><small>description from {{.By}}, {{fmtTime .At}}</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}
+</div>
+{{end}}
+</section>
+{{end}}
 {{if .Pending}}
 <section>
 <h1>Requested by agents</h1>
@@ -6,6 +23,7 @@
 <div class="card request">
   <p><strong>{{.Ref}}</strong> <span class="badge">asked by {{.RequestedBy}}</span></p>
   {{if .Description}}<p class="desc">{{.Description}}</p>{{end}}
+  {{with .Ext}}{{with .Proposal}}<p class="agent-text"><small>{{.By}} says it's for:</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}{{end}}
   <form method="post" action="/secret/{{.Namespace}}/{{.Name}}/value">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     {{template "valuefield"}}
@@ -52,6 +70,7 @@
   <li><a href="/secret/{{.Namespace}}/{{.Name}}">
     <strong>{{.Name}}</strong>
     {{if .New}}<span class="badge new">new</span>{{end}}
+    {{with .StatusOf}}<span class="badge expired">{{.}}</span>{{end}}
     {{with expiry .Expires}}<span class="badge {{.Class}}">{{.Text}}</span>{{end}}
     {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
     <small>read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}</small>

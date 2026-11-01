@@ -106,6 +106,10 @@ type Secret struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 	LastReadAt *time.Time `json:"last_read_at,omitempty"`
 	LastReadBy string     `json:"last_read_by,omitempty"`
+	// Ext holds everything added after the first integrity-checked format
+	// (status, flags, notes, proposals). It's nil when there's nothing, so
+	// such a secret is stored exactly as before (see legacyView).
+	Ext *SecretExt `json:"ext,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -157,6 +161,10 @@ type Token struct {
 	// it. Stored, so a token nobody collected is still revoked after a
 	// restart.
 	CollectBy *time.Time `json:"collect_by,omitempty"`
+	// Add is the middle permission: create new keys, and replace the value
+	// only of keys this token created. Write wins if both are set. An
+	// older release ignores the field, so to it an add token is read-only.
+	Add bool `json:"add,omitempty"`
 	// Label is the optional agent label a request carried (Claude, Codex
 	// sharing one token). Never stored; it only goes into the audit log.
 	Label string `json:"-"`
@@ -236,10 +244,60 @@ type state struct {
 	Admin    admin              `json:"admin"`
 	Secrets  map[string]*Secret `json:"secrets"`
 	Tokens   map[string]*Token  `json:"tokens"`
+	// History is the change log agents read with `keydrop history`,
+	// oldest first, capped at maxHistory.
+	History []Event `json:"history,omitempty"`
 	// MAC is HMAC-SHA256 over the rest of the state, with a key derived
 	// from the master key, so the file can't be edited (a token hash
-	// added, the admin password replaced) without it.
+	// added, the admin password replaced) without it. It covers the
+	// legacy view (the state without the newer fields), which is exactly
+	// what an older release reads and checks, so it can still start on
+	// this file.
 	MAC []byte `json:"mac,omitempty"`
+	// MAC2 covers the whole state, newer fields included. It's required
+	// whenever any newer field is set, so they can't be edited either;
+	// stripping all of them and MAC2 together gives the file an older
+	// release would have written (see the design doc).
+	MAC2 []byte `json:"mac2,omitempty"`
+}
+
+// legacyView is the state as a release from before the newer fields sees
+// it: they're all dropped. Marshalled, it's byte-for-byte what that
+// release marshals, so both compute the same MAC.
+func (st *state) legacyView() state {
+	c := *st
+	c.MAC, c.MAC2, c.History = nil, nil, nil
+	c.Secrets = make(map[string]*Secret, len(st.Secrets))
+	for k, v := range st.Secrets {
+		cp := *v
+		cp.Ext = nil
+		c.Secrets[k] = &cp
+	}
+	c.Tokens = make(map[string]*Token, len(st.Tokens))
+	for k, v := range st.Tokens {
+		cp := *v
+		cp.Add = false
+		c.Tokens[k] = &cp
+	}
+	return c
+}
+
+// hasNewer reports whether any field outside the legacy view is set.
+func (st *state) hasNewer() bool {
+	if len(st.History) > 0 {
+		return true
+	}
+	for _, v := range st.Secrets {
+		if v.Ext != nil {
+			return true
+		}
+	}
+	for _, v := range st.Tokens {
+		if v.Add {
+			return true
+		}
+	}
+	return false
 }
 
 // clone copies the state deeply enough to undo any mutation: the maps and
@@ -270,6 +328,8 @@ type Store struct {
 	st     state
 	now    func() time.Time
 	macKey []byte
+	// mac2Key keys MAC2, independent of macKey.
+	mac2Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -368,6 +428,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	}
 	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
 	s.macKey = s.DeriveKey("state mac")
+	s.mac2Key = s.DeriveKey("state mac v2")
 	return s, nil
 }
 
@@ -382,8 +443,15 @@ func (s *Store) load(data []byte) error {
 		return errors.New("master key does not match this data directory")
 	}
 	s.legacy = string(pt) == keyCheckV1
-	if !s.legacy && !hmac.Equal(s.st.MAC, s.mac()) {
-		return ErrIntegrity
+	if !s.legacy {
+		if !hmac.Equal(s.st.MAC, s.mac()) {
+			return ErrIntegrity
+		}
+		// Newer fields are only trusted under MAC2. Without it the file
+		// must have none: what an older release writes.
+		if (s.st.hasNewer() || s.st.MAC2 != nil) && !hmac.Equal(s.st.MAC2, s.mac2()) {
+			return ErrIntegrity
+		}
 	}
 	if s.st.Secrets == nil {
 		s.st.Secrets = map[string]*Secret{}
@@ -422,15 +490,25 @@ func (s *Store) Upgrade() (bool, error) {
 	return true, nil
 }
 
-// mac is the HMAC of the state with its MAC field empty.
+// mac is the HMAC of the legacy view of the state (see legacyView).
 func (s *Store) mac() []byte {
+	c := s.st.legacyView()
+	return macOf(s.macKey, &c)
+}
+
+// mac2 is the HMAC of the whole state with both MAC fields empty.
+func (s *Store) mac2() []byte {
 	c := s.st
-	c.MAC = nil
-	data, err := json.Marshal(&c)
+	c.MAC, c.MAC2 = nil, nil
+	return macOf(s.mac2Key, &c)
+}
+
+func macOf(key []byte, st *state) []byte {
+	data, err := json.Marshal(st)
 	if err != nil {
 		panic(err) // the state is always marshalable
 	}
-	m := hmac.New(sha256.New, s.macKey)
+	m := hmac.New(sha256.New, key)
 	m.Write(data)
 	return m.Sum(nil)
 }
@@ -502,7 +580,10 @@ func (s *Store) commit(snap state) error {
 }
 
 func (s *Store) save() error {
-	s.st.MAC = s.mac()
+	s.st.MAC, s.st.MAC2 = s.mac(), nil
+	if s.st.hasNewer() {
+		s.st.MAC2 = s.mac2()
+	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
 		return err
@@ -549,6 +630,10 @@ func copySecret(sec *Secret) Secret {
 		c.Previous = []byte{1}
 	}
 	c.AckedBy = slices.Clone(sec.AckedBy)
+	if sec.Ext != nil {
+		e := sec.Ext.clone()
+		c.Ext = &e
+	}
 	return c
 }
 
@@ -672,36 +757,85 @@ func (s *Store) GetSecret(ns, name string) (Secret, bool) {
 // PutValue creates or replaces a secret's value. The old value is kept as
 // Previous so a bad paste can be rolled back. meta is applied if non-nil.
 func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
-	return s.putValue(ns, name, value, meta, true)
+	_, err := s.putValue(ns, name, value, meta, true, nil)
+	return err
 }
 
 // CreateValue is PutValue that refuses (ErrExists) to replace a value. The
 // check and the write happen under one lock, so two writers can't both
 // see "empty" and the second silently replace the first.
 func (s *Store) CreateValue(ns, name string, value []byte, meta *Meta) error {
-	return s.putValue(ns, name, value, meta, false)
+	_, err := s.putValue(ns, name, value, meta, false, nil)
+	return err
 }
 
-func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bool) error {
+// AgentPut is how an agent stores a value: what it may replace depends on
+// its permission, and the text it sends becomes a proposal for the admin
+// to approve, not the description itself.
+type AgentPut struct {
+	Token       Token
+	Overwrite   bool
+	Variable    bool
+	Description *string // nil: leave as is
+	Usage       *string
+	Expires     **time.Time // nil: leave as is
+}
+
+// PutResult says what an agent's put replaced.
+type PutResult struct {
+	Existed     bool // there was a value before
+	WasVariable bool // ...and it was a variable
+}
+
+// AgentPut stores a value for an agent token. Everything is checked under
+// one lock: ErrExists when there's a value and Overwrite isn't set,
+// ErrReadOnly for a read-only token, ErrNotOwner when an add token tries to
+// replace a value (or fill a request) another token or the admin made.
+func (s *Store) AgentPut(ns, name string, value []byte, p AgentPut) (PutResult, error) {
+	for _, t := range []*string{p.Description, p.Usage} {
+		if t != nil && len(*t) > MaxText {
+			return PutResult{}, ErrTooLong
+		}
+	}
+	return s.putValue(ns, name, value, nil, p.Overwrite, &p)
+}
+
+func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bool, ap *AgentPut) (PutResult, error) {
+	var res PutResult
 	if !ValidName(ns) {
-		return ErrBadName
+		return res, ErrBadName
 	}
 	if !ValidSecretName(name) {
-		return ErrBadSecret
+		return res, ErrBadSecret
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := s.st.clone()
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
-	if ok && len(sec.Value) > 0 && !overwrite {
-		return ErrExists
+	res = PutResult{Existed: ok && len(sec.Value) > 0, WasVariable: ok && sec.Variable}
+	if res.Existed && !overwrite {
+		return res, ErrExists
+	}
+	actor := "admin"
+	if ap != nil {
+		actor = "token:" + ap.Token.Name
+		switch ap.Token.Permission() {
+		case PermRead:
+			return res, ErrReadOnly
+		case PermAdd:
+			// Only what it made itself: a value it set, or a request it
+			// made. Anything else is someone else's to change.
+			if ok && (res.Existed && sec.creator() != ap.Token.Name || !res.Existed && sec.RequestedBy != ap.Token.Name) {
+				return res, ErrNotOwner
+			}
+		}
 	}
 	var prev []byte
-	if ok && len(sec.Value) > 0 {
+	if res.Existed {
 		var err error
 		if prev, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
-			return err
+			return res, err
 		}
 	}
 	if !ok {
@@ -716,7 +850,38 @@ func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bo
 	if meta != nil {
 		applyMeta(sec, *meta)
 	}
-	return s.commit(snap)
+	if ap != nil {
+		sec.Variable = ap.Variable // never inherited: see the API's put
+		if ap.Expires != nil {
+			sec.Expires = *ap.Expires
+		}
+		e := sec.ext()
+		if !res.Existed {
+			e.CreatedBy = ap.Token.Name
+		}
+		if ap.Description != nil || ap.Usage != nil {
+			pr := Proposal{Description: sec.Description, Usage: sec.Usage, By: ap.Token.Name, At: now}
+			if e.Proposal != nil {
+				pr.Description, pr.Usage = e.Proposal.Description, e.Proposal.Usage
+			}
+			if ap.Description != nil {
+				pr.Description = *ap.Description
+			}
+			if ap.Usage != nil {
+				pr.Usage = *ap.Usage
+			}
+			if pr.Description != sec.Description || pr.Usage != sec.Usage {
+				e.Proposal = &pr
+			}
+		}
+		sec.setExt(e)
+	}
+	action := "created"
+	if res.Existed {
+		action = "replaced"
+	}
+	s.record(Event{Namespace: ns, Name: name, Action: action, Actor: actor, Detail: sec.Kind()})
+	return res, s.commit(snap)
 }
 
 func aad(ns, name, field string) string { return field + ":" + key(ns, name) }
@@ -747,19 +912,29 @@ func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	}
 	applyMeta(sec, m)
 	sec.UpdatedAt = s.now().UTC()
+	if sec.Ext != nil && sec.Ext.DescriptionBy != "" {
+		e := sec.ext()
+		e.DescriptionBy = "" // the admin's text now
+		sec.setExt(e)
+	}
+	s.record(Event{Namespace: ns, Name: name, Action: "details changed", Actor: "admin"})
 	return s.commit(snap)
 }
 
-// Request creates an empty placeholder for the admin to fill in. The token
-// that made a pending request may update its description; any other gets
-// ErrRequestedByOther, so one agent can't rewrite text another agent will
-// read. Requesting one that already has a value fails with ErrExists.
+// Request creates an empty placeholder for the admin to fill in. The
+// description and usage the agent sends are a proposal: no other agent
+// sees them until the admin approves. The token that made a pending
+// request may update it; any other gets ErrRequestedByOther. Requesting
+// one that already has a value fails with ErrExists.
 func (s *Store) Request(ns, name, description, usage, by string) error {
 	if !ValidName(ns) {
 		return ErrBadName
 	}
 	if !ValidSecretName(name) {
 		return ErrBadSecret
+	}
+	if len(description) > MaxText || len(usage) > MaxText {
+		return ErrTooLong
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -777,7 +952,15 @@ func (s *Store) Request(ns, name, description, usage, by string) error {
 		s.st.Secrets[key(ns, name)] = sec
 	}
 	sec.Pending, sec.RequestedBy, sec.UpdatedAt = true, by, now
-	sec.Description, sec.Usage = description, usage
+	e := sec.ext()
+	e.Proposal = nil
+	if description != "" || usage != "" {
+		e.Proposal = &Proposal{Description: description, Usage: usage, By: by, At: now}
+	}
+	sec.setExt(e)
+	if !ok {
+		s.record(Event{Namespace: ns, Name: name, Action: "requested", Actor: "token:" + by})
+	}
 	return s.commit(snap)
 }
 
@@ -790,6 +973,7 @@ func (s *Store) Delete(ns, name string) error {
 		return ErrNotFound
 	}
 	delete(s.st.Secrets, key(ns, name))
+	s.record(Event{Namespace: ns, Name: name, Action: "deleted", Actor: "admin"})
 	return s.commit(snap)
 }
 
@@ -819,6 +1003,7 @@ func (s *Store) Rollback(ns, name string) error {
 	sec.Value, sec.Previous = old, cur
 	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
 	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, s.now().UTC()
+	s.record(Event{Namespace: ns, Name: name, Action: "rolled back", Actor: "admin", Detail: sec.Kind()})
 	return s.commit(snap)
 }
 
@@ -884,12 +1069,18 @@ func (s *Store) Ack(ns, name, by string) error {
 	return s.commit(snap)
 }
 
-// forgetAcks drops a revoked token's acks, so a new token given the same
-// name starts with its own inbox. Call with s.mu held.
+// forgetAcks drops a revoked token's acks, and its ownership of the keys
+// it created, so a new token given the same name starts with its own inbox
+// and can't replace them under add permission. Call with s.mu held.
 func (s *Store) forgetAcks(tok string) {
 	for _, sec := range s.st.Secrets {
 		if i := slices.Index(sec.AckedBy, tok); i >= 0 {
 			sec.AckedBy = slices.Delete(slices.Clone(sec.AckedBy), i, i+1)
+		}
+		if sec.Ext != nil && sec.Ext.CreatedBy == tok {
+			e := sec.ext()
+			e.CreatedBy = ""
+			sec.setExt(e)
 		}
 	}
 }
@@ -926,14 +1117,14 @@ func hashToken(tok string) string {
 // plaintext is not stored and can't be shown again.
 // sources limits where it can be used from (see ParseSources); nil is
 // anywhere.
-func (s *Store) CreateToken(name string, namespaces []string, write bool, sources []string) (string, error) {
-	return s.createToken(name, namespaces, write, sources, nil)
+func (s *Store) CreateToken(name string, namespaces []string, perm Permission, sources []string) (string, error) {
+	return s.createToken(name, namespaces, perm, sources, nil)
 }
 
 // CreatePairedToken is CreateToken for pairing: unless Collected is called
 // with the token by collectBy, RevokeUncollected deletes it.
-func (s *Store) CreatePairedToken(name string, namespaces []string, write bool, sources []string, collectBy time.Time) (string, error) {
-	return s.createToken(name, namespaces, write, sources, &collectBy)
+func (s *Store) CreatePairedToken(name string, namespaces []string, perm Permission, sources []string, collectBy time.Time) (string, error) {
+	return s.createToken(name, namespaces, perm, sources, &collectBy)
 }
 
 // CheckToken validates a token's settings without creating it, so a caller
@@ -955,9 +1146,12 @@ func CheckToken(name string, namespaces []string, sources []string) error {
 	return nil
 }
 
-func (s *Store) createToken(name string, namespaces []string, write bool, sources []string, collectBy *time.Time) (string, error) {
+func (s *Store) createToken(name string, namespaces []string, perm Permission, sources []string, collectBy *time.Time) (string, error) {
 	if err := CheckToken(name, namespaces, sources); err != nil {
 		return "", err
+	}
+	if !perm.Valid() {
+		return "", ErrBadPermission
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -972,7 +1166,7 @@ func (s *Store) createToken(name string, namespaces []string, write bool, source
 	plain := TokenPrefix + base64.RawURLEncoding.EncodeToString(b)
 	s.st.Tokens[name] = &Token{
 		Name: name, Hash: hashToken(plain), Namespaces: namespaces,
-		Write: write, Sources: sources, CreatedAt: s.now().UTC(), CollectBy: collectBy,
+		Write: perm == PermWrite, Add: perm == PermAdd, Sources: sources, CreatedAt: s.now().UTC(), CollectBy: collectBy,
 	}
 	return plain, s.commit(snap)
 }
