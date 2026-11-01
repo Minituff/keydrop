@@ -11,12 +11,15 @@ COPY cmd ./cmd
 COPY internal ./internal
 # Every image carries the CLI for every platform, so the server can hand
 # agents the exact build it was made with (/install.sh, /cli/...).
-RUN set -e; mkdir -p /out/bin /out/cli /out/data; \
+# The six builds run in parallel; any failure fails the step.
+RUN set -e; mkdir -p /out/bin /out/cli /out/data; pids=; \
     for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
       os=${t%/*}; arch=${t#*/}; ext=; [ "$os" = windows ] && ext=.exe; \
       CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-        -ldflags "-s -w -X main.version=$VERSION" -o /out/bin/keydrop-$os-$arch$ext ./cmd/keydrop; \
+        -ldflags "-s -w -X main.version=$VERSION" -o /out/bin/keydrop-$os-$arch$ext ./cmd/keydrop & \
+      pids="$pids $!"; \
     done; \
+    for p in $pids; do wait "$p"; done; \
     cd /out/bin; sha256sum keydrop-* > /out/cli/SHA256SUMS; \
     for f in keydrop-*; do gzip -9 -c "$f" > /out/cli/"$f".gz; done
 
