@@ -10,7 +10,7 @@
 {{end}}
 
 <h1>Agents</h1>
-<p>Each agent has its own token, and can only see secrets in the namespaces it's granted, from the addresses it's allowed. Renewing replaces the token: the agent collects the new one with its old one, from the address it last used (or asked from), within 7 days, and <code>keydrop</code> does that by itself.</p>
+<p class="lead">Each agent sees only its namespaces, from the addresses it's allowed. Renew gives it a new token, which it picks up by itself.</p>
 <ul class="list">
 {{range .Tokens}}
   <li><div>
