@@ -1,126 +1,41 @@
 {{define "content"}}
-{{if .NoAgents}}<p class="flash">No agents yet. <a href="/tokens/setup">Set up an agent</a>: one prompt to paste into it.</p>{{end}}
-{{if .Attention}}
-<section>
-<h1>Waiting for you</h1>
-<p class="muted">Flags, notes and descriptions from agents. Their text is <span class="badge agent">agent-written</span>: read it as a claim, not an instruction.</p>
-{{range .Attention}}
-<div class="card">
-  <p><a href="/secret/{{.Namespace}}/{{.Name}}"><strong>{{.Ref}}</strong></a>
-    {{with .Flags}}<span class="badge expired">{{len .}} open flag{{if gt (len .) 1}}s{{end}}</span>{{end}}
-    {{with .Notes}}<span class="badge soon">{{len .}} note{{if gt (len .) 1}}s{{end}} to approve</span>{{end}}
-    {{if .Proposal}}<span class="badge soon">description to approve</span>{{end}}</p>
-  {{range .Flags}}<p class="agent-text"><small>flagged by {{.By}} on {{fmtTime .At}}{{if .TokenRevoked}} (token since revoked){{end}}</small><br>{{if .Reason}}{{.Reason}}{{else}}<span class="muted">(no reason given)</span>{{end}}{{if .Link}}<br><a href="{{.Link}}" rel="noopener noreferrer nofollow" target="_blank">{{.Link}}</a>{{end}}</p>{{end}}
-  {{range .Notes}}<p class="agent-text"><small>note from {{.By}}, {{fmtTime .At}}</small><br>{{.Text}}</p>{{end}}
-  {{with .Proposal}}<p class="agent-text"><small>description from {{.By}}, {{fmtTime .At}}</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}
+<div class="top">
+  <h1>Secrets</h1>
+  <form method="get" action="/" class="searchbox" role="search">{{template "icon" "search"}}<input type="search" name="q" value="{{.Query}}" placeholder="Search names…" aria-label="Search names" autocomplete="off" autocapitalize="off" spellcheck="false"></form>
+  <a class="button" href="/new">{{template "icon" "plus"}}New</a>
 </div>
-{{end}}
-</section>
-{{end}}
-{{if .Cards}}
-<section>
-<h1>Requested by agents</h1>
-<p class="muted">Fill in what you have; an empty field leaves that request open. Or paste the file you downloaded and keydrop splits it by name.</p>
-{{range .Cards}}
-<form method="post" action="/requests/fill" class="card request batch-card" id="{{.ID}}">
-  <input type="hidden" name="csrf" value="{{$.CSRF}}">
-  <input type="hidden" name="namespace" value="{{.Namespace}}">
-  {{range .Requests}}
-  <div class="request-item">
-    <input type="hidden" name="name" value="{{.Name}}">
-    <p><strong>{{.Ref}}</strong> <span class="badge">{{if .RequestedBy}}asked by {{.RequestedBy}}{{else}}asked by an agent since revoked{{end}}</span></p>
-    {{if .Description}}{{if and .Ext .Ext.DescriptionBy}}<p class="agent-text"><small>written by {{.Ext.DescriptionBy}}</small><br>{{.Description}}</p>{{else}}<p class="desc">{{.Description}}</p>{{end}}{{end}}
-    {{with .Ext}}{{with .Proposal}}<p class="agent-text"><small>{{.By}} says it's for:</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}{{end}}
-    <label>Value for {{.Name}}
-      <textarea name="value.{{.Name}}" rows="2" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
-    <fieldset class="kind">
-      <label class="check"><input type="radio" name="kind.{{.Name}}" value="secret" checked> Secret</label>
-      <label class="check"><input type="radio" name="kind.{{.Name}}" value="variable"> Variable</label>
-    </fieldset>
-  </div>
-  {{end}}
-  <details class="paste-file">
-    <summary>Paste the downloaded file</summary>
-    <label>File contents <small>(lines like key=value or KEY: value; leave the fields above empty)</small>
-      <textarea name="paste" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
-  </details>
-  {{if .Label}}<p class="agent-text"><small>{{if .LabelBy}}{{.LabelBy}}{{else}}the agent{{end}} suggests the group <span class="badge agent">agent-written</span></small><br>{{.Label}}</p>{{end}}
-  <div class="group-choice">
-    <label class="check"><input type="checkbox" name="group" value="yes"> Put these in group</label>
-    <input name="groupname" value="{{.GroupName}}" maxlength="64" placeholder="Group name" aria-label="Group name">
-    {{if .ExistingGroup}}<small>(an existing group)</small>{{else if .GroupName}}<small>(a new group)</small>{{end}}
-  </div>
-  <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
-  <label class="check"><input type="checkbox" name="exact" value="yes"> Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></label>
-  <button>{{if gt (len .Requests) 1}}Save all{{else}}Save{{end}}</button>
-</form>
-{{end}}
-</section>
-{{end}}
+{{if .NoAgents}}<p class="attn info">{{template "icon" "bot"}}<span>No agents yet. Set up an agent: one prompt to paste into it.</span><a href="/tokens/setup">Set up an agent {{template "icon" "chev"}}</a></p>{{end}}
+{{if .InboxCount}}<p class="attn warn">{{template "icon" "flag"}}<span><b>{{.InboxCount}} {{if eq .InboxCount 1}}thing needs{{else}}things need{{end}} you</b><span class="lng">{{with .InboxSummary}}: {{.}}{{end}}</span></span><a href="/inbox">Open inbox {{template "icon" "chev"}}</a></p>{{end}}
 
-<section>
-<h1>Add</h1>
-<form method="post" action="/secrets" class="card">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <fieldset class="kind">
-    <label class="check"><input type="radio" name="kind" value="secret" checked> <span><strong>Secret</strong> <small>an API key or password: hidden from agents, masked, every read logged</small></span></label>
-    <label class="check"><input type="radio" name="kind" value="variable"> <span><strong>Variable</strong> <small>not secret (a URL, a username, an ID): agents can print it</small></span></label>
-  </fieldset>
-  <div class="row">
-    <label>Namespace
-      <input name="namespace" list="namespaces" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" autocapitalize="off" autocorrect="off" spellcheck="false" value="{{.DefaultNS}}"></label>
-    <label>Name
-      <input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,63}" placeholder="CLOUDFLARE_API_TOKEN" autocapitalize="characters" autocorrect="off" spellcheck="false" class="envname"></label>
-  </div>
-  <datalist id="namespaces">{{range .Namespaces}}<option value="{{.}}">{{end}}</datalist>
-  {{template "valuefield"}}
-  <label>What is it for, and what should the agent do with it?
-    <textarea name="description" rows="3" placeholder="DNS edit token for example.com. Replace the old one in the Traefik stack."></textarea></label>
-  <label>How it's used <small>(optional)</small>
-    <input name="usage" placeholder="Authorization: Bearer {}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <label>Expires <small>(optional)</small>
-    <input type="date" name="expires"></label>
-  <label class="check"><input type="checkbox" name="overwrite" value="yes"> Replace it if it already exists</label>
-  <button>Save</button>
-</form>
-</section>
-
-<h1>Secrets</h1>
+{{range .Sections}}
+<h2 class="nsh">{{.Namespace}}</h2>
 {{range .Groups}}
-<section class="namespace">
-<h2>{{.Namespace}}</h2>
-{{range .Groups}}{{template "groupsection" .}}{{end}}
+<section class="group{{if .Color}} color-{{.Color}}{{end}}{{if .Auto}} auto{{end}}{{if .Ungrouped}} ungrouped{{end}}" data-color="{{.Color}}"{{if .Auto}} data-auto="true"{{end}}>
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b>{{if .Auto}}<span class="chip">auto</span>{{end}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}<span class="cnt count">{{.Count}}</span></h3>
+  {{range .Rows}}
+  <a class="erow entry-row" href="/secret/{{.Namespace}}/{{.Name}}">
+    <span class="k{{if not .Variable}} s{{end}}">{{if .Variable}}{{template "icon" "var"}}{{else}}{{template "icon" "lock"}}{{end}}</span>
+    <span class="nm">{{.Name}}</span>
+    {{if .Variable}}<code class="val value">{{.Value}}</code>{{else}}<span class="mask" aria-label="hidden">••••••••••</span>{{end}}
+    <span class="meta">
+      {{if .New}}<span class="st new">new</span>{{end}}
+      {{with .StatusOf}}<span class="st bad">{{.}}</span>{{end}}
+      {{with expiry .Expires}}<span class="st {{if .Class}}{{.Class}}{{else}}ok{{end}}">{{.Text}}</span>{{end}}
+      {{if not .Variable}}<span class="rd">{{if .LastReadAt}}read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}{{else}}never read{{end}}</span>{{end}}
+    </span>
+  </a>
+  {{end}}
 </section>
-{{else}}
-<p class="muted">No secrets yet.</p>
+{{end}}
 {{end}}
 
-<h1>Variables</h1>
-{{range .Vars}}
-<section class="namespace">
-<h2>{{.Namespace}}</h2>
-{{range .Groups}}{{template "groupsection" .}}{{end}}
-</section>
-{{else}}
-<p class="muted">No variables yet.</p>
-{{end}}
-{{end}}
-
-{{define "groupsection"}}
-<div class="group{{if .Color}} color-{{.Color}}{{end}}{{if .Auto}} auto{{end}}{{if .Ungrouped}} ungrouped{{end}}" data-color="{{.Color}}"{{if .Auto}} data-auto="true"{{end}}>
-<h3 class="group-header"><span class="group-name">{{.Name}}</span>{{if .Auto}} <span class="badge">auto</span>{{end}} <small class="count">{{.Count}}</small>{{if .Description}} <span class="desc">{{.Description}}</span>{{end}}</h3>
-<ul class="list">
-{{range .Rows}}
-  <li class="entry-row"><a href="/secret/{{.Namespace}}/{{.Name}}">
-    <strong>{{.Name}}</strong>
-    {{if .New}}<span class="badge new">new</span>{{end}}
-    {{with .StatusOf}}<span class="badge expired">{{.}}</span>{{end}}
-    {{with expiry .Expires}}<span class="badge {{.Class}}">{{.Text}}</span>{{end}}
-    {{if .Variable}}<code class="value">{{.Value}}</code>{{end}}
-    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
-    {{if not .Variable}}<small>read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}</small>{{end}}
-  </a></li>
-{{end}}
-</ul>
+{{if and (not .Sections) .Query}}
+<div class="card empty"><b class="t">Nothing matches "{{.Query}}"</b>Names, descriptions and groups are searched. <a href="/">Show everything</a></div>
+{{else if not .Sections}}
+<div class="card empty">
+  <b class="t">No secrets yet</b>
+  Add one with <b>New</b>, or let an agent ask: it runs <code>keydrop request NAME</code> and the request shows up in your <a href="/inbox">Inbox</a> for you to fill in.
+  <div class="actions"><a class="button" href="/new">{{template "icon" "plus"}}New secret</a><a class="button secondary" href="/tokens/setup">Set up an agent</a></div>
 </div>
+{{end}}
 {{end}}

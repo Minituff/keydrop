@@ -47,4 +47,10 @@
   <button>Change password</button>
 </form>
 <p class="muted">Every other browser gets logged out, and this one gets a new session. Agent tokens keep working: revoke any you don't trust under Agents.</p>
+
+<h2>Session</h2>
+<form method="post" action="/logout" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="secondary">{{template "icon" "out"}}Log out</button>
+</form>
 {{end}}

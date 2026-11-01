@@ -112,8 +112,8 @@ func TestBatchRequestAndFill(t *testing.T) {
 	if code, _, _ := h.api("POST", "/api/v1/requests/batch", tok, map[string]any{"names": many}); code != http.StatusBadRequest {
 		t.Fatalf("too many: %d", code)
 	}
-	_, dash := h.get("/")
-	for _, want := range []string{`id="batch-` + id + `"`, `class="card request batch-card"`, `name="value.EXAMPLE_API_KEY"`, `name="kind.EXAMPLE_URL"`, `class="paste-file"`, "Save all", `value="Router &lt;b&gt;"`, "agent-written"} {
+	_, dash := h.get("/inbox")
+	for _, want := range []string{`id="batch-` + id + `"`, `request batch-card`, `name="value.EXAMPLE_API_KEY"`, `name="kind.EXAMPLE_URL"`, `class="paste-file"`, "Save all", `value="Router &lt;b&gt;"`, "agent-written"} {
 		if !strings.Contains(dash, want) {
 			t.Fatalf("dashboard lacks %s", want)
 		}
@@ -224,7 +224,7 @@ func TestGroupPages(t *testing.T) {
 		h.st.PutValue("lab", n, []byte("value-"+n), nil)
 	}
 	_, dash := h.get("/")
-	if !strings.Contains(dash, `data-auto="true"`) || !strings.Contains(dash, `class="group-header"`) || !strings.Contains(dash, `class="entry-row"`) {
+	if !strings.Contains(dash, `data-auto="true"`) || !strings.Contains(dash, `group-header`) || !strings.Contains(dash, `entry-row`) {
 		t.Fatal("no auto group on the dashboard")
 	}
 	if code, _ := h.form("/groups", url.Values{"namespace": {"lab"}, "name": {"DNS"}, "color": {"teal"}}); code != http.StatusSeeOther {

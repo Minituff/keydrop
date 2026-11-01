@@ -80,7 +80,7 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup", "groups"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup", "groups", "new", "inbox"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
@@ -117,6 +117,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 	}
 	if se != nil {
 		data["CSRF"] = se.csrf
+		if _, ok := data["Nav"]; !ok {
+			data["Nav"] = navFor(r.URL.Path)
+		}
+		n, _ := s.inboxCounts()
+		data["InboxCount"] = n
 	}
 	if f, ok := flashes[r.URL.Query().Get("msg")]; ok {
 		data["Flash"] = f
@@ -363,33 +368,121 @@ type varRow struct {
 	Value string
 }
 
+// navFor names the sidebar entry a path belongs to.
+func navFor(path string) string {
+	switch {
+	case path == "/inbox":
+		return "inbox"
+	case strings.HasPrefix(path, "/groups"):
+		return "groups"
+	case strings.HasPrefix(path, "/tokens"), strings.HasPrefix(path, "/pair"):
+		return "agents"
+	case path == "/audit":
+		return "log"
+	case strings.HasPrefix(path, "/settings"):
+		return "settings"
+	}
+	return "secrets"
+}
+
+// inboxCounts is what waits for the admin: request cards plus keys with
+// open flags, notes or a proposal. summary says it in words.
+func (s *Server) inboxCounts() (n int, summary string) {
+	var pending []store.Secret
+	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool { return sec.Pending }) {
+		pending = append(pending, sec)
+	}
+	reqs, attn := len(s.requestCards(pending)), len(s.attention())
+	var parts []string
+	if reqs > 0 {
+		parts = append(parts, fmt.Sprintf("%d request%s", reqs, plural(reqs)))
+	}
+	if attn > 0 {
+		parts = append(parts, fmt.Sprintf("%d to review", attn))
+	}
+	return reqs + attn, strings.Join(parts, ", ")
+}
+
+// attention is NeedsAttention without the requests still waiting for a
+// value: their proposed description already shows on the request card.
+func (s *Server) attention() []store.Attention {
+	var out []store.Attention
+	for _, a := range s.store.NeedsAttention() {
+		if a.Pending && len(a.Flags) == 0 && len(a.Notes) == 0 {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	s.renderDashboard(w, r, se, http.StatusOK, "")
 }
 
+// matches reports whether a search query q (already lower case) is found
+// in an entry's name, namespace, description or group.
+func matches(q string, sec store.Secret, assign map[string]store.GroupRef) bool {
+	if q == "" {
+		return true
+	}
+	hay := strings.ToLower(sec.Namespace + " " + sec.Name + " " + sec.Description + " " + assign[sec.Ref()].Name)
+	return strings.Contains(hay, q)
+}
+
 func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
-	var pending, secrets, vars []store.Secret
-	for _, sec := range s.store.ListSecrets(nil) {
-		switch {
-		case sec.Pending:
-			pending = append(pending, sec)
-		case sec.Variable:
-			vars = append(vars, sec)
-		default:
-			secrets = append(secrets, sec)
-		}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(query) > 100 {
+		query = query[:100]
 	}
 	assign := s.store.GroupAssignments()
+	var entries []store.Secret
+	for _, sec := range s.store.ListSecrets(nil) {
+		if !sec.Pending && matches(strings.ToLower(query), sec, assign) {
+			entries = append(entries, sec)
+		}
+	}
+	_, summary := s.inboxCounts()
+	s.render(w, r, "dashboard", status, se, page{
+		"Title": "Secrets", "Query": query, "Error": errMsg,
+		"Sections":     s.arrange(entries, assign, true),
+		"NoAgents":     len(s.store.ListTokens()) == 0,
+		"InboxSummary": summary,
+	})
+}
+
+func (s *Server) handleNew(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.renderNew(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) renderNew(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
 	nss := s.store.Namespaces()
 	def := ""
 	if len(nss) == 1 {
 		def = nss[0]
 	}
-	s.render(w, r, "dashboard", status, se, page{
-		"Title": "Secrets", "Cards": s.requestCards(pending),
-		"Groups": s.arrange(secrets, assign, false), "Vars": s.arrange(vars, assign, true),
-		"Namespaces": nss, "DefaultNS": def, "Error": errMsg, "Attention": s.store.NeedsAttention(),
-		"NoAgents": len(s.store.ListTokens()) == 0,
+	s.render(w, r, "new", status, se, page{"Title": "New", "Nav": "secrets", "Namespaces": nss, "DefaultNS": def, "Error": errMsg})
+}
+
+func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.renderInbox(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) renderInbox(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
+	var pending []store.Secret
+	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool { return sec.Pending }) {
+		pending = append(pending, sec)
+	}
+	s.render(w, r, "inbox", status, se, page{
+		"Title": "Inbox", "Nav": "inbox", "Error": errMsg,
+		"Cards": s.requestCards(pending), "Attention": s.attention(),
 	})
 }
 
@@ -444,24 +537,24 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 	meta, err := formMeta(r)
 	switch {
 	case hint != "":
-		s.renderDashboard(w, r, se, http.StatusBadRequest, hint+" Nothing was saved.")
+		s.renderNew(w, r, se, http.StatusBadRequest, hint+" Nothing was saved.")
 		return
 	case err != nil:
-		s.renderDashboard(w, r, se, http.StatusBadRequest, err.Error())
+		s.renderNew(w, r, se, http.StatusBadRequest, err.Error())
 		return
 	case !store.ValidName(ns):
-		s.renderDashboard(w, r, se, http.StatusBadRequest, "Namespace: lowercase letters, digits, '.', '_' and '-' only.")
+		s.renderNew(w, r, se, http.StatusBadRequest, "Namespace: lowercase letters, digits, '.', '_' and '-' only.")
 		return
 	case !store.ValidSecretName(name):
-		s.renderDashboard(w, r, se, http.StatusBadRequest, "Name: like an environment variable, e.g. CLOUDFLARE_API_TOKEN (letters, digits and '_', not starting with a digit).")
+		s.renderNew(w, r, se, http.StatusBadRequest, "Name: like an environment variable, e.g. CLOUDFLARE_API_TOKEN (letters, digits and '_', not starting with a digit).")
 		return
 	case len(val) == 0:
-		s.renderDashboard(w, r, se, http.StatusBadRequest, "The value is empty.")
+		s.renderNew(w, r, se, http.StatusBadRequest, "The value is empty.")
 		return
 	}
 	old, exists := s.store.GetSecret(ns, name)
 	conflict := func() {
-		s.renderDashboard(w, r, se, http.StatusConflict, ns+"/"+name+" already exists. Tick \"Replace it\" or open it to replace the value.")
+		s.renderNew(w, r, se, http.StatusConflict, ns+"/"+name+" already exists. Tick \"Replace it\" or open it to replace the value.")
 	}
 	overwrite := r.PostFormValue("overwrite") == "yes"
 	if exists && old.HasValue() && !overwrite {
@@ -476,7 +569,7 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		conflict()
 		return
 	} else if err != nil {
-		s.renderDashboard(w, r, se, http.StatusInternalServerError, err.Error())
+		s.renderNew(w, r, se, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, "")

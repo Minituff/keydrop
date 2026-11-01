@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Log</h1>
-<table>
+<div class="card flush scroll"><table>
 <thead><tr><th>When</th><th>Who</th><th>What</th><th>Secret</th><th>From</th></tr></thead>
 <tbody>
 {{range .Events}}
@@ -9,5 +9,5 @@
 <tr><td colspan="5" class="muted">Nothing yet.</td></tr>
 {{end}}
 </tbody>
-</table>
+</table></div>
 {{end}}

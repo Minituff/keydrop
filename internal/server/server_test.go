@@ -146,7 +146,7 @@ func TestSetupLoginAndCSRF(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create: %d", resp.StatusCode)
 	}
-	for _, p := range []string{"/", "/secret/lab/CF", "/audit", "/tokens"} {
+	for _, p := range []string{"/inbox", "/secret/lab/CF", "/audit", "/tokens"} {
 		if _, body := h.get(p); strings.Contains(body, "the-real-value-42") {
 			t.Fatalf("value shown on %s", p)
 		}
@@ -345,7 +345,7 @@ func TestRequestFlow(t *testing.T) {
 	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "wedding", "name": "x"}); code != http.StatusForbidden {
 		t.Fatalf("request outside namespace: %d", code)
 	}
-	if _, body := h.get("/"); !strings.Contains(body, "Requested by agents") || !strings.Contains(body, "lab/GH_PAT") {
+	if _, body := h.get("/inbox"); !strings.Contains(body, "Requests") || !strings.Contains(body, "lab/GH_PAT") {
 		t.Fatal("request not on dashboard")
 	}
 	resp := h.post("/secret/lab/GH_PAT/value", url.Values{"csrf": {h.csrf()}, "value": {"ghp_filled_in"}})
@@ -553,8 +553,8 @@ func TestVariables(t *testing.T) {
 	if !strings.Contains(body, "https://api.example.test") || strings.Contains(body, "fake-secret-value-77") {
 		t.Fatal("dashboard: variable value missing or secret value shown")
 	}
-	if i, j := strings.Index(body, "<h1>Variables</h1>"), strings.Index(body, "https://api.example.test"); i < 0 || j < i {
-		t.Fatal("variable not under the Variables heading")
+	if !strings.Contains(body, ">https://api.example.test</code>") || !strings.Contains(body, `class="mask"`) {
+		t.Fatal("variable value or secret mask missing in the list")
 	}
 	if _, body := h.get("/secret/lab/API_URL"); !strings.Contains(body, "https://api.example.test") {
 		t.Fatal("variable page doesn't show the value")
@@ -1002,7 +1002,7 @@ func TestFlagTextAdminOnly(t *testing.T) {
 	if fl, _ := m["flags"].([]any); len(fl) != 1 || fl[0].(map[string]any)["by"] != "alice" {
 		t.Fatalf("flags: %v", m["flags"])
 	}
-	_, body := h.get("/")
+	_, body := h.get("/inbox")
 	if !strings.Contains(body, reason) || !strings.Contains(body, `href="https://example.com/ticket"`) {
 		t.Fatal("dashboard doesn't show the flag to the admin")
 	}
@@ -1015,7 +1015,7 @@ func TestFlagTextAdminOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("resolve: %d", resp.StatusCode)
 	}
-	if _, body := h.get("/"); strings.Contains(body, reason) {
+	if _, body := h.get("/inbox"); strings.Contains(body, reason) {
 		t.Fatal("resolved flag still on the dashboard")
 	}
 	// Without the CSRF token, nothing happens.
@@ -1036,7 +1036,7 @@ func TestAgentTextEscaped(t *testing.T) {
 	h.api("POST", "/api/v1/secrets/lab/CF/flag", alice, map[string]string{"reason": evil})
 	h.api("POST", "/api/v1/secrets/lab/CF/notes", alice, map[string]string{"text": evil})
 	h.api("POST", "/api/v1/requests", alice, map[string]string{"name": "REQ", "description": evil})
-	for _, p := range []string{"/", "/secret/lab/CF", "/secret/lab/REQ"} {
+	for _, p := range []string{"/inbox", "/secret/lab/CF", "/secret/lab/REQ"} {
 		if _, body := h.get(p); strings.Contains(body, evil) || !strings.Contains(body, "&lt;script&gt;") {
 			t.Fatalf("%s: agent text not escaped", p)
 		}
@@ -1204,7 +1204,7 @@ func TestRevokeClearsTokenState(t *testing.T) {
 	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/REQ", bot2, map[string]any{"value": "filled", "overwrite": true}); code != http.StatusForbidden {
 		t.Fatalf("new token filled the old token's request: %d", code)
 	}
-	_, body := h.get("/")
+	_, body := h.get("/inbox")
 	if !strings.Contains(body, "asked by an agent since revoked") {
 		t.Fatal("dashboard doesn't say the requester was revoked")
 	}

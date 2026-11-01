@@ -195,6 +195,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /logout", s.admin(s.handleLogout))
 
 	m.HandleFunc("GET /{$}", s.admin(s.handleDashboard))
+	m.HandleFunc("GET /new", s.admin(s.handleNew))
+	m.HandleFunc("GET /inbox", s.admin(s.handleInbox))
 	m.HandleFunc("POST /secrets", s.admin(s.handleCreateSecret))
 	m.HandleFunc("GET /secret/{ns}/{name}", s.admin(s.handleSecret))
 	m.HandleFunc("POST /secret/{ns}/{name}/value", s.admin(s.handleSetValue))

@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Groups</h1>
-<p class="muted">Groups sort entries on the Secrets page. Deleting a group never deletes its entries; they become ungrouped.{{if .AutoOn}} Entries not in a group are grouped by name (auto groups); turn that off in <a href="/settings">Settings</a>.{{else}} Auto groups are off; turn them on in <a href="/settings">Settings</a>.{{end}}</p>
+<p class="lead">Groups sort entries on the Secrets page. Deleting a group never deletes its entries; they become ungrouped.{{if .AutoOn}} Entries not in a group are grouped by name (auto groups); turn that off in <a href="/settings">Settings</a>.{{else}} Auto groups are off; turn them on in <a href="/settings">Settings</a>.{{end}}</p>
 
 <section>
 <h2>New group</h2>
@@ -22,10 +22,10 @@
 
 {{range .Sections}}
 <section class="namespace">
-<h2>{{.Namespace}}</h2>
+<h2 class="nsh">{{.Namespace}}</h2>
 {{range .Groups}}
-<div class="group color-{{.Color}}" data-color="{{.Color}}">
-  <h3 class="group-header"><span class="group-name">{{.Name}}</span> <small class="count">{{.Count}}</small></h3>
+<div class="group gcard color-{{.Color}}" data-color="{{.Color}}">
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b><span class="cnt count">{{.Count}}</span></h3>
   <form method="post" action="/groups/{{.Namespace}}/{{.Slug}}" class="card">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <label>Name <input name="name" required maxlength="64" value="{{.Name}}"></label>
@@ -41,8 +41,8 @@
 </div>
 {{end}}
 {{range .Auto}}
-<div class="group auto color-{{.Color}}" data-color="{{.Color}}" data-auto="true">
-  <h3 class="group-header"><span class="group-name">{{.Name}}</span> <span class="badge">auto</span> <small class="count">{{.Count}}</small></h3>
+<div class="group gcard auto color-{{.Color}}" data-color="{{.Color}}" data-auto="true">
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b><span class="chip">auto</span><span class="cnt count">{{.Count}}</span></h3>
   <form method="post" action="/groups/promote" class="inline">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <input type="hidden" name="namespace" value="{{.Namespace}}">

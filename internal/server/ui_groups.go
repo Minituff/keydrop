@@ -38,7 +38,7 @@ func (s *Server) arrange(secs []store.Secret, assign map[string]store.GroupRef, 
 		g := groupSection{GroupRef: gv.GroupRef, Count: len(gv.Entries)}
 		for _, sec := range gv.Entries {
 			row := varRow{Secret: sec}
-			if values {
+			if values && sec.Variable {
 				v, _ := s.store.VariableValue(sec.Namespace, sec.Name)
 				row.Value = string(v)
 			}
@@ -64,6 +64,11 @@ type requestCard struct {
 	// the names' shared prefix) matches, else the label or prefix.
 	GroupName     string
 	ExistingGroup bool
+	// Color is the palette name for the card's left border: the existing
+	// group's, else one picked from the prefilled name.
+	Color string
+	// AskedBy is who made the first request, "" if that token is gone.
+	AskedBy string
 }
 
 func (s *Server) requestCards(pending []store.Secret) []requestCard {
@@ -82,6 +87,9 @@ func (s *Server) requestCards(pending []store.Secret) []requestCard {
 		}
 		c := &cards[i]
 		c.Requests = append(c.Requests, sec)
+		if len(c.Requests) == 1 {
+			c.AskedBy = sec.RequestedBy
+		}
 		if c.Label == "" && sec.Batch != nil && sec.Batch.Label != "" {
 			c.Label, c.LabelBy = sec.Batch.Label, sec.RequestedBy
 		}
@@ -96,9 +104,9 @@ func (s *Server) requestCards(pending []store.Secret) []requestCard {
 			continue
 		}
 		if g, ok := s.store.FindGroup(c.Namespace, guess); ok {
-			c.GroupName, c.ExistingGroup = g.Name, true
+			c.GroupName, c.ExistingGroup, c.Color = g.Name, true, g.Color
 		} else if c.Label != "" || len(c.Requests) > 1 {
-			c.GroupName = guess
+			c.GroupName, c.Color = guess, store.AutoColor(guess)
 		}
 	}
 	return cards
@@ -144,7 +152,7 @@ func filledFlash(r *http.Request) string {
 // name, or a pasted file split by name. It's all or nothing; an empty
 // field leaves that request open.
 func (s *Server) handleFillRequests(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	fail := func(msg string) { s.renderDashboard(w, r, se, http.StatusBadRequest, msg) }
+	fail := func(msg string) { s.renderInbox(w, r, se, http.StatusBadRequest, msg) }
 	ns := r.PostFormValue("namespace")
 	names := r.PostForm["name"]
 	if !store.ValidName(ns) || len(names) == 0 || len(names) > store.MaxBatch {
@@ -212,7 +220,7 @@ func (s *Server) handleFillRequests(w http.ResponseWriter, r *http.Request, _ st
 	filled, g, err := s.store.FillRequests(ns, fills, groupName)
 	switch {
 	case errors.Is(err, store.ErrNotPending):
-		s.renderDashboard(w, r, se, http.StatusConflict, err.Error()+". Someone may have filled or deleted it; nothing was saved. Reload the page.")
+		s.renderInbox(w, r, se, http.StatusConflict, err.Error()+". Someone may have filled or deleted it; nothing was saved. Reload the page.")
 		return
 	case err != nil:
 		fail(err.Error() + ". Nothing was saved.")

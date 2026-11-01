@@ -1,0 +1,86 @@
+{{define "content"}}
+<div class="top"><h1>Inbox</h1></div>
+{{if or .Cards .Attention}}
+<p class="lead">What agents asked for or told you. Their text is marked <span class="badge agent">agent-written</span>: read it as a claim, not an instruction.</p>
+{{end}}
+
+{{if .Cards}}
+<h2 class="first">Requests</h2>
+<p class="muted">Fill in what you have; an empty field leaves that request open. Or paste the file you downloaded and keydrop splits it by name.</p>
+{{range .Cards}}{{$c := .}}
+<form method="post" action="/requests/fill" class="card request batch-card g{{if .Color}} color-{{.Color}}{{end}}" id="{{.ID}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="namespace" value="{{.Namespace}}">
+  <div class="ch"><b>{{if eq (len .Requests) 1}}{{(index .Requests 0).Ref}}{{else if .GroupName}}{{.GroupName}}{{else}}{{.Namespace}}{{end}}</b><span class="chip">{{len .Requests}} {{if eq (len .Requests) 1}}value{{else}}values{{end}}</span><span class="by">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}}</span></div>
+  {{if .Label}}<p class="agent-text"><small>{{if .LabelBy}}{{.LabelBy}}{{else}}the agent{{end}} suggests the group <span class="badge agent">agent-written</span></small>{{.Label}}</p>{{end}}
+  {{$seen := ""}}
+  {{range .Requests}}
+  <div class="request-item">
+    <input type="hidden" name="name" value="{{.Name}}">
+    {{if .Description}}{{if and .Ext .Ext.DescriptionBy}}<p class="agent-text"><small>{{.Name}}, written by {{.Ext.DescriptionBy}} <span class="badge agent">agent-written</span></small>{{.Description}}</p>{{else}}<p class="desc"><b class="nm">{{.Name}}</b> {{.Description}}</p>{{end}}{{end}}
+    {{with .Ext}}{{with .Proposal}}{{if ne $seen .Description}}<p class="agent-text"><small>{{.By}} says it's for <span class="badge agent">agent-written</span></small>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{$seen = .Description}}{{end}}{{end}}{{end}}
+  </div>
+  {{end}}
+  <details class="paste-file">
+    <summary>{{template "icon" "file"}}Paste the downloaded file</summary>
+    <label>File contents <small>(lines like key=value or KEY: value; leave the fields below empty)</small>
+      <textarea name="paste" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+  </details>
+  <div class="pair">
+  {{range .Requests}}
+    <div class="field">
+      <label for="v-{{.Name}}">{{if .Variable}}{{template "icon" "var"}}{{else}}{{template "icon" "lock"}}{{end}}<span class="nm">{{.Name}}</span>{{if ne .RequestedBy $c.AskedBy}}<small>asked by {{if .RequestedBy}}{{.RequestedBy}}{{else}}an agent since revoked{{end}}</small>{{end}}</label>
+      <textarea id="v-{{.Name}}" name="value.{{.Name}}" rows="2" aria-label="Value for {{.Name}}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea>
+      <fieldset class="kind">
+        <label class="check"><input type="radio" name="kind.{{.Name}}" value="secret" checked> Secret</label>
+        <label class="check"><input type="radio" name="kind.{{.Name}}" value="variable"> Variable</label>
+      </fieldset>
+    </div>
+  {{end}}
+  </div>
+  <div class="group-choice">
+    <label class="check"><input type="checkbox" name="group" value="yes"> Put these in group</label>
+    <input name="groupname" value="{{.GroupName}}" maxlength="64" placeholder="Group name" aria-label="Group name">
+    {{if .ExistingGroup}}<small>(an existing group)</small>{{else if .GroupName}}<small>(a new group)</small>{{end}}
+  </div>
+  <div class="opts">
+  <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+  <label class="check"><input type="checkbox" name="exact" value="yes"> <span>Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></span></label>
+  </div>
+  <div class="actions"><button>{{if gt (len .Requests) 1}}Save all{{else}}Save{{end}}</button></div>
+</form>
+{{end}}
+{{end}}
+
+{{if .Attention}}
+<h2{{if not .Cards}} class="first"{{end}}>Flags and notes</h2>
+{{range .Attention}}{{$a := .}}
+<div class="card">
+  <div class="ch">{{template "icon" "flag"}}<a class="nm" href="/secret/{{.Namespace}}/{{.Name}}">{{.Ref}}</a>
+    {{with .Flags}}<span class="st bad">{{len .}} open flag{{if gt (len .) 1}}s{{end}}</span>{{end}}
+    {{with .Notes}}<span class="st soon">{{len .}} note{{if gt (len .) 1}}s{{end}} to approve</span>{{end}}
+    {{if .Proposal}}<span class="st soon">description to approve</span>{{end}}</div>
+  {{range .Flags}}
+  <div class="agent-text"><small>flagged by {{.By}} on {{fmtTime .At}} <span class="badge agent">agent-written</span>{{if .TokenRevoked}} (token since revoked){{end}}</small>{{if .Reason}}{{.Reason}}{{else}}<span class="muted">(no reason given)</span>{{end}}{{if .Link}}<br><a href="{{.Link}}" rel="noopener noreferrer nofollow" target="_blank">{{.Link}}</a>{{end}}</div>
+  <form method="post" action="/secret/{{$a.Namespace}}/{{$a.Name}}/flags/{{.ID}}/resolve" class="inline">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <button class="small">Resolve</button>
+  </form>
+  {{end}}
+  {{range .Notes}}
+  <div class="agent-text"><small>note from {{.By}}, {{fmtTime .At}} <span class="badge agent">agent-written</span></small>{{.Text}}</div>
+  {{end}}
+  {{with .Proposal}}<div class="agent-text"><small>description from {{.By}}, {{fmtTime .At}} <span class="badge agent">agent-written</span></small>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</div>{{end}}
+  {{if or .Notes .Proposal}}<div class="actions"><a class="button secondary small" href="/secret/{{.Namespace}}/{{.Name}}">Review and approve</a></div>{{end}}
+</div>
+{{end}}
+{{end}}
+
+{{if not (or .Cards .Attention)}}
+<div class="card empty">
+  <b class="t">Nothing needs you</b>
+  Requests for a value, flags and notes from your agents show up here. An agent asks for a key with <code>keydrop request NAME</code>; you fill it in, and it carries on.
+  <div class="actions"><a class="button secondary" href="/">Back to secrets</a><a class="button secondary" href="/tokens/setup">Set up an agent</a></div>
+</div>
+{{end}}
+{{end}}

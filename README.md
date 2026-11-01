@@ -114,9 +114,9 @@ replacement for Vault or Infisical in a team.
     key's page; a status you set, agents can't change. `replaced-by` must
     name another key in the same namespace.
   - `keydrop flag NAME "reason" [--link URL]` puts the key on your
-    dashboard under **Waiting for you**. The reason and link are shown to
+    **Inbox**. The reason and link are shown to
     you only (and go into the audit log); agents see "flagged by X on
-    DATE". Resolving it takes it off the dashboard; it stays in the key's
+    DATE". Resolving it takes it out of the Inbox; it stays in the key's
     history.
   - `keydrop note NAME "text"` proposes a note and prints the link to
     approve it. Until you approve it (as written or edited) other agents see

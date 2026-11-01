@@ -556,7 +556,7 @@ func TestEndToEnd(t *testing.T) {
 				}
 			}
 		}
-		_, dash := web.get(t, "/")
+		_, dash := web.get(t, "/inbox")
 		if !strings.Contains(dash, "e2e-flag-reason") || !strings.Contains(dash, "https://example.com/issue/1") {
 			t.Fatal("the dashboard doesn't show the flag")
 		}
@@ -569,7 +569,7 @@ func TestEndToEnd(t *testing.T) {
 		if info := adder.ok(t, "", "info", "API_TOKEN"); strings.Contains(info.stdout, "flagged by") {
 			t.Fatalf("a resolved flag still shows: %q", info.stdout)
 		}
-		if _, dash := web.get(t, "/"); strings.Contains(dash, "e2e-flag-reason") {
+		if _, dash := web.get(t, "/inbox"); strings.Contains(dash, "e2e-flag-reason") {
 			t.Fatal("a resolved flag is still on the dashboard")
 		}
 		if _, page := web.get(t, "/secret/e2e/API_TOKEN"); !strings.Contains(page, "e2e-flag-reason") {
@@ -654,7 +654,7 @@ func TestEndToEnd(t *testing.T) {
 		if info := agent1.ok(t, "", "info", "TEMP_REQ"); strings.Contains(info.stdout, "awaiting approval") {
 			t.Fatalf("TEMP_REQ still has temp's proposal: %q", info.stdout)
 		}
-		if _, page := web.get(t, "/"); !strings.Contains(page, "asked by an agent since revoked") || strings.Contains(page, "e2e-temp-proposal") || strings.Contains(page, "e2e-temp-note") {
+		if _, page := web.get(t, "/inbox"); !strings.Contains(page, "asked by an agent since revoked") || strings.Contains(page, "e2e-temp-proposal") || strings.Contains(page, "e2e-temp-note") {
 			t.Fatal("the dashboard still shows temp's request or note as pending")
 		}
 
@@ -894,10 +894,10 @@ func testBatchAndGroups(t *testing.T) {
 	if !strings.Contains(r.stdout, "Requested 3 keys together") || !strings.Contains(r.stdout, "keydrop wait b/EXAMPLE_URL") {
 		t.Fatalf("batch request: %q", r.stdout)
 	}
-	_, dash := web.get(t, "/")
-	for _, want := range []string{`class="card request batch-card" id="batch-`, `name="value.EXAMPLE_API_SECRET"`, `class="paste-file"`, `name="groupname" value="Router"`, "agent-written", "Save all"} {
+	_, dash := web.get(t, "/inbox")
+	for _, want := range []string{`request batch-card`, `id="batch-`, `name="value.EXAMPLE_API_SECRET"`, `class="paste-file"`, `name="groupname" value="Router"`, "agent-written", "Save all"} {
 		if !strings.Contains(dash, want) {
-			t.Fatalf("the dashboard lacks %s", want)
+			t.Fatalf("the inbox lacks %s", want)
 		}
 	}
 	card := func(extra url.Values) url.Values {

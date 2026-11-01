@@ -306,7 +306,7 @@ every read logged, no way to just look). So an entry is either a
   requests (429).
 - **Batch requests:** `keydrop request A B C [--group LABEL]` asks for up
   to 10 keys in one namespace at once (`POST /api/v1/requests/batch`).
-  Each name gets its own request, linked by a batch id, so the dashboard
+  Each name gets its own request, linked by a batch id, so the Inbox
   shows them as one card with one "Save all" button. It's all or nothing:
   a name that's taken, or the open-request cap, refuses the whole batch.
   A batch of N counts as N against the write rate limit and the cap.
@@ -384,7 +384,7 @@ limited to what it needs:
   namespaces).
 - **Flags** are a message to the admin: a reason (≤500 characters) and an
   optional http(s) link (≤500). The text is shown to the admin only, on the
-  dashboard under **Waiting for you** until resolved, then in the key's
+  **Inbox** until resolved, then in the key's
   history, and is written into the audit log with the flag, so it
   survives the flag being resolved. Agents see "flagged by X on DATE", in
   `info` and `history` without the text. One open flag per token per key
