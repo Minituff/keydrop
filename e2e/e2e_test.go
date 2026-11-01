@@ -7,7 +7,7 @@
 //	go test -tags e2e ./e2e/...
 //
 // It builds the binary once, and for the upgrade and rollback tests the
-// releases at oldFormatCommit and rollbackCommit (needs git history;
+// releases at oldFormatCommit, rollbackCommit and v2RollbackCommit (needs git history;
 // skipped in a shallow clone).
 package e2e
 
@@ -33,6 +33,10 @@ const oldFormatCommit = "57fef22"
 // rollbackCommit is the release before history, flags, statuses, notes
 // and the add permission. It must still open what this one writes.
 const rollbackCommit = "038a737"
+
+// v2RollbackCommit is the release before groups and batch requests. It
+// checks mac2 over everything it parses, so it's a separate case.
+const v2RollbackCommit = "733cf9f"
 
 var (
 	binary   string // the keydrop under test, built by TestMain
@@ -708,6 +712,14 @@ func TestEndToEnd(t *testing.T) {
 	step("17 the previous release starts on data this one wrote", func(t *testing.T) {
 		testRollback(t)
 	})
+
+	step("18 a batch request, filled by pasting the downloaded file, and groups", func(t *testing.T) {
+		testBatchAndGroups(t)
+	})
+
+	step("19 the release before groups starts on grouped data, and this one opens what it wrote", func(t *testing.T) {
+		testRollbackV2(t)
+	})
 }
 
 var versionRE = regexp.MustCompile(`name="version" value="([0-9a-f]+)"`)
@@ -818,6 +830,7 @@ func testRollback(t *testing.T) {
 	g.ok(t, "", "flag", "KEPT", "e2e rollback flag")
 	g.ok(t, "", "status", "KEPT", "expired")
 	g.ok(t, "", "note", "KEPT", "e2e rollback note")
+	useGroups(t, web, g, "rb", "KEPT")
 	in.stop(t)
 
 	in.start(t, old)
@@ -852,5 +865,156 @@ func testRollback(t *testing.T) {
 	if info := g.ok(t, "", "info", "OLD_REQ"); !strings.Contains(info.stdout, "description from an agent is awaiting approval") || strings.Contains(info.stdout, "e2e-old-release-request-text") {
 		t.Fatalf("an old release's request text after the round trip: %q", info.stdout)
 	}
+	in.stop(t)
+}
+
+// useGroups puts every group field in the data: a group with key in it,
+// a batch request with a proposed label, and auto groups turned off.
+func useGroups(t *testing.T, web *admin, g *agent, ns, key string) {
+	t.Helper()
+	web.mustPost(t, "/groups", url.Values{"namespace": {ns}, "name": {"Kept group"}, "color": {"teal"}})
+	web.mustPost(t, "/secret/"+ns+"/"+key+"/group", url.Values{"group": {"kept-group"}})
+	g.ok(t, "", "request", "ASK_ONE", "ASK_TWO", "--group", "Proposed", "--desc", "e2e batch")
+	web.mustPost(t, "/settings/autogroups", url.Values{})
+	if s := g.ok(t, "", "secrets"); !strings.Contains(s.stdout, "["+ns+": Kept group]\n"+ns+"/"+key) {
+		t.Fatalf("grouped list: %q", s.stdout)
+	}
+}
+
+func testBatchAndGroups(t *testing.T) {
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createTokenPerm(t, "batcher", "b", "read"))
+	key, sec := fakeSecret(t), fakeSecret(t)
+
+	r := g.ok(t, "", "request", "EXAMPLE_API_KEY", "EXAMPLE_API_SECRET", "EXAMPLE_URL", "--group", "Router", "--desc", "router api pair")
+	if !strings.Contains(r.stdout, "Requested 3 keys together") || !strings.Contains(r.stdout, "keydrop wait b/EXAMPLE_URL") {
+		t.Fatalf("batch request: %q", r.stdout)
+	}
+	_, dash := web.get(t, "/")
+	for _, want := range []string{`class="card request batch-card" id="batch-`, `name="value.EXAMPLE_API_SECRET"`, `class="paste-file"`, `name="groupname" value="Router"`, "agent-written", "Save all"} {
+		if !strings.Contains(dash, want) {
+			t.Fatalf("the dashboard lacks %s", want)
+		}
+	}
+	card := func(extra url.Values) url.Values {
+		f := url.Values{"namespace": {"b"}, "name": {"EXAMPLE_API_KEY", "EXAMPLE_API_SECRET", "EXAMPLE_URL"}}
+		for k, v := range extra {
+			f[k] = v
+		}
+		return f
+	}
+	file := "# from the router\nkey=" + key + "\nsecret=\"" + sec + "\"\n"
+	refused := map[string]url.Values{
+		"a line that maps to nothing": card(url.Values{"paste": {file + "token=" + key + "\n"}}),
+		"the paste and a field":       card(url.Values{"paste": {file}, "value.EXAMPLE_URL": {"https://router.example"}}),
+		"a whole line in a field":     card(url.Values{"value.EXAMPLE_API_KEY": {"key=" + key}}),
+	}
+	for what, form := range refused {
+		code, body, _ := web.post(t, "/requests/fill", form)
+		if code != http.StatusBadRequest {
+			t.Fatalf("%s: %d", what, code)
+		}
+		noLeak(t, what, body, key, sec)
+	}
+	if s := g.ok(t, "", "secrets", "--pending"); strings.Count(s.stdout, "waiting for a value") != 3 {
+		t.Fatalf("a refused card saved something: %q", s.stdout)
+	}
+	loc := web.mustPost(t, "/requests/fill", card(url.Values{"paste": {file}, "group": {"yes"}, "groupname": {"Router"}}))
+	_, page := web.get(t, loc)
+	if !strings.Contains(page, "Saved EXAMPLE_API_KEY, EXAMPLE_API_SECRET.") {
+		t.Fatalf("flash after the paste: %q", loc)
+	}
+	noLeak(t, "the page after the paste", page, key, sec)
+	web.mustPost(t, "/requests/fill", url.Values{"namespace": {"b"}, "name": {"EXAMPLE_URL"}, "value.EXAMPLE_URL": {"https://router.example"}, "kind.EXAMPLE_URL": {"variable"}, "group": {"yes"}, "groupname": {"router"}})
+	if g.valueHash(t, "EXAMPLE_API_KEY") != sha(key) || g.valueHash(t, "EXAMPLE_API_SECRET") != sha(sec) {
+		t.Fatal("the pasted values weren't saved as sent")
+	}
+	if s := g.ok(t, "", "secrets"); !strings.Contains(s.stdout, "[b: Router]\nb/EXAMPLE_API_KEY\nb/EXAMPLE_API_SECRET") {
+		t.Fatalf("secrets: %q", s.stdout)
+	}
+	if v := g.ok(t, "", "vars"); !strings.Contains(v.stdout, "[b: Router]\nb/EXAMPLE_URL=https://router.example") {
+		t.Fatalf("vars: %q", v.stdout)
+	}
+	if i := g.ok(t, "", "info", "EXAMPLE_API_KEY"); !strings.Contains(i.stdout, "group: Router") {
+		t.Fatalf("info: %q", i.stdout)
+	}
+	// Auto groups, and the guard on the Add form.
+	web.addEntry(t, "b", "CF_TOKEN", fakeSecret(t), "secret", "")
+	web.addEntry(t, "b", "CF_ZONE", "zone-id", "variable", "")
+	web.addEntry(t, "b", "CF_ACCOUNT", "account-id", "variable", "")
+	if v := g.ok(t, "", "vars"); !strings.Contains(v.stdout, "[b: CF, auto]\nb/CF_ACCOUNT=account-id") || !strings.Contains(v.stdout, "\nb/CF_ZONE=zone-id") {
+		t.Fatalf("auto group: %q", v.stdout)
+	}
+	if code, body, _ := web.post(t, "/secrets", url.Values{"namespace": {"b"}, "name": {"PASTED"}, "value": {"EXAMPLE_API_KEY=" + key}, "kind": {"secret"}}); code != http.StatusBadRequest || !strings.Contains(body, "whole line") {
+		t.Fatalf("whole line on the Add form: %d", code)
+	}
+	main, _ := in.auditLines(t)
+	noLeak(t, "the audit log", main, key, sec)
+	for _, want := range []string{`"group.create"`, `"group.assign"`, `"group.propose"`} {
+		if !strings.Contains(main, want) {
+			t.Fatalf("the audit log lacks %s", want)
+		}
+	}
+	in.stop(t)
+}
+
+// testRollbackV2 writes data with every group field in use, starts the
+// release before groups on it, has that release rewrite it, and starts
+// this one again: the keys survive, the groups don't.
+func testRollbackV2(t *testing.T) {
+	old := buildOld(t, v2RollbackCommit)
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	secret := fakeSecret(t)
+	web.addEntry(t, "rb2", "KEPT", secret, "secret", "made by the admin")
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createTokenPerm(t, "rb2-agent", "rb2", "add"))
+	g.ok(t, "", "flag", "KEPT", "e2e v2 rollback flag")
+	useGroups(t, web, g, "rb2", "KEPT")
+	in.stop(t)
+
+	// That release starts on it and reads the keys and annotations.
+	in.start(t, old)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("the release before groups returns a different value")
+	}
+	if i := g.ok(t, "", "info", "KEPT"); !strings.Contains(i.stdout, "flagged by") {
+		t.Fatalf("the flag in the release before groups: %q", i.stdout)
+	}
+	if s := g.ok(t, "", "secrets", "--pending"); !strings.Contains(s.stdout, "rb2/ASK_ONE") {
+		t.Fatalf("the batch requests in the release before groups: %q", s.stdout)
+	}
+	// A change makes it rewrite the file without the group fields.
+	web = login(t, in)
+	web.addEntry(t, "rb2", "AFTER", "plain-setting", "variable", "")
+	in.stop(t)
+
+	in.start(t, binary)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("this release returns a different value after the old one rewrote the file")
+	}
+	s := g.ok(t, "", "secrets")
+	if strings.Contains(s.stdout, "Kept group") || !strings.Contains(s.stdout, "rb2/KEPT") || !strings.Contains(s.stdout, "rb2/ASK_TWO") {
+		t.Fatalf("secrets after the round trip: %q", s.stdout)
+	}
+	if v := g.ok(t, "", "vars"); !strings.Contains(v.stdout, "rb2/AFTER=plain-setting") {
+		t.Fatalf("vars after the round trip: %q", v.stdout)
+	}
+	if i := g.ok(t, "", "info", "KEPT"); !strings.Contains(i.stdout, "flagged by") {
+		t.Fatalf("the flag after the round trip: %q", i.stdout)
+	}
+	// Groups work again from scratch.
+	web = login(t, in)
+	if code, page := web.get(t, "/groups"); code != http.StatusOK || strings.Contains(page, "Kept group") {
+		t.Fatalf("groups after the round trip: %d", code)
+	}
+	web.mustPost(t, "/groups", url.Values{"namespace": {"rb2"}, "name": {"Kept group"}, "color": {"teal"}})
 	in.stop(t)
 }
