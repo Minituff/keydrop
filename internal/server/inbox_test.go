@@ -108,3 +108,25 @@ func TestNewPageAndSearch(t *testing.T) {
 		t.Fatal("no empty state")
 	}
 }
+
+// Pages link to the stylesheet by content version, so an upgrade reaches
+// browsers that cached the old one; only that exact URL is cached for long.
+func TestStylesheetVersioned(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	_, body := h.get("/")
+	link := `href="/static/style.css?v=` + cssVersion + `"`
+	if len(cssVersion) != 12 || !strings.Contains(body, link) {
+		t.Fatalf("page lacks %s", link)
+	}
+	for v, want := range map[string]string{cssVersion: "immutable", "old": "no-cache", "": "no-cache"} {
+		resp, err := h.web.Get(h.ts.URL + "/static/style.css?v=" + v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, want) || resp.StatusCode != http.StatusOK {
+			t.Fatalf("v=%q: %d %q, want %s", v, resp.StatusCode, cc, want)
+		}
+	}
+}

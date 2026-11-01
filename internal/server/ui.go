@@ -1,8 +1,10 @@
 package server
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -25,6 +27,7 @@ type expiryInfo struct{ Text, Class string }
 
 var funcs = template.FuncMap{
 	"join":     strings.Join,
+	"cssv":     func() string { return cssVersion },
 	"statuses": func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
 	"code":     displayCode,
 	"colorPick": func(palette []string, selected string) map[string]any {
@@ -139,10 +142,23 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request, status int, tit
 	s.render(w, r, "message", status, nil, page{"Title": title, "Message": msg})
 }
 
+// cssVersion changes whenever style.css does. Pages link to
+// /static/style.css?v=<it>, so a browser that cached the old file (phones
+// hold on to it through a reload) fetches the new one after an upgrade.
+var cssVersion = func() string {
+	b, _ := webFS.ReadFile("web/style.css")
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
+}()
+
 func (s *Server) handleCSS(w http.ResponseWriter, r *http.Request) {
 	b, _ := webFS.ReadFile("web/style.css")
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if r.URL.Query().Get("v") == cssVersion {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	w.Write(b)
 }
 

@@ -48,7 +48,7 @@ p{margin:.5em 0 .9em}
 .muted,small{color:var(--muted)}
 small{font-weight:400}
 code,pre,textarea.mono,.mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
-code{font-size:.92em}
+code{font-size:.92em;overflow-wrap:anywhere}
 .top{display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap}
 .top h1{margin:0;flex:1}
 .lead{color:var(--muted);margin:-4px 0 18px}
