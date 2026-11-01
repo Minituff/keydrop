@@ -34,6 +34,10 @@ type Whoami struct {
 	// Permission is read, add or write; empty from a server that predates
 	// it (then Write says which).
 	Permission string `json:"permission"`
+	// ExpiresAt is when the token expires; nil for never. ExpiryKnown is
+	// false from a server that predates token expiry.
+	ExpiresAt   *time.Time `json:"expires_at"`
+	ExpiryKnown bool       `json:"-"`
 }
 
 // Perm is the token's permission, from either field.
@@ -75,8 +79,17 @@ type Client struct {
 	// (KEYDROP_AGENT, e.g. "claude"). It only shows in the audit log.
 	Label string
 
-	pin string
-	who *Whoami
+	// TokenPath is the file the token was read from, where a renewed
+	// token is saved. Empty when it came from KEYDROP_TOKEN: then a renewed
+	// token can't be saved, so it isn't collected.
+	TokenPath string
+	// NoExpiryWarning turns off the "this token expires in N days" line.
+	NoExpiryWarning bool
+
+	pin        string
+	who        *Whoami
+	recovering bool
+	warnedExp  bool
 }
 
 // ConfigDir is ~/.config/keydrop (or $XDG_CONFIG_HOME/keydrop).
@@ -106,7 +119,7 @@ func FromEnv() (*Client, error) {
 	if u == "" {
 		return nil, errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
 	}
-	tok := os.Getenv("KEYDROP_TOKEN")
+	tok, tokenPath := os.Getenv("KEYDROP_TOKEN"), ""
 	if tok == "" {
 		path := os.Getenv("KEYDROP_TOKEN_FILE")
 		if path == "" {
@@ -124,12 +137,14 @@ func FromEnv() (*Client, error) {
 			return nil, err
 		}
 		tok = strings.TrimSpace(string(b))
+		tokenPath = path
 	}
 	pin := os.Getenv("KEYDROP_TLS_PIN")
 	if pin == "" {
 		pin = readConfigFile("pin")
 	}
 	c := New(u, tok, pin)
+	c.TokenPath = tokenPath
 	c.Label = os.Getenv("KEYDROP_AGENT")
 	return c, nil
 }
@@ -184,17 +199,40 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
 }
 
+// do sends one API call. On a 401 it checks whether the token was renewed
+// (by the admin, or after `keydrop renew`) and if so collects the new
+// token, saves it and repeats the call; otherwise it says whether the
+// token expired.
 func (c *Client) do(method, path string, body, out any) error {
+	var b []byte
+	if body != nil {
+		var err error
+		if b, err = json.Marshal(body); err != nil {
+			return err
+		}
+	}
+	err := c.send(method, path, b, out)
+	var ae *APIError
+	if c.Token == "" || c.recovering || !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
+		return err
+	}
+	retry, rerr := c.recover401()
+	if rerr != nil {
+		return rerr
+	}
+	if !retry {
+		return err
+	}
+	return c.send(method, path, b, out)
+}
+
+func (c *Client) send(method, path string, body []byte, out any) error {
 	if c.pin != "" && !strings.HasPrefix(strings.ToLower(c.URL), "https://") {
 		return ErrPinNeedsHTTPS
 	}
 	var rd io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rd = bytes.NewReader(b)
+		rd = bytes.NewReader(body)
 	}
 	req, err := http.NewRequest(method, c.URL+path, rd)
 	if err != nil {
@@ -215,6 +253,7 @@ func (c *Client) do(method, path string, body, out any) error {
 	}
 	defer resp.Body.Close()
 	checkVersion(resp.Header.Get("X-Keydrop-Version"))
+	c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
@@ -234,9 +273,17 @@ func (c *Client) Whoami() (*Whoami, error) {
 	if c.who != nil {
 		return c.who, nil
 	}
-	var w Whoami
-	if err := c.do("GET", "/api/v1/whoami", nil, &w); err != nil {
+	var raw json.RawMessage
+	if err := c.do("GET", "/api/v1/whoami", nil, &raw); err != nil {
 		return nil, err
+	}
+	var w Whoami
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil, err
+	}
+	if json.Unmarshal(raw, &fields) == nil {
+		_, w.ExpiryKnown = fields["expires_at"]
 	}
 	c.who = &w
 	return &w, nil

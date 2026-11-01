@@ -11,6 +11,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -61,6 +62,14 @@ const (
 	// run by the operator, upgrades one.
 	keyCheckV1  = "keydrop-key-check"
 	keyCheckMAC = "keydrop-key-check:v2"
+	// keyCheckV4 says MAC4 is required too. The fields under MAC4 (token
+	// expiry, rotations, canaries) restrict access, so a file with them
+	// deleted must not load as one that never had them: once any is
+	// written the key check says so, and only `keydrop downgrade-data`
+	// (DowngradeV4) takes it back, dropping them knowingly. The release
+	// before MAC4 doesn't know this key check, so it refuses the file
+	// until that's run.
+	keyCheckV4 = "keydrop-key-check:v4"
 	// TokenPrefix makes leaked tokens easy to recognise and grep for.
 	TokenPrefix = "kd_"
 )
@@ -118,6 +127,11 @@ type Secret struct {
 	// for with it.
 	Group string        `json:"group,omitempty"`
 	Batch *RequestBatch `json:"batch,omitempty"`
+	// Canary marks a secret whose value is a decoy: any agent reading it
+	// raises an alert. Admin-only; nothing an agent sees shows it. It
+	// came after Group and is outside v3View (see there). Only secrets
+	// can be canaries: it's cleared when the entry becomes a variable.
+	Canary bool `json:"canary,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -173,6 +187,19 @@ type Token struct {
 	// only of keys this token created. Write wins if both are set. An
 	// older release ignores the field, so to it an add token is read-only.
 	Add bool `json:"add,omitempty"`
+	// ExpiresAt is when the token stops working; nil is never. It's
+	// outside v3View, so the release before it (which ignores it) still
+	// opens the file, and on a rollback the token just stops expiring.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Lifetime is the lifetime in days the token was last given (0: never
+	// expires, or made before lifetimes), offered again on renewal.
+	Lifetime int `json:"lifetime_days,omitempty"`
+	// Renewal is the agent's own pending request to extend the token.
+	// Like ExpiresAt and Lifetime it's outside v3View.
+	Renewal *RenewalRequest `json:"renewal,omitempty"`
+	// Rotation is an approved renewal the agent hasn't collected yet (see
+	// RotateToken). Outside v3View too.
+	Rotation *Rotation `json:"rotation,omitempty"`
 	// Label is the optional agent label a request carried (Claude, Codex
 	// sharing one token). Never stored; it only goes into the audit log.
 	Label string `json:"-"`
@@ -277,6 +304,11 @@ type state struct {
 	Groups   map[string]*Group `json:"groups,omitempty"`
 	Settings *Settings         `json:"settings,omitempty"`
 	MAC3     []byte            `json:"mac3,omitempty"`
+	// Canary (the canary settings and unseen reads), each secret's Canary
+	// flag and each token's ExpiresAt, Lifetime, Renewal and Rotation came in the release after MAC3, and
+	// MAC4 covers them; see v3View.
+	Canary *CanaryState `json:"canary,omitempty"`
+	MAC4   []byte       `json:"mac4,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -288,11 +320,8 @@ func (st *state) legacyView() state {
 	for _, v := range c.Secrets {
 		v.Ext = nil // a copy, made by v2View
 	}
-	c.Tokens = make(map[string]*Token, len(st.Tokens))
-	for k, v := range st.Tokens {
-		cp := *v
-		cp.Add = false
-		c.Tokens[k] = &cp
+	for _, v := range c.Tokens {
+		v.Add = false // a copy, made by v3View
 	}
 	return c
 }
@@ -303,15 +332,54 @@ func (st *state) legacyView() state {
 // marshals for its MAC2, so it still verifies a file this one wrote.
 // Pointers inside (Ext) are shared with st: don't write through them.
 func (st *state) v2View() state {
+	c := st.v3View()
+	c.Groups, c.Settings = nil, nil
+	for _, v := range c.Secrets {
+		v.Group, v.Batch = "", nil // a copy, made by v3View
+	}
+	return c
+}
+
+// v3View is the state as the release with MAC3 (and without canaries and
+// token expiry) sees it: the canary state, each secret's Canary flag,
+// each token's ExpiresAt, Lifetime, Renewal and Rotation, and MAC4 dropped, the MACs empty. Marshalled,
+// it's byte-for-byte what that release marshals for its MAC3, so it still
+// verifies a file this one wrote. The maps are copies; pointers inside
+// them are shared with st: don't write through them.
+func (st *state) v3View() state {
 	c := *st
-	c.MAC, c.MAC2, c.MAC3, c.Groups, c.Settings = nil, nil, nil, nil, nil
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.Canary = nil, nil, nil, nil, nil
 	c.Secrets = make(map[string]*Secret, len(st.Secrets))
 	for k, v := range st.Secrets {
 		cp := *v
-		cp.Group, cp.Batch = "", nil
+		cp.Canary = false
 		c.Secrets[k] = &cp
 	}
+	c.Tokens = make(map[string]*Token, len(st.Tokens))
+	for k, v := range st.Tokens {
+		cp := *v
+		cp.ExpiresAt, cp.Lifetime, cp.Renewal, cp.Rotation = nil, 0, nil, nil
+		c.Tokens[k] = &cp
+	}
 	return c
+}
+
+// hasNewer4 reports whether any field outside v3View is set.
+func (st *state) hasNewer4() bool {
+	if st.Canary != nil {
+		return true
+	}
+	for _, v := range st.Secrets {
+		if v.Canary {
+			return true
+		}
+	}
+	for _, v := range st.Tokens {
+		if v.ExpiresAt != nil || v.Lifetime != 0 || v.Renewal != nil || v.Rotation != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNewer3 reports whether any field outside v2View is set.
@@ -384,9 +452,14 @@ type Store struct {
 	// mac2Key keys MAC2, mac3Key MAC3, each independent of the others.
 	mac2Key []byte
 	mac3Key []byte
+	mac4Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
+	// v4: the key check says MAC4 is required (keyCheckV4), whatever the
+	// file holds. Set the first time a MAC4 field is written; only
+	// DowngradeV4 clears it.
+	v4 bool
 }
 
 // ParseKey accepts a 32-byte master key as base64 (standard or URL) or hex.
@@ -526,6 +599,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s.macKey = s.DeriveKey("state mac")
 	s.mac2Key = s.DeriveKey("state mac v2")
 	s.mac3Key = s.DeriveKey("state mac v3")
+	s.mac4Key = s.DeriveKey("state mac v4")
 	return s, nil
 }
 
@@ -536,10 +610,11 @@ func (s *Store) load(data []byte) error {
 		return fmt.Errorf("reading %s: %w", s.path, err)
 	}
 	pt, err := s.open(s.st.KeyCheck, "keycheck")
-	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC) {
+	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC && string(pt) != keyCheckV4) {
 		return errors.New("master key does not match this data directory")
 	}
 	s.legacy = string(pt) == keyCheckV1
+	s.v4 = string(pt) == keyCheckV4
 	if !s.legacy {
 		if !hmac.Equal(s.st.MAC, s.mac()) {
 			return ErrIntegrity
@@ -551,6 +626,10 @@ func (s *Store) load(data []byte) error {
 		}
 		// The same again for the fields after MAC2, under MAC3.
 		if (s.st.hasNewer3() || s.st.MAC3 != nil) && !hmac.Equal(s.st.MAC3, s.mac3()) {
+			return ErrIntegrity
+		}
+		// And for the fields after MAC3, under MAC4.
+		if (s.v4 || s.st.hasNewer4() || s.st.MAC4 != nil) && !hmac.Equal(s.st.MAC4, s.mac4()) {
 			return ErrIntegrity
 		}
 	}
@@ -603,11 +682,17 @@ func (s *Store) mac2() []byte {
 	return macOf(s.mac2Key, &c)
 }
 
-// mac3 is the HMAC of the whole state with the MAC fields empty.
+// mac3 is the HMAC of v3View: everything the release with MAC3 knows.
 func (s *Store) mac3() []byte {
-	c := s.st
-	c.MAC, c.MAC2, c.MAC3 = nil, nil, nil
+	c := s.st.v3View()
 	return macOf(s.mac3Key, &c)
+}
+
+// mac4 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac4() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4 = nil, nil, nil, nil
+	return macOf(s.mac4Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -630,6 +715,9 @@ func (s *Store) Downgrade() (bool, error) {
 	defer s.mu.Unlock()
 	if s.legacy {
 		return false, nil
+	}
+	if s.v4 {
+		return false, errors.New("downgrade the token expiry and canary fields first (DowngradeV4)")
 	}
 	snap := s.st.clone()
 	s.st.KeyCheck = s.seal([]byte(keyCheckV1), "keycheck")
@@ -687,12 +775,31 @@ func (s *Store) commit(snap state) error {
 }
 
 func (s *Store) save() error {
-	s.st.MAC, s.st.MAC2, s.st.MAC3 = s.mac(), nil, nil
+	if !s.legacy && !s.v4 && s.st.hasNewer4() {
+		// From now on MAC4 is required (see keyCheckV4). s.v4 is set only
+		// once that's on disk: a failed save restores the old key check.
+		old := s.st.KeyCheck
+		s.st.KeyCheck = s.seal([]byte(keyCheckV4), "keycheck")
+		if err := s.write(true); err != nil {
+			s.st.KeyCheck = old
+			return err
+		}
+		s.v4 = true
+		return nil
+	}
+	return s.write(s.v4)
+}
+
+func (s *Store) write(v4 bool) error {
+	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4 = s.mac(), nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
 	}
 	if s.st.hasNewer3() {
 		s.st.MAC3 = s.mac3()
+	}
+	if v4 || s.st.hasNewer4() {
+		s.st.MAC4 = s.mac4()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
@@ -889,12 +996,15 @@ type AgentPut struct {
 	Description *string // nil: leave as is
 	Usage       *string
 	Expires     **time.Time // nil: leave as is
+	IP          string      // where the agent is, for a canary's log
 }
 
 // PutResult says what an agent's put replaced.
 type PutResult struct {
 	Existed     bool // there was a value before
 	WasVariable bool // ...and it was a variable
+	// Canary: the key is a canary, and this write was logged as a touch.
+	Canary *CanaryTouch
 }
 
 // AgentPut stores a value for an agent token. Everything is checked under
@@ -1014,6 +1124,15 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 		}
 		sec.setExt(e)
 	}
+	if ap == nil {
+		sec.dropCanaryIfVariable()
+	} else if sec.Canary {
+		// An agent can't tell a canary, so it can't unmark one either: a
+		// kind change by an agent leaves the flag, and the write is a
+		// touch like a read.
+		h := s.touchCanary(sec, ap.Token.Name, ap.IP, "write", now)
+		res.Canary = &h
+	}
 	action := "created"
 	if res.Existed {
 		action = "replaced"
@@ -1043,6 +1162,15 @@ func sameText(a, b string) bool {
 
 func applyMeta(sec *Secret, m Meta) {
 	sec.Description, sec.Usage, sec.Expires, sec.Variable = m.Description, m.Usage, m.Expires, m.Variable
+	sec.dropCanaryIfVariable()
+}
+
+// dropCanaryIfVariable clears the canary flag on a variable: only secrets
+// can be canaries (a variable's reads aren't even recorded).
+func (sec *Secret) dropCanaryIfVariable() {
+	if sec.Variable {
+		sec.Canary = false
+	}
 }
 
 // UpdateMeta changes description, usage and expiry without touching the
@@ -1160,6 +1288,7 @@ func (s *Store) Rollback(ns, name string) error {
 	}
 	sec.Value, sec.Previous = old, cur
 	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
+	sec.dropCanaryIfVariable()
 	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, s.now().UTC()
 	s.record(Event{Namespace: ns, Name: name, Action: "rolled back", Actor: "admin", Detail: sec.Kind()})
 	return s.commit(snap)
@@ -1173,27 +1302,34 @@ func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err er
 	return s.reveal(ns, name, by, "")
 }
 
-// AgentReveal is Reveal for the token named tok. It also marks the value
-// as picked up by that token: no longer new to it, and no longer "new"
-// on the admin's page.
-func (s *Store) AgentReveal(ns, name, tok string) (value []byte, variable bool, err error) {
-	return s.reveal(ns, name, tok, tok)
+// AgentReveal is Reveal for the token named tok, using it from ip. It also
+// marks the value as picked up by that token: no longer new to it, and no
+// longer "new" on the admin's page. Reading a canary records the read
+// (hit is set) in the same write as any other read, so it takes as long,
+// and returns the value as usual.
+func (s *Store) AgentReveal(ns, name, tok, ip string) (value []byte, variable bool, hit *CanaryTouch, err error) {
+	return s.revealHit(ns, name, tok, tok, ip)
 }
 
 func (s *Store) reveal(ns, name, by, tok string) (value []byte, variable bool, err error) {
+	value, variable, _, err = s.revealHit(ns, name, by, tok, "")
+	return value, variable, err
+}
+
+func (s *Store) revealHit(ns, name, by, tok, ip string) (value []byte, variable bool, hit *CanaryTouch, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
-		return nil, false, ErrNotFound
+		return nil, false, nil, ErrNotFound
 	}
 	if len(sec.Value) == 0 {
-		return nil, sec.Variable, ErrNoValue
+		return nil, sec.Variable, nil, ErrNoValue
 	}
 	pt, err := s.open(sec.Value, aad(ns, name, "value"))
 	if err != nil {
-		return nil, false, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
+		return nil, false, nil, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
 	}
 	changed := false
 	if tok != "" && (sec.New || !slices.Contains(sec.AckedBy, tok)) {
@@ -1203,17 +1339,23 @@ func (s *Store) reveal(ns, name, by, tok string) (value []byte, variable bool, e
 		}
 		changed = true
 	}
+	now := s.now().UTC()
 	if !sec.Variable {
-		now := s.now().UTC()
 		sec.LastReadAt, sec.LastReadBy = &now, by
+		changed = true
+	}
+	// A canary an agent made a variable is still a canary (see putLocked).
+	if sec.Canary && tok != "" {
+		h := s.touchCanary(sec, tok, ip, "read", now)
+		hit = &h
 		changed = true
 	}
 	if changed {
 		if err := s.commit(snap); err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 	}
-	return pt, sec.Variable, nil
+	return pt, sec.Variable, hit, nil
 }
 
 // VariableValue decrypts a variable's value. It refuses secrets, so code
@@ -1326,13 +1468,16 @@ func hashToken(tok string) string {
 // sources limits where it can be used from (see ParseSources); nil is
 // anywhere.
 func (s *Store) CreateToken(name string, namespaces []string, perm Permission, sources []string) (string, error) {
-	return s.createToken(name, namespaces, perm, sources, nil)
+	return s.createToken(name, namespaces, perm, sources, nil, 0)
 }
 
-// CreatePairedToken is CreateToken for pairing: unless Collected is called
-// with the token by collectBy, RevokeUncollected deletes it.
-func (s *Store) CreatePairedToken(name string, namespaces []string, perm Permission, sources []string, collectBy time.Time) (string, error) {
-	return s.createToken(name, namespaces, perm, sources, &collectBy)
+// CreatePairedToken is CreateTokenExpiring for pairing: unless Collected
+// is called with the token by collectBy, RevokeUncollected deletes it.
+func (s *Store) CreatePairedToken(name string, namespaces []string, perm Permission, sources []string, collectBy time.Time, days int) (string, error) {
+	if err := CheckLifetime(days); err != nil {
+		return "", err
+	}
+	return s.createToken(name, namespaces, perm, sources, &collectBy, days)
 }
 
 // CheckToken validates a token's settings without creating it, so a caller
@@ -1354,7 +1499,7 @@ func CheckToken(name string, namespaces []string, sources []string) error {
 	return nil
 }
 
-func (s *Store) createToken(name string, namespaces []string, perm Permission, sources []string, collectBy *time.Time) (string, error) {
+func (s *Store) createToken(name string, namespaces []string, perm Permission, sources []string, collectBy *time.Time, days int) (string, error) {
 	if err := CheckToken(name, namespaces, sources); err != nil {
 		return "", err
 	}
@@ -1376,6 +1521,8 @@ func (s *Store) createToken(name string, namespaces []string, perm Permission, s
 		Name: name, Hash: hashToken(plain), Namespaces: namespaces,
 		Write: perm == PermWrite, Add: perm == PermAdd, Sources: sources, CreatedAt: s.now().UTC(), CollectBy: collectBy,
 	}
+	t := s.st.Tokens[name]
+	t.ExpiresAt, t.Lifetime = expiryFor(days, t.CreatedAt), days
 	return plain, s.commit(snap)
 }
 
@@ -1437,28 +1584,81 @@ func (s *Store) RevokeToken(name string) error {
 // LookupToken finds the token matching plain, checks it may be used from
 // ip, and records its use. Use from a disallowed address returns the token
 // (so it can be named in the log) with ErrSource, and isn't recorded as
-// use. Last-used is persisted at most once a minute, to avoid a disk write
-// per request.
+// use. An expired token returns the token with ErrExpired, isn't recorded
+// as use either, and must be refused exactly like an unknown one. Last-used
+// is persisted at most once a minute, to avoid a disk write per request.
 func (s *Store) LookupToken(plain, ip string) (Token, error) {
+	return s.lookupToken(plain, ip, false)
+}
+
+// LookupTokenForRenewal is LookupToken for the renewal endpoints only: it
+// also accepts a token that expired less than RenewalGrace ago (Expired
+// reports it), so the agent can ask for the token to be extended, and a
+// token whose renewal was approved (Rotation set), until its collect
+// window ends, so the agent can collect its replacement. Sources are
+// still checked. Never use it for anything else.
+func (s *Store) LookupTokenForRenewal(plain, ip string) (Token, error) {
+	return s.lookupToken(plain, ip, true)
+}
+
+func (s *Store) lookupToken(plain, ip string, renewal bool) (Token, error) {
 	if !strings.HasPrefix(plain, TokenPrefix) {
 		return Token{}, ErrNotFound
 	}
 	h := hashToken(plain)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	for _, t := range s.st.Tokens {
-		if t.Hash == h {
-			if !t.AllowsFrom(ip) {
-				return *t, ErrSource
-			}
-			now := s.now().UTC()
-			t.LastUsedFrom = ip
-			if t.LastUsedAt == nil || now.Sub(*t.LastUsedAt) > time.Minute {
-				t.LastUsedAt = &now
-				_ = s.save()
-			}
-			return *t, nil
+		if t.Hash != h {
+			continue
 		}
+		expired := t.Expired(now)
+		if expired && (!renewal || !now.Before(t.ExpiresAt.Add(RenewalGrace))) {
+			return *t, ErrExpired
+		}
+		if !t.AllowsFrom(ip) {
+			return *t, ErrSource
+		}
+		if expired {
+			return *t, nil // in the grace window: not use, not recorded
+		}
+		at := now.UTC()
+		t.LastUsedFrom = ip
+		save := false
+		if t.Rotation != nil {
+			// The renewed token's first use: the old one, and the sealed
+			// copy kept for collecting it again, are no longer needed.
+			snap := s.st.clone()
+			t.Rotation = nil
+			t.LastUsedAt = &at
+			if err := s.commit(snap); err != nil {
+				return Token{}, err
+			}
+		} else if t.LastUsedAt == nil || at.Sub(*t.LastUsedAt) > time.Minute {
+			t.LastUsedAt = &at
+			save = true
+		}
+		if save {
+			_ = s.save()
+		}
+		return *t, nil
+	}
+	// An old token replaced by a renewal: it may only collect the new one,
+	// from an allowed address, until the window closes.
+	for _, t := range s.st.Tokens {
+		if t.Rotation == nil || subtle.ConstantTimeCompare([]byte(t.Rotation.OldHash), []byte(h)) != 1 {
+			continue
+		}
+		switch {
+		case !now.Before(t.Rotation.CollectBy):
+			return *t, ErrExpired
+		case !renewal:
+			return *t, ErrRotated
+		case !t.AllowsFrom(ip):
+			return *t, ErrSource
+		}
+		return *t, nil // Rotation set: authenticated as the old token
 	}
 	return Token{}, ErrNotFound
 }

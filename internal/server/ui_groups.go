@@ -252,6 +252,11 @@ func (s *Server) handleFillRequests(w http.ResponseWriter, r *http.Request, _ st
 		s.event(r, "admin", "secret.set", ref, detail)
 		saved = append(saved, f.Name)
 	}
+	refs := make([]string, len(saved))
+	for i, n := range saved {
+		refs[i] = ns + "/" + n
+	}
+	s.noteDups(se, refs...)
 	q := url.Values{"msg": {"filled"}, "n": {strings.Join(saved, ",")}}
 	if g != nil {
 		if !existed {

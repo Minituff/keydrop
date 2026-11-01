@@ -359,31 +359,75 @@ func ParseStatus(value, replacedBy string) (*Status, error) {
 
 // annotate runs f on a copy of the key's Ext under the lock and stores it.
 func (s *Store) annotate(ns, name string, f func(sec *Secret, e *SecretExt, now time.Time) error) error {
+	_, err := s.annotateBy(ns, name, nil, f)
+	return err
+}
+
+// AgentCtx says which token is acting, and from where, so a canary it
+// touches is logged in the same write.
+type AgentCtx struct {
+	Token, IP string
+}
+
+// annotateBy is annotate for an agent (by set): touching a canary is
+// recorded, as action, in the same write.
+func (s *Store) annotateBy(ns, name string, by *agentTouch, f func(sec *Secret, e *SecretExt, now time.Time) error) (*CanaryTouch, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := s.st.clone()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	e := sec.ext()
-	if err := f(sec, &e, s.now().UTC()); err != nil {
+	now := s.now().UTC()
+	if err := f(sec, &e, now); err != nil {
 		s.st = snap
-		return err
+		return nil, err
 	}
 	sec.setExt(e)
-	return s.commit(snap)
+	var hit *CanaryTouch
+	if by != nil && sec.Canary {
+		h := s.touchCanary(sec, by.Token, by.IP, by.action, now)
+		hit = &h
+	}
+	return hit, s.commit(snap)
+}
+
+type agentTouch struct {
+	AgentCtx
+	action string
+}
+
+// AgentSetStatus is SetStatus by the token in a.
+func (s *Store) AgentSetStatus(ns, name, value, replacedBy string, a AgentCtx) (*CanaryTouch, error) {
+	return s.setStatus(ns, name, value, replacedBy, "token:"+a.Token, &agentTouch{a, "status"})
+}
+
+// AgentAddFlag is AddFlag by the token in a.
+func (s *Store) AgentAddFlag(ns, name, reason, link string, a AgentCtx) (*CanaryTouch, error) {
+	return s.addFlag(ns, name, a.Token, reason, link, &agentTouch{a, "flag"})
+}
+
+// AgentProposeNote is ProposeNote by the token in a.
+func (s *Store) AgentProposeNote(ns, name, text string, a AgentCtx) (*CanaryTouch, error) {
+	return s.proposeNote(ns, name, a.Token, text, &agentTouch{a, "note"})
 }
 
 // SetStatus sets a key's status (value "ok" clears it). actor is "admin"
 // or "token:NAME". A token can't change or clear a status the admin set,
 // and its replaced-by must name a key in the same namespace.
 func (s *Store) SetStatus(ns, name, value, replacedBy, actor string) error {
+	_, err := s.setStatus(ns, name, value, replacedBy, actor, nil)
+	return err
+}
+
+func (s *Store) setStatus(ns, name, value, replacedBy, actor string, by *agentTouch) (*CanaryTouch, error) {
 	st, err := ParseStatus(value, replacedBy)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
+	return s.annotateBy(ns, name, by, func(sec *Secret, e *SecretExt, now time.Time) error {
 		if actor != "admin" && e.Status != nil && e.Status.By == "admin" {
 			return ErrAdminStatus
 		}
@@ -409,15 +453,20 @@ func (s *Store) SetStatus(ns, name, value, replacedBy, actor string) error {
 // per key, and maxFlagsPerToken in all. Flags left by a revoked token of
 // the same name don't count.
 func (s *Store) AddFlag(ns, name, by, reason, link string) error {
+	_, err := s.addFlag(ns, name, by, reason, link, nil)
+	return err
+}
+
+func (s *Store) addFlag(ns, name, by, reason, link string, a *agentTouch) (*CanaryTouch, error) {
 	reason = strings.TrimSpace(reason)
 	link = strings.TrimSpace(link)
 	if err := checkText(reason, MaxReason, false); err != nil {
-		return err
+		return nil, err
 	}
 	if err := CheckLink(link); err != nil {
-		return err
+		return nil, err
 	}
-	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
+	return s.annotateBy(ns, name, a, func(sec *Secret, e *SecretExt, now time.Time) error {
 		mine := 0
 		for _, other := range s.st.Secrets {
 			if other.Ext == nil {
@@ -462,14 +511,19 @@ func (s *Store) ResolveFlag(ns, name, id string) error {
 // ProposeNote adds a pending note. A token has at most one pending note
 // per key.
 func (s *Store) ProposeNote(ns, name, by, text string) error {
+	_, err := s.proposeNote(ns, name, by, text, nil)
+	return err
+}
+
+func (s *Store) proposeNote(ns, name, by, text string, a *agentTouch) (*CanaryTouch, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ErrEmpty
+		return nil, ErrEmpty
 	}
 	if err := checkText(text, MaxText, true); err != nil {
-		return err
+		return nil, err
 	}
-	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
+	return s.annotateBy(ns, name, a, func(sec *Secret, e *SecretExt, now time.Time) error {
 		mine := 0
 		for _, other := range s.st.Secrets {
 			if other.Ext == nil {

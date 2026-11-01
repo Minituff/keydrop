@@ -7,7 +7,7 @@
 //	go test -tags e2e ./e2e/...
 //
 // It builds the binary once, and for the upgrade and rollback tests the
-// releases at oldFormatCommit, rollbackCommit and v2RollbackCommit (needs git history;
+// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit and v3RollbackCommit (needs git history;
 // skipped in a shallow clone).
 package e2e
 
@@ -38,9 +38,16 @@ const rollbackCommit = "038a737"
 // checks mac2 over everything it parses, so it's a separate case.
 const v2RollbackCommit = "733cf9f"
 
+// v3RollbackCommit is the release before token expiry, renewal and
+// canaries. It refuses data that used them until downgrade-data is run.
+const v3RollbackCommit = "b0b9efe"
+
 var (
 	binary   string // the keydrop under test, built by TestMain
 	repoRoot string
+	// clockBinary is the same build with a clock tests can move
+	// (KEYDROP_E2E_CLOCK_FILE), so tokens can expire.
+	clockBinary string
 )
 
 func TestMain(m *testing.M) {
@@ -57,6 +64,11 @@ func TestMain(m *testing.M) {
 		defer os.RemoveAll(dir)
 		binary = filepath.Join(dir, "keydrop")
 		if err := buildKeydrop(root, binary, "e2e"); err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			return 1
+		}
+		clockBinary = filepath.Join(dir, "keydrop-clock")
+		if err := buildKeydrop(root, clockBinary, "e2e", "e2eclock"); err != nil {
 			os.Stderr.WriteString(err.Error() + "\n")
 			return 1
 		}
@@ -833,6 +845,8 @@ func testRollback(t *testing.T) {
 	useGroups(t, web, g, "rb", "KEPT")
 	in.stop(t)
 
+	// Tokens expire by default now, so the data needs downgrade-data first.
+	downgradeV4(t, in, "rb-agent")
 	in.start(t, old)
 	if got := in.pin(t); got != pin {
 		t.Fatalf("the old release's pin %s, was %s", got, pin)
@@ -979,6 +993,7 @@ func testRollbackV2(t *testing.T) {
 	g.ok(t, "", "flag", "KEPT", "e2e v2 rollback flag")
 	useGroups(t, web, g, "rb2", "KEPT")
 	in.stop(t)
+	downgradeV4(t, in, "rb2-agent")
 
 	// That release starts on it and reads the keys and annotations.
 	in.start(t, old)

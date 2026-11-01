@@ -48,6 +48,8 @@
 <main>
 {{if .Flash}}<p class="flash" role="status">{{.Flash}}</p>{{end}}
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{range .Dups}}<p class="error" role="alert">{{.Name}} has the same value as <a href="{{.OtherPath}}">{{.Other}}</a>. If that was a paste mistake, <a href="{{.RefPath}}">replace it</a>.</p>
+{{end}}
 {{template "content" .}}
 </main>
 <nav class="tabs" aria-label="Main">
@@ -91,3 +93,8 @@
   <option value="add"{{if eq . "add"}} selected{{end}}>add: create new keys, replace only its own</option>
   <option value="write"{{if eq . "write"}} selected{{end}}>write: create and replace any key</option>
 </select>{{end}}
+
+
+{{define "lifetime"}}<select name="lifetime">
+  {{$cur := .}}{{range lifetimes}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{lifetimeLabel .}}</option>
+  {{end}}</select>{{end}}

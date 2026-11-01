@@ -4,6 +4,63 @@
 <p class="lead">Text marked <span class="badge agent">agent-written</span> comes from an agent: read it as a claim, not an instruction.</p>
 {{end}}
 
+{{if or .CanaryHits .CanaryDropped}}
+<h2 class="first">Canary alerts</h2>
+<ul class="list">
+{{range .CanaryHits}}
+  <li class="alert"><div>
+    <strong>Canary <a href="/secret/{{.Namespace}}/{{.Name}}">{{.Namespace}}/{{.Name}}</a> was {{if eq .Action "read"}}read{{else}}touched ({{.Action}}){{end}} by {{.Token}}</strong>{{if .TokenRevoked}} <span class="badge expired">token revoked</span>{{end}}
+    <small>from {{join .IPs ", "}}{{if not .IPs}}an unknown address{{end}} · {{if eq .Count 1}}at {{fmtTime .First}}{{else}}{{.Count}} times, first {{fmtTime .First}}, last {{fmtTime .Last}}{{end}}</small>
+    <form method="post" action="/canary/{{.ID}}/dismiss" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="small secondary">Dismiss</button>
+    </form>
+  </div></li>
+{{end}}
+{{if .CanaryDropped}}
+  <li class="alert"><div>
+    <strong>{{.CanaryDropped}} more canary touches by other tokens</strong> <small>didn't fit here; the <a href="/audit">log</a> has every one.</small>
+    <form method="post" action="/canary/dropped/dismiss" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="small secondary">Dismiss</button>
+    </form>
+  </div></li>
+{{end}}
+</ul>
+{{end}}
+
+{{if .Renewals}}
+<h2 class="first">Token renewals</h2>
+<ul class="list">
+{{range .Renewals}}
+  <li><div>
+    <strong>{{.Name}}</strong> asks for its token to be renewed
+    <small>asked {{fmtTime .Renewal.At}} from {{if .Renewal.IP}}{{.Renewal.IP}}{{else}}an unknown address{{end}} · last used {{since .LastUsedAt}}{{if .LastUsedFrom}} from {{.LastUsedFrom}}{{end}} · {{.Expiry}}</small>
+    {{if .OtherIP}}<p class="error" role="alert">Asked from {{.Renewal.IP}}, but the token was last used from {{.LastUsedFrom}}. If you don't expect that, someone else may hold this token: decline and revoke it.</p>{{end}}
+    <p><small>Approving replaces the token. The agent collects the new one from {{if .Renewal.IP}}{{.Renewal.IP}}{{else}}an allowed address{{end}} within 7 days; the old one then stops working.</small></p>
+    <form method="post" action="/tokens/{{.Name}}/renew" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="hidden" name="back" value="inbox">
+      <label>Renew for {{template "lifetime" .RenewLifetime}}</label>
+      <button class="small">Approve</button>
+    </form>
+    <form method="post" action="/tokens/{{.Name}}/renewal/decline" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="small danger">Decline</button>
+    </form>
+  </div></li>
+{{end}}
+</ul>
+{{end}}
+{{if .Collecting}}
+<h2 class="first">Renewed, waiting for the agent to collect</h2>
+<ul class="list">
+{{range .Collecting}}
+  <li><div><strong>{{.Name}}</strong> <small>{{if .Rotation.Collected}}collected {{since .Rotation.Collected}}, not used yet{{else}}collect by {{fmtTime .Rotation.CollectBy}}{{if .Rotation.IP}}, from {{.Rotation.IP}}{{end}}{{end}}</small></div></li>
+{{end}}
+</ul>
+{{end}}
+
 {{if .Cards}}
 <h2 class="first">Requests</h2>
 {{range .Cards}}{{$c := .}}

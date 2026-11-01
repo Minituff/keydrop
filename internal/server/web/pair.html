@@ -19,6 +19,7 @@
   <label>Permission {{template "permission" (or (.Form.Get "permission") "read")}}</label>
   <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
     <input name="sources" value="{{.Form.Get "sources"}}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label>Token lifetime {{template "lifetime" .Lifetime}}</label>
   <button>Approve</button>
 </form>
 

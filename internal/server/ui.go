@@ -26,10 +26,12 @@ var webFS embed.FS
 type expiryInfo struct{ Text, Class string }
 
 var funcs = template.FuncMap{
-	"join":     strings.Join,
-	"cssv":     func() string { return cssVersion },
-	"statuses": func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
-	"code":     displayCode,
+	"join":          strings.Join,
+	"cssv":          func() string { return cssVersion },
+	"statuses":      func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
+	"code":          displayCode,
+	"lifetimes":     func() []int { return store.TokenLifetimes },
+	"lifetimeLabel": lifetimeLabel,
 	"colorPick": func(palette []string, selected string) map[string]any {
 		return map[string]any{"Palette": palette, "Selected": selected}
 	},
@@ -90,26 +92,32 @@ func init() {
 
 // Fixed flash messages, picked by key so a link can't inject arbitrary text.
 var flashes = map[string]string{
-	"saved":      "Saved.",
-	"details":    "Details saved.",
-	"rolledback": "Rolled back to the previous value.",
-	"deleted":    "Deleted.",
-	"revoked":    "Token revoked.",
-	"paired":     "Approved. The agent collects its token within a few seconds.",
-	"denied":     "Pairing request denied.",
-	"sources":    "Allowed sources saved.",
-	"permission": "Permission saved.",
-	"status":     "Status saved.",
-	"resolved":   "Flag resolved.",
-	"approved":   "Approved.",
-	"rejected":   "Removed.",
-	"totpon":     "Authenticator turned on. Logging in now needs a code.",
-	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
-	"password":   "Password changed. Any other logged-in browsers were logged out.",
-	"grouped":    "Group saved.",
-	"groupsaved": "Group saved.",
-	"groupdel":   "Group deleted. Its entries are ungrouped; none was deleted.",
-	"autogroups": "Auto groups setting saved.",
+	"saved":          "Saved.",
+	"details":        "Details saved.",
+	"rolledback":     "Rolled back to the previous value.",
+	"deleted":        "Deleted.",
+	"revoked":        "Token revoked.",
+	"paired":         "Approved. The agent collects its token within a few seconds.",
+	"denied":         "Pairing request denied.",
+	"sources":        "Allowed sources saved.",
+	"permission":     "Permission saved.",
+	"status":         "Status saved.",
+	"resolved":       "Flag resolved.",
+	"approved":       "Approved.",
+	"rejected":       "Removed.",
+	"totpon":         "Authenticator turned on. Logging in now needs a code.",
+	"totpoff":        "Authenticator turned off. Logging in now needs only your password.",
+	"password":       "Password changed. Any other logged-in browsers were logged out.",
+	"grouped":        "Group saved.",
+	"groupsaved":     "Group saved.",
+	"groupdel":       "Group deleted. Its entries are ungrouped; none was deleted.",
+	"autogroups":     "Auto groups setting saved.",
+	"renewed":        "Renewed. The agent collects its new token the next time it runs keydrop; the old token now only works for that.",
+	"declined":       "Renewal request declined. The token keeps its current expiry.",
+	"canary":         "Canary setting saved.",
+	"dismissed":      "Canary alert dismissed. The audit log keeps the read.",
+	"canarysettings": "Canary setting saved.",
+	"alerttest":      "Test alert sent. If it doesn't arrive, keydrop's log says why (without the URL).",
 }
 
 type page map[string]any
@@ -125,6 +133,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		}
 		n, _ := s.inboxCounts()
 		data["InboxCount"] = n
+		data["Dups"] = s.takeDups(se)
 	}
 	if f, ok := flashes[r.URL.Query().Get("msg")]; ok {
 		data["Flash"] = f
@@ -409,14 +418,26 @@ func (s *Server) inboxCounts() (n int, summary string) {
 		pending = append(pending, sec)
 	}
 	reqs, attn := len(s.requestCards(pending)), len(s.attention())
+	asked, _ := s.renewalViews()
+	h, dropped := s.store.CanaryHits()
+	hits := len(h)
+	if dropped > 0 {
+		hits++
+	}
 	var parts []string
+	if hits > 0 {
+		parts = append(parts, fmt.Sprintf("%d canary alert%s", hits, plural(hits)))
+	}
+	if len(asked) > 0 {
+		parts = append(parts, fmt.Sprintf("%d renewal%s", len(asked), plural(len(asked))))
+	}
 	if reqs > 0 {
 		parts = append(parts, fmt.Sprintf("%d request%s", reqs, plural(reqs)))
 	}
 	if attn > 0 {
 		parts = append(parts, fmt.Sprintf("%d to review", attn))
 	}
-	return reqs + attn, strings.Join(parts, ", ")
+	return hits + len(asked) + reqs + attn, strings.Join(parts, ", ")
 }
 
 // attention is NeedsAttention without the requests still waiting for a
@@ -496,8 +517,11 @@ func (s *Server) renderInbox(w http.ResponseWriter, r *http.Request, se *session
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool { return sec.Pending }) {
 		pending = append(pending, sec)
 	}
+	asked, collecting := s.renewalViews()
+	hits, dropped := s.store.CanaryHits()
 	s.render(w, r, "inbox", status, se, page{
 		"Title": "Inbox", "Nav": "inbox", "Error": errMsg,
+		"CanaryHits": hits, "CanaryDropped": dropped, "Renewals": asked, "Collecting": collecting,
 		"Cards": s.requestCards(pending), "Attention": s.attention(),
 	})
 }
@@ -592,6 +616,14 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 	if exists && old.Variable != meta.Variable {
 		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(meta.Variable))
 	}
+	if r.PostFormValue("canary") == "yes" && !meta.Variable {
+		if err := s.store.SetCanary(ns, name, true); err != nil {
+			log.Printf("canary %s/%s: %v", ns, name, err)
+		} else {
+			s.event(r, "admin", "secret.canary", ns+"/"+name, "on")
+		}
+	}
+	s.noteDups(se, ns+"/"+name)
 	http.Redirect(w, r, "/secret/"+url.PathEscape(ns)+"/"+url.PathEscape(name)+"?msg=saved", http.StatusSeeOther)
 }
 
@@ -626,7 +658,7 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 	}
 	s.render(w, r, "secret", status, se, page{
 		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
-		"Readers": readers, "Error": errMsg, "Value": value, "X": ext,
+		"Readers": readers, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
 		"GroupList": s.store.Groups(ns), "InGroup": s.store.GroupAssignments()[sec.Ref()],
 		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
 	})
@@ -687,6 +719,7 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 		detail = "fulfilled request from a revoked token"
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, detail)
+	s.noteDups(se, ns+"/"+name)
 	s.back(w, r, "saved")
 }
 
@@ -745,7 +778,8 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, _ string, 
 
 func (s *Server) renderTokens(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
 	public, direct := s.cfg.InstallCommands()
-	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.store.ListTokens(), "Pairings": s.pendingPairings(), "Error": errMsg,
+	s.sweepRotations(s.now())
+	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.tokenViews(), "DefaultLifetime": store.DefaultTokenLifetime, "Pairings": s.pendingPairings(), "Error": errMsg,
 		"InstallPublic": public, "InstallDirect": direct, "CLI": s.cfg.CLI, "CertPin": s.cfg.CertPin, "Version": s.cfg.Version})
 }
 
@@ -770,7 +804,12 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 		s.renderTokens(w, r, se, http.StatusBadRequest, "Allowed from: "+err.Error()+".")
 		return
 	}
-	tok, err := s.store.CreateToken(name, nss, perm, sources)
+	days, err := formLifetime(r)
+	if err != nil {
+		s.renderTokens(w, r, se, http.StatusBadRequest, "Lifetime: "+err.Error()+".")
+		return
+	}
+	tok, err := s.store.CreateTokenExpiring(name, nss, perm, sources, days)
 	if err != nil {
 		msg := err.Error()
 		if errors.Is(err, store.ErrExists) {
@@ -780,7 +819,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 		return
 	}
 	detail := "namespaces " + strings.Join(nss, ",") + ", " + string(perm)
-	detail += ", allowed from " + sourcesText(sources)
+	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days)
 	s.event(r, "admin", "token.create", name, detail)
 	u := s.cfg.PublicURL
 	if u == "" {
@@ -824,6 +863,8 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	}
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
 	data["AutoGroups"] = s.store.AutoGroups()
+	data["AlertsConfigured"] = s.alerts.configured()
+	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }
 

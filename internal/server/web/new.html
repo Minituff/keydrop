@@ -21,6 +21,7 @@
     <input name="usage" placeholder="Authorization: Bearer {}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <label>Expires <small>(optional)</small>
     <input type="date" name="expires"></label>
+  <label class="check"><input type="checkbox" name="canary" value="yes"> <span>Canary <small>(secrets only): a decoy no agent should ever need. Any agent reading or changing it raises an alert. Agents can't tell it from a real secret.</small></span></label>
   <label class="check"><input type="checkbox" name="overwrite" value="yes"> Replace it if it already exists</label>
   <div class="actions"><button>Save</button><a class="button secondary" href="/">Cancel</a></div>
 </form>

@@ -181,6 +181,18 @@ func cmdDowngradeData(args []string) error {
 	if err != nil {
 		return err
 	}
+	if st.FormatV4() {
+		// One step at a time: back to the release before token expiry and
+		// canaries. Running it again goes back further.
+		d, _, err := st.DowngradeV4()
+		if err != nil {
+			return err
+		}
+		printDropped(d)
+		fmt.Printf("Done: the release before token expiry and canaries can read this data directory; this release still can, and starts using the new fields again as soon as they're set.\n")
+		fmt.Printf("Run downgrade-data again to go back to a release before the integrity check.\n")
+		return nil
+	}
 	unsealed, err := server.UnsealTLSKey(dataDir, st)
 	if err != nil {
 		return fmt.Errorf("tls.key: %w", err)
@@ -246,6 +258,9 @@ func cmdServer(args []string) error {
 	st, err := store.Open(dataDir, key)
 	if err != nil {
 		return err
+	}
+	if testClock != nil {
+		st.SetClock(testClock)
 	}
 	al, err := audit.Open(filepath.Join(dataDir, "audit.jsonl"))
 	if err != nil {
@@ -319,7 +334,17 @@ func cmdServer(args []string) error {
 		return fmt.Errorf("KEYDROP_CLI_DIR: %w", err)
 	}
 
+	webhook := env("KEYDROP_ALERT_WEBHOOK", "")
+	if err := server.CheckAlertWebhook(webhook); err != nil {
+		return err
+	}
+	if webhook != "" {
+		log.Printf("canary alerts: webhook configured")
+	}
+
 	cfg := server.Config{
+		AlertWebhook:   webhook,
+		Now:            testClock,
 		PublicURL:      publicURL,
 		PublicURLGuess: guessed,
 		CookieSecure:   envBool("KEYDROP_COOKIE_SECURE", true),
@@ -374,4 +399,28 @@ func cmdServer(args []string) error {
 		defer cancel()
 		return hs.Shutdown(sctx)
 	}
+}
+
+// printDropped lists, by name only, what DowngradeV4 removed.
+func printDropped(d store.V4Dropped) {
+	list := func(what string, names []string) {
+		if len(names) > 0 {
+			fmt.Printf("%s: %s\n", what, strings.Join(names, ", "))
+		}
+	}
+	list("tokens that no longer expire", d.Expiring)
+	list("renewal requests dropped", d.Renewals)
+	list("tokens deleted (renewed, new token never collected; pair these agents again)", d.Unpaired)
+	list("renewals completed (only the new token works)", d.Rotations)
+	list("secrets no longer canaries", d.Canaries)
+	if d.CanaryHits > 0 {
+		fmt.Printf("canary alerts dropped from the Inbox: %d (still in the audit log)\n", d.CanaryHits)
+	}
+	if d.RevokeOn {
+		fmt.Printf("\"revoke a token that reads a canary\" was on; it's gone\n")
+	}
+	if len(d.Expiring)+len(d.Renewals)+len(d.Unpaired)+len(d.Rotations)+len(d.Canaries)+d.CanaryHits == 0 && !d.RevokeOn {
+		fmt.Printf("keydrop.json: nothing from token expiry or canaries was in use\n")
+	}
+	fmt.Printf("keydrop.json: key check back to the format before token expiry and canaries\n")
 }

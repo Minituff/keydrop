@@ -30,8 +30,12 @@ import (
 )
 
 // buildKeydrop compiles ./cmd/keydrop from the module in srcDir into out.
-func buildKeydrop(srcDir, out, version string) error {
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version, "-o", out, "./cmd/keydrop")
+func buildKeydrop(srcDir, out, version string, tags ...string) error {
+	args := []string{"build", "-trimpath", "-ldflags", "-X main.version=" + version, "-o", out}
+	if len(tags) > 0 {
+		args = append(args, "-tags", strings.Join(tags, ","))
+	}
+	cmd := exec.Command("go", append(args, "./cmd/keydrop")...)
 	cmd.Dir = srcDir
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go build in %s: %v\n%s", srcDir, err, b)
@@ -118,6 +122,7 @@ type instance struct {
 	keyFile string
 	addr    string
 	url     string
+	extra   []string // more server environment
 
 	srv *serverProc
 }
@@ -132,12 +137,12 @@ func newInstance(t *testing.T, bin string) *instance {
 
 // env is the server environment, shared by server and the data commands.
 func (in *instance) env() []string {
-	return append(baseEnv(filepath.Dir(in.dataDir)),
+	return append(append(baseEnv(filepath.Dir(in.dataDir)),
 		"KEYDROP_DATA_DIR="+in.dataDir,
 		"KEYDROP_MASTER_KEY_FILE="+in.keyFile,
 		"KEYDROP_LISTEN="+in.addr,
 		"KEYDROP_TLS_HOSTS=127.0.0.1",
-	)
+	), in.extra...)
 }
 
 type serverProc struct {

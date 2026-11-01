@@ -255,3 +255,4 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 h2.first{margin-top:0}
 section.namespace>.nsh{margin-top:28px}
+.list li.alert>div{border-left:3px solid var(--bad)}

@@ -95,7 +95,12 @@ func (s *Server) toAPI(sec store.Secret, tok string, assign map[string]store.Gro
 		Ref: sec.Ref(), Namespace: sec.Namespace, Name: sec.Name, Kind: sec.Kind(),
 		Description: sec.Description, Usage: sec.Usage, Expires: sec.Expires,
 		HasValue: sec.HasValue(), Pending: sec.Pending, RequestedBy: sec.RequestedBy,
-		New: sec.NewFor(tok), UpdatedAt: sec.UpdatedAt, LastReadAt: sec.LastReadAt, LastReadBy: sec.LastReadBy,
+		New: sec.NewFor(tok), UpdatedAt: sec.UpdatedAt,
+	}
+	// Only this token's own last read: another token's name, or "never
+	// read" (as a canary usually is), isn't this agent's to know.
+	if sec.LastReadBy == tok && tok != "" {
+		a.LastReadAt, a.LastReadBy = sec.LastReadAt, sec.LastReadBy
 	}
 	if e := sec.Ext; e != nil {
 		a.CreatedBy, a.Status, a.DescriptionBy = e.CreatedBy, e.Status, e.DescriptionBy
@@ -138,8 +143,15 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 
 type agentHandler func(w http.ResponseWriter, r *http.Request, t store.Token)
 
-// agent requires a valid bearer token.
-func (s *Server) agent(h agentHandler) http.HandlerFunc {
+// agent requires a valid, unexpired bearer token.
+func (s *Server) agent(h agentHandler) http.HandlerFunc { return s.agentAuth(h, false) }
+
+// agentRenewal is agent for the renewal endpoints only: it also lets in a
+// token that expired less than store.RenewalGrace ago, so the agent can ask
+// for it to be extended. Same check, same sources; see LookupTokenForRenewal.
+func (s *Server) agentRenewal(h agentHandler) http.HandlerFunc { return s.agentAuth(h, true) }
+
+func (s *Server) agentAuth(h agentHandler, renewal bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok {
@@ -147,11 +159,24 @@ func (s *Server) agent(h agentHandler) http.HandlerFunc {
 			return
 		}
 		ip := s.clientIP(r)
-		t, err := s.store.LookupToken(strings.TrimSpace(raw), ip)
+		lookup := s.store.LookupToken
+		if renewal {
+			lookup = s.store.LookupTokenForRenewal
+		}
+		t, err := lookup(strings.TrimSpace(raw), ip)
 		switch {
 		case errors.Is(err, store.ErrSource):
 			s.event(r, actor(t), "token.denied", "", "not an allowed source")
 			apiError(w, http.StatusForbidden, "token "+t.Name+" isn't allowed from "+ip+"; if that's expected, the admin can add it under Agents")
+			return
+		case errors.Is(err, store.ErrExpired):
+			// Exactly what an unknown token gets; only the log says more.
+			s.noisyEvent(r, actor(t), "token.expired", "", "token expired")
+			apiError(w, http.StatusUnauthorized, "invalid token")
+			return
+		case errors.Is(err, store.ErrRotated):
+			s.noisyEvent(r, actor(t), "token.replaced", "", "old token used after its renewal was approved")
+			apiError(w, http.StatusUnauthorized, "invalid token")
 			return
 		case err != nil:
 			s.noisyEvent(r, "unknown", "api.badtoken", "", "")
@@ -168,8 +193,17 @@ func (s *Server) agent(h agentHandler) http.HandlerFunc {
 		if s.cfg.Version != "" {
 			w.Header().Set("X-Keydrop-Version", s.cfg.Version)
 		}
+		// So the CLI can warn before the token stops working.
+		w.Header().Set("X-Keydrop-Token-Expires", expiresHeader(t.ExpiresAt))
 		h(w, r, t)
 	}
+}
+
+func expiresHeader(t *time.Time) string {
+	if t == nil {
+		return "never"
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func actor(t store.Token) string {
@@ -192,7 +226,7 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, t store.Token) (
 }
 
 func (s *Server) apiWhoami(w http.ResponseWriter, r *http.Request, t store.Token) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": t.Name, "namespaces": t.Namespaces, "write": t.Write, "permission": t.Permission()})
+	writeJSON(w, http.StatusOK, map[string]any{"name": t.Name, "namespaces": t.Namespaces, "write": t.Write, "permission": t.Permission(), "expires_at": t.ExpiresAt})
 }
 
 func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) {
@@ -225,7 +259,7 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		return
 	}
 	// Reading the value is what makes it no longer new to this token.
-	val, variable, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name)
+	val, variable, hit, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name, s.clientIP(r))
 	switch {
 	case errors.Is(err, store.ErrNoValue):
 		apiError(w, http.StatusConflict, sec.Ref()+" has no value yet")
@@ -235,7 +269,15 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		return
 	}
 	kind := "variable"
-	if !variable { // variables aren't secret, so their reads aren't logged
+	switch {
+	case hit != nil:
+		// One audit entry either way, so a canary read costs the same.
+		s.event(r, actor(t), "secret.read.canary", sec.Ref(), r.URL.Query().Get("purpose"))
+		s.canaryTouched(r, *hit)
+		if !variable {
+			kind = "secret"
+		}
+	case !variable: // variables aren't secret, so their reads aren't logged
 		kind = "secret"
 		s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
 	}
@@ -292,7 +334,7 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	// The kind is never inherited: a value is a variable only when this
 	// request says so, so a generated password written over a variable
 	// doesn't become one.
-	p := store.AgentPut{Token: t, Overwrite: b.Overwrite, Variable: b.Variable}
+	p := store.AgentPut{Token: t, Overwrite: b.Overwrite, Variable: b.Variable, IP: s.clientIP(r)}
 	if b.Description != nil {
 		d := strings.TrimSpace(*b.Description)
 		p.Description = &d
@@ -327,6 +369,9 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	s.event(r, actor(t), "secret.set", ns+"/"+name, "")
 	if res.Existed && res.WasVariable != b.Variable {
 		s.event(r, actor(t), "secret.kind", ns+"/"+name, kindChange(b.Variable))
+	}
+	if res.Canary != nil {
+		s.canaryTouched(r, *res.Canary)
 	}
 	out := map[string]string{"ref": ns + "/" + name}
 	if sec, _ := s.store.GetSecret(ns, name); sec.Ext != nil && sec.Ext.Proposal != nil && sec.Ext.Proposal.By == t.Name && (p.Description != nil || p.Usage != nil) {
@@ -550,7 +595,8 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 	if !ok {
 		return
 	}
-	if err := s.store.AddFlag(sec.Namespace, sec.Name, t.Name, b.Reason, b.Link); err != nil {
+	hit, err := s.store.AgentAddFlag(sec.Namespace, sec.Name, b.Reason, b.Link, s.agentCtx(r, t))
+	if err != nil {
 		if errors.Is(err, store.ErrExists) {
 			apiError(w, http.StatusConflict, "this token already has an open flag on "+sec.Ref())
 			return
@@ -565,6 +611,9 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 		text += " <" + l + ">"
 	}
 	s.audit.Add(audit.Event{Actor: actor(t), Action: "secret.flag", Target: sec.Ref(), Text: text, IP: s.clientIP(r)})
+	if hit != nil {
+		s.canaryTouched(r, *hit)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref()})
 }
 
@@ -580,7 +629,8 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token
 	if !ok {
 		return
 	}
-	if err := s.store.SetStatus(sec.Namespace, sec.Name, b.Status, b.ReplacedBy, "token:"+t.Name); err != nil {
+	hit, err := s.store.AgentSetStatus(sec.Namespace, sec.Name, b.Status, b.ReplacedBy, s.agentCtx(r, t))
+	if err != nil {
 		annotationError(w, sec, err)
 		return
 	}
@@ -590,6 +640,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token
 		detail = st.String()
 	}
 	s.event(r, actor(t), "secret.status", sec.Ref(), detail)
+	if hit != nil {
+		s.canaryTouched(r, *hit)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref(), "status": detail})
 }
 
@@ -605,7 +658,8 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 	if !ok {
 		return
 	}
-	if err := s.store.ProposeNote(sec.Namespace, sec.Name, t.Name, b.Text); err != nil {
+	hit, err := s.store.AgentProposeNote(sec.Namespace, sec.Name, b.Text, s.agentCtx(r, t))
+	if err != nil {
 		if errors.Is(err, store.ErrExists) {
 			apiError(w, http.StatusConflict, "this token already has a note on "+sec.Ref()+" waiting for approval")
 			return
@@ -614,6 +668,9 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 		return
 	}
 	s.event(r, actor(t), "secret.note", sec.Ref(), "proposed")
+	if hit != nil {
+		s.canaryTouched(r, *hit)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref(), "url": s.secretURL(sec.Namespace, sec.Name)})
 }
 

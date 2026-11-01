@@ -240,8 +240,8 @@ func TestPairedTokenCollection(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, key32())
 	now := time.Now()
-	got, _ := s.CreatePairedToken("got", []string{"lab"}, PermRead, nil, now.Add(time.Minute))
-	s.CreatePairedToken("lost", []string{"lab"}, PermRead, nil, now.Add(time.Minute))
+	got, _ := s.CreatePairedToken("got", []string{"lab"}, PermRead, nil, now.Add(time.Minute), 0)
+	s.CreatePairedToken("lost", []string{"lab"}, PermRead, nil, now.Add(time.Minute), 0)
 	s.CreateToken("manual", []string{"lab"}, PermRead, nil)
 	if err := s.Collected(got); err != nil {
 		t.Fatal(err)
@@ -554,7 +554,7 @@ func must(t *testing.T, err error) {
 // back to) a file this release wrote. What it writes back must open here.
 func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	dir := t.TempDir()
-	grouped(t, dir)
+	downgraded(t, dir)
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
 	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`} {
@@ -583,6 +583,12 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	}
 	if sec, _ := s2.GetSecret("lab", "CF"); sec.Ext != nil {
 		t.Fatal("annotations survived")
+	}
+	if tok := s2.st.Tokens["temp"]; tok == nil || tok.ExpiresAt != nil {
+		t.Fatalf("expiring token after a rewrite by the older release: %+v", tok)
+	}
+	if sec, _ := s2.GetSecret("lab", "DECOY"); sec.Canary || s2.st.Canary != nil {
+		t.Fatal("canary survived")
 	}
 }
 
@@ -895,7 +901,7 @@ func TestAgentRevealClearsNew(t *testing.T) {
 	s.PutValue("lab", "A", []byte("reveal-value"), nil)
 	s.PutValue("lab", "V", []byte("var-value"), &Meta{Variable: true})
 	for _, n := range []string{"A", "V"} {
-		if _, _, err := s.AgentReveal("lab", n, "alice"); err != nil {
+		if _, _, _, err := s.AgentReveal("lab", n, "alice", ""); err != nil {
 			t.Fatal(err)
 		}
 		sec, _ := s.GetSecret("lab", n)

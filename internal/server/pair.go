@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,7 @@ func (s *Server) revokeUncollected(now time.Time) {
 	for _, name := range s.store.RevokeUncollected(now) {
 		s.audit.Add(audit.Event{Actor: "keydrop", Action: "token.revoke", Target: name, Detail: "approved pairing never collected"})
 	}
+	s.sweepRotations(now)
 }
 
 // sourceGroup is what the per-group cap counts: the address, or its /64
@@ -298,9 +300,14 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request, _ string, se
 
 func (s *Server) renderPair(w http.ResponseWriter, r *http.Request, se *session, status int, p pairing, form url.Values, errMsg string) {
 	_, exists := tokenNamed(s.store.ListTokens(), form.Get("name"))
+	lifetime := store.DefaultTokenLifetime
+	if d, err := strconv.Atoi(form.Get("lifetime")); err == nil && store.CheckLifetime(d) == nil {
+		lifetime = d
+	}
 	s.render(w, r, "pair", status, se, page{
 		"Title": "Approve an agent", "P": p, "Code": displayCode(p.Code),
 		"Form": form, "Exists": exists, "Error": errMsg, "Namespaces": s.store.Namespaces(),
+		"Lifetime": lifetime,
 	})
 }
 
@@ -321,14 +328,18 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 		return
 	}
 	form := url.Values{}
-	for _, k := range []string{"name", "namespaces", "permission", "write", "sources", "replace"} {
+	for _, k := range []string{"name", "namespaces", "permission", "write", "sources", "replace", "lifetime"} {
 		form.Set(k, strings.TrimSpace(r.PostFormValue(k)))
 	}
 	name, nss := form.Get("name"), splitList(form.Get("namespaces"))
 	perm, permOK := formPermission(form)
 	form.Set("permission", string(perm))
 	sources, err := store.ParseSources(form.Get("sources"))
+	days, lifeErr := formLifetime(r)
 	switch {
+	case lifeErr != nil:
+		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Lifetime: "+lifeErr.Error()+".")
+		return
 	case !permOK:
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Permission: read, add or write.")
 		return
@@ -366,7 +377,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 	// The agent gets a fresh window to collect it; after that the token is
 	// revoked unused.
 	now := s.now()
-	tok, err := s.store.CreatePairedToken(name, nss, perm, sources, now.Add(pairTTL))
+	tok, err := s.store.CreatePairedToken(name, nss, perm, sources, now.Add(pairTTL), days)
 	if err != nil {
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, err.Error())
 		return
@@ -374,7 +385,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 	cur.approved, cur.tokenName, cur.token, cur.namespace = true, name, tok, nss
 	cur.Created = now
 	detail := "code " + displayCode(cur.Code) + " from " + cur.IP + ", namespaces " + strings.Join(nss, ",") + ", " + string(perm)
-	detail += ", allowed from " + sourcesText(sources)
+	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days)
 	s.event(r, "admin", "pair.approve", name, detail)
 	http.Redirect(w, r, "/tokens?msg=paired", http.StatusSeeOther)
 }

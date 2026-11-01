@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -168,7 +169,112 @@ func cmdWhoami(args []string) error {
 		return err
 	}
 	fmt.Printf("%s @ %s\nnamespaces: %s\npermission: %s\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), clean(w.Perm(), false))
+	if w.ExpiryKnown {
+		fmt.Printf("expires: %s\n", expiresText(w.ExpiresAt, clockNow()))
+	}
 	return nil
+}
+
+// expiresText is whoami's expiry: "2027-01-30 (in 90 days)" or "never".
+func expiresText(t *time.Time, now time.Time) string {
+	if t == nil {
+		return "never"
+	}
+	d := t.UTC().Format("2006-01-02")
+	if !now.Before(*t) {
+		return d + " (expired)"
+	}
+	n := client.DaysLeft(*t, now)
+	if n == 1 {
+		return d + " (in 1 day)"
+	}
+	return fmt.Sprintf("%s (in %d days)", d, n)
+}
+
+// ---- renew ----
+
+// cmdRenew asks the admin to renew this token, and with --wait waits for
+// the approval and saves the new token. Nothing renews without the admin.
+func cmdRenew(args []string) error {
+	fs := flag.NewFlagSet("renew", flag.ExitOnError)
+	wait := fs.Bool("wait", false, "wait for the admin to approve, then save the new token")
+	timeout := fs.Duration("timeout", time.Hour, "how long --wait waits")
+	parse(fs, args)
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	c.NoExpiryWarning = true
+	st, err := c.Renew()
+	if err != nil {
+		return renewErr(err)
+	}
+	switch st.State {
+	case "never":
+		fmt.Println("keydrop: this token doesn't expire, so there's nothing to renew.")
+		return nil
+	case "approved":
+		return collected(c)
+	case "pending":
+		if st.Created {
+			fmt.Println("keydrop: renewal requested. Ask the admin to approve it in keydrop's Inbox.")
+		} else {
+			fmt.Println("keydrop: a renewal request is already waiting for the admin in keydrop's Inbox.")
+		}
+	default:
+		return fmt.Errorf("the server answered an unexpected renewal state %q", clean(st.State, false))
+	}
+	if !*wait {
+		fmt.Println("Run `keydrop renew --wait` to wait for it and save the new token.")
+		return nil
+	}
+	if c.TokenPath == "" {
+		return client.ErrRenewedNoFile
+	}
+	fmt.Println("Waiting for the admin…")
+	deadline := time.Now().Add(*timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(renewPoll)
+		st, err := c.RenewStatus()
+		if err != nil {
+			return renewErr(err)
+		}
+		switch st.State {
+		case "approved":
+			return collected(c)
+		case "pending":
+			continue
+		}
+		return errors.New("the admin declined the renewal request (or it was dropped); ask them, or run `keydrop renew` again")
+	}
+	return fmt.Errorf("still not approved after %s; the request stays in the Inbox. Run `keydrop renew --wait` again to keep waiting", *timeout)
+}
+
+// renewPoll is how often renew --wait checks.
+var renewPoll = 5 * time.Second
+
+// collected collects the renewed token, then uses it once, which makes it
+// the only one that works.
+func collected(c *client.Client) error {
+	if _, err := c.Collect(); err != nil {
+		return err
+	}
+	w, err := c.Whoami()
+	if err != nil {
+		return err
+	}
+	if w.ExpiryKnown {
+		fmt.Printf("expires: %s\n", expiresText(w.ExpiresAt, clockNow()))
+	}
+	return nil
+}
+
+func renewErr(err error) error {
+	var ae *client.APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		return errors.New("this token can't be renewed: it's unknown, revoked, or expired more than 30 days ago. Pair this machine again: keydrop pair --url URL")
+	}
+	return err
 }
 
 // quote prints agent-written text indented behind "| ", so it can't pass

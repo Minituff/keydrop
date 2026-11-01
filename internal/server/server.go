@@ -49,6 +49,12 @@ type Config struct {
 	// DirectURL reaches keydrop itself rather than through a proxy, for the
 	// pinned install command, e.g. https://10.0.0.5:8443.
 	DirectURL string
+	// AlertWebhook is where canary alerts are POSTed ({"content": ...},
+	// Discord-compatible). Empty: no alerts. It's never logged or shown.
+	AlertWebhook string
+	// Now replaces the clock; nil is time.Now. Only the e2e tests' build
+	// (tag e2eclock) sets it.
+	Now func() time.Time
 }
 
 const (
@@ -64,6 +70,9 @@ type session struct {
 	// newTOTP is the seed shown while turning the authenticator on, kept
 	// until the first code from it is confirmed.
 	newTOTP []byte
+	// dups are duplicate-value warnings from the last save, shown once on
+	// the next page (see takeDups). References only, never values.
+	dups []store.Duplicate
 }
 
 // Server implements http.Handler.
@@ -94,6 +103,12 @@ type Server struct {
 	annotations *rateLimit
 	// writes rate-limits puts and requests per token.
 	writes *rateLimit
+	// renewals rate-limits renewal requests and status checks, collects
+	// collecting a renewed token, each per token and address.
+	renewals *rateLimit
+	collects *rateLimit
+	// alerts sends canary alerts to AlertWebhook.
+	alerts *alerter
 }
 
 // noisyEvents throttles the audit events an unauthenticated client can
@@ -133,6 +148,12 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
 		annotations: newRateLimit(annotationsPerHour, time.Hour),
 		writes:      newRateLimit(writesPerHour, time.Hour),
+		renewals:    newRateLimit(renewalsPerHour, time.Hour),
+		collects:    newRateLimit(collectsPerHour, time.Hour),
+		alerts:      newAlerter(cfg.AlertWebhook),
+	}
+	if cfg.Now != nil {
+		s.now = cfg.Now
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()
@@ -142,7 +163,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		log.Printf("or open %s/setup?code=%s", base, s.setupCode)
 		log.Printf("(the code works once, and only proves you can read this log; a restart before setup makes a new one)")
 	}
-	s.revokeUncollected(time.Now()) // paired tokens orphaned by a restart
+	s.revokeUncollected(s.now()) // paired tokens orphaned by a restart
 	s.routes()
 	return s
 }
@@ -215,6 +236,12 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
 	m.HandleFunc("POST /tokens/{name}/permission", s.admin(s.handleTokenPermission))
+	m.HandleFunc("POST /tokens/{name}/renew", s.admin(s.handleRenewToken))
+	m.HandleFunc("POST /tokens/{name}/renewal/decline", s.admin(s.handleDeclineRenewal))
+	m.HandleFunc("POST /secret/{ns}/{name}/canary", s.admin(s.handleSetCanary))
+	m.HandleFunc("POST /canary/{id}/dismiss", s.admin(s.handleDismissCanary))
+	m.HandleFunc("POST /settings/canary", s.admin(s.handleCanarySettings))
+	m.HandleFunc("POST /settings/alert-test", s.admin(s.handleAlertTest))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))
@@ -237,6 +264,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/pair", s.apiPairStart) // no token yet: the admin approves
 	m.HandleFunc("POST /api/v1/pair/poll", s.apiPairPoll)
 	m.HandleFunc("GET /api/v1/whoami", s.agent(s.apiWhoami))
+	// The only endpoints an expired token may use, within RenewalGrace.
+	m.HandleFunc("POST /api/v1/token/renew", s.agentRenewal(s.apiRenew))
+	m.HandleFunc("GET /api/v1/token/renew", s.agentRenewal(s.apiRenewStatus))
+	m.HandleFunc("POST /api/v1/token/collect", s.agentRenewal(s.apiCollect))
 	m.HandleFunc("GET /api/v1/secrets", s.agent(s.apiList))
 	m.HandleFunc("GET /api/v1/secrets/{ns}/{name}", s.agent(s.apiGet))
 	m.HandleFunc("PUT /api/v1/secrets/{ns}/{name}", s.agent(s.apiPut))

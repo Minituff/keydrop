@@ -47,7 +47,12 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          approve, waits, then saves it (run again
                                          to keep waiting)
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
-  whoami                                show the token's name, namespaces and permission
+  whoami                                show the token's name, namespaces, permission and
+                                         expiry
+  renew [--wait] [--timeout 1h]         ask the admin to renew this token before (or up to
+                                         30 days after) it expires; --wait waits for the
+                                         approval and saves the new token over the token file.
+                                         Any command run after the approval does that too
   inbox, ack                            deprecated: inbox runs history --since 72h,
                                          ack does nothing (reading a value marks it read)
 
@@ -59,8 +64,12 @@ Server commands:
                                          from a release before the integrity check to the
                                          current format (HMAC the state, seal tls.key; the
                                          pin doesn't change). The server won't start until then
-  downgrade-data                        with the server stopped: undo upgrade-data, so a
-                                         release before the integrity check can read it again
+  downgrade-data                        with the server stopped: step the data directory back
+                                         one format. First to the release before token expiry
+                                         and canaries (lists what's dropped: expiry, renewals,
+                                         uncollected renewed tokens, canary flags), then, run
+                                         again, undo upgrade-data for a release before the
+                                         integrity check
   rotate-tls                            with the server stopped: replace the self-signed
                                          certificate (old files kept as .bak); prints the
                                          new pin, which every agent then needs
@@ -132,6 +141,8 @@ func main() {
 		err = cmdPair(args)
 	case "whoami":
 		err = cmdWhoami(args)
+	case "renew":
+		err = cmdRenew(args)
 	case "version", "--version", "-v":
 		fmt.Println("keydrop", version)
 	case "help", "--help", "-h":
