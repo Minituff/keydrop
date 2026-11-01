@@ -45,13 +45,16 @@ isn't worth it.
   can write the data directory could get an edited old-format file
   vouched for by restarting the server).
 - **Optional fields need no migration, but must keep the previous
-  release reading the file.** `mac` covers `legacyView()` (the state with
-  every field added since then zeroed), so the previous release still
-  verifies it; `mac2` covers everything. A new optional field goes in
-  `Secret.Ext` (or another field `legacyView` zeroes and `hasNewer` checks),
-  never as a plain new field the MAC covers, and gets a case in
-  `TestOlderReleaseReadsNewerFile`. The e2e suite starts the previous
-  release (`rollbackCommit`) on data this one wrote. A fix-up of data the
+  release reading the file.** `mac` covers `legacyView()` (the 038a737
+  format), `mac2` covers `v2View()` (the 733cf9f format, which checks
+  `mac2` over everything it parses) and `mac3` covers everything. A new
+  optional field goes outside every older view. This release checks
+  `mac3` over all it parses, so once it has shipped, the next new field
+  needs a `v3View` that zeroes it and a fourth MAC, the same way
+  `v2View`/`mac3` were added. Never add a plain new field an existing MAC
+  covers. Each gets a case in
+  `TestOlderReleaseReadsNewerFile`. The e2e suite starts both older
+  releases (`rollbackCommit`, `v2RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
   only on a file whose MAC verified, and may change only what that
   release could also have written, or `ext`.

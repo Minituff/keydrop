@@ -234,7 +234,9 @@ values. An empty list is fine for a new install.
 ### 8. Using keydrop day to day
 
 - `keydrop secrets`, `keydrop info NAME`: what exists, and what each key
-  is for. Follow the description: it says what to do with the key.
+  is for. Follow the description: it says what to do with the key. Keys
+  are listed under `[namespace: group]` headings once the person groups
+  them.
 - `keydrop run -e NAME -- COMMAND`: runs the command with the key in
   `$NAME`. Single-quote a script so the command expands the variable, not
   your shell:
@@ -246,6 +248,11 @@ values. An empty list is fine for a new install.
 - `keydrop request NAME --desc "what it's for, which scopes, how long it should last"`:
   when you need a key that isn't there. Send the person the link it
   prints, then `keydrop wait NAME`.
+- `keydrop request NAME1 NAME2 --group LABEL --desc "..."`: when one
+  service gives you several keys at once (say an API key and secret), ask
+  for them together (up to 10). The person fills them on one card, or
+  pastes the file the service gave them. `--group` only suggests a group;
+  the person decides. Then `keydrop wait` each name.
 - `keydrop history --since 72h`: what changed lately, who did it and when.
 - `keydrop status NAME expired` (or `revoked`, `leaked`, `ok`): tell other
   agents a key stopped working.

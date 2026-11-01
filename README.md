@@ -87,6 +87,13 @@ replacement for Vault or Infisical in a team.
   `keydrop get NAME`), aren't masked, and reading one isn't logged. They go
   into `run -e` exactly like secrets, so one command can take both. The
   web page lists secrets and variables separately.
+- **Groups.** You can put keys in named, coloured groups (the **Groups**
+  page, or a key's page). Keys not in a group are grouped by the part of
+  the name before the first `_` when at least two share it (`CLOUDFLARE_TOKEN`
+  and `CLOUDFLARE_ZONE` go under `CLOUDFLARE`); turn that off in Settings.
+  `keydrop secrets` and `keydrop vars` print keys under `[namespace: group]`
+  headings, and the API lists each key's `group`. Agents can't make groups
+  or move keys between them.
 - **Agents know what changed.** `keydrop history [NAME]` (run by a
   session-start hook) lists what happened to the keys the token can see,
   newest first: created, replaced, requested, status changes, flags, approved
@@ -95,7 +102,10 @@ replacement for Vault or Infisical in a team.
   they changed. An agent can also **ask** for a key: `keydrop request`
   creates an empty placeholder and returns a link for you to fill in, and
   `keydrop wait` blocks until you do. Only the token that asked can change
-  a pending request.
+  a pending request. `keydrop request A B C --group NAME` asks for up to
+  10 keys at once: you fill them on one card, and can paste the file you
+  downloaded (`key=value` lines) for keydrop to split by name. The group
+  name is only a suggestion: nothing is grouped unless you tick the box.
 - **Agents report problems; you decide what other agents read.**
   - `keydrop status NAME leaked` (or `ok`, `expired`, `revoked`,
     `replaced-by OTHER`) marks a key for everyone who can see it, with who
@@ -268,6 +278,12 @@ format; then switch `image:` back and start the older image. The new
 release refuses that data again until `upgrade-data` is run again.
 Restoring the backup of `data/` from step 2 also works.
 
+Newer fields (statuses, flags, notes, history, groups, batch requests)
+don't need `upgrade-data`. An older release that has the integrity check
+starts on data this release wrote, and ignores what it doesn't know. When
+it next saves, those fields are gone: rolling back loses groups (the keys
+stay, ungrouped), and requests stop being linked as one batch.
+
 ### Rotating the TLS certificate
 
 Do this if a copy of `tls.key` may have leaked: in particular a backup
@@ -357,6 +373,7 @@ does this again after the previous release has rewritten the file.
    keydrop flag CLOUDFLARE_API_TOKEN "401 since this morning"   # ask the admin to look
    keydrop request GITHUB_PAT --desc "Fine-grained PAT for org/repo, contents:read, 90 days"
    keydrop wait GITHUB_PAT
+   keydrop request EXAMPLE_API_KEY EXAMPLE_API_SECRET --group Router --desc "Router API key pair, read-only"
    ```
 
 `-e NAME` sets `$NAME`; `-e VAR=NAME` sets `$VAR` instead. Repeat `-e` for
@@ -462,7 +479,7 @@ get 429, as do puts and requests past theirs, and a request past a token's
 | | |
 |---|---|
 | `GET /api/v1/whoami` | Token name, namespaces, `permission` (`read`, `add` or `write`) and the older `write` flag |
-| `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`) |
+| `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`; `group` is `{"slug","name","color","auto"}` when the key is in one) |
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending` |
 | `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged); adds `"status"` when the key isn't ok. Marks the value as no longer new to this token |
 | `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000; 500 kept per namespace). Flag reasons aren't included |
@@ -472,6 +489,7 @@ get 429, as do puts and requests past theirs, and a request past a token's
 | `POST /api/v1/secrets/{ns}/{name}/ack` | Deprecated (older CLIs): clears the *new* flag for this token; reveal does this now |
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (add and write tokens; an add token can only replace keys it created; without `"variable": true` the value is stored as a secret, even over a variable). A description or usage from an agent waits for the admin's approval |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}`. 409 if it already has a value, or another token already asked for it |
+| `POST /api/v1/requests/batch` | `{"namespace","names","group","description","usage"}` → `{"refs","batch","url","urls"}`: up to 10 keys, filled on one card (`url` points at it). All or nothing; a batch of N counts as N requests towards the limits. `group` is a suggestion shown to the admin as agent-written |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days (at most 36500) |
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |

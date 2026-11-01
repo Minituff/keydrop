@@ -304,8 +304,66 @@ every read logged, no way to just look). So an entry is either a
   Read-only tokens may request. Only the token that made a pending request
   can change it (another gets 409), and a token has at most 20 open
   requests (429).
+- **Batch requests:** `keydrop request A B C [--group LABEL]` asks for up
+  to 10 keys in one namespace at once (`POST /api/v1/requests/batch`).
+  Each name gets its own request, linked by a batch id, so the dashboard
+  shows them as one card with one "Save all" button. It's all or nothing:
+  a name that's taken, or the open-request cap, refuses the whole batch.
+  A batch of N counts as N against the write rate limit and the cap.
+  LABEL is agent text: it's checked like other agent text, stored on the
+  requests as a proposal, shown marked as agent-written, and prefills the
+  card's group box. Nothing is grouped unless the admin ticks the box.
+  Revoking the token clears the label.
+- **Filling a card:** each name has its own field and a secret/variable
+  choice (secret by default). An empty field leaves that request open.
+  Saving is one store change: every value is saved, or none is.
+- **Pasting the downloaded file:** services often hand out a file of
+  `key=value` lines. The card has a "Paste the downloaded file" box,
+  parsed on the server. Lines may be `key=value`, `key: value` or
+  `export KEY=value`, with optional matching quotes around the value;
+  blank lines and `#` comments are skipped. A line splits at its first
+  `=` or `:`. Each line maps to a requested name:
+  1. a key equal to the name, ignoring case, maps to it;
+  2. otherwise the key must equal the last `_` part of exactly one
+     requested name, ignoring case (`key=` maps to `EXAMPLE_API_KEY`,
+     `secret=` to `EXAMPLE_API_SECRET`).
+  It's strict, and the whole submission is refused, with nothing saved,
+  if a line doesn't parse, has no value, maps to no name or to two, if
+  two lines map to one name, or if both the paste box and a field are
+  filled. Errors name line numbers and requested names only, never a
+  value or the line's key.
+- **Paste-mistake guard:** every single-value field (the Add form, a key's
+  page, each field on a card) refuses a value that has a line break
+  (unless "keep whitespace" is ticked) or starts with `KEY=` or `key: `,
+  with a hint to paste only the part after `key=` or use the paste box.
+  `=` must be followed by something other than `=` or the end, so base64
+  padding passes. "Save it exactly as pasted" skips the check (and the
+  trimming).
 - There are no webhooks or chat notifications: telling a person about
   anything is the job of whatever runs the agents, not of keydrop.
+
+### Groups
+- A group belongs to a namespace. It has an id (a slug made from its
+  name), a display name (at most 64 bytes, checked like agent text), a
+  colour from a fixed palette of 8 names (red, orange, yellow, green,
+  teal, blue, purple, pink; the store keeps the name, the UI styles it)
+  and an optional one-line description. Each key has an optional group
+  id.
+- Only the admin makes, renames, recolours and deletes groups, and moves
+  keys between them. Deleting a group ungroups its keys; it never deletes
+  one. Every change goes in the key's history and the audit log.
+- **Auto groups** are worked out when a page or list is shown, never
+  stored. A key without a group is grouped by the part of its name before
+  the first `_`, when at least two such keys in the namespace share it.
+  Its colour is a hash of the prefix, so it stays the same. Everything
+  else is "Ungrouped". Pending requests aren't auto-grouped. The admin can
+  turn auto groups off in Settings (on by default), and can make an auto
+  group a real one.
+- Order: by namespace, then the admin's groups by name, then auto groups,
+  then "Ungrouped". `GET /api/v1/secrets` gives each key's `group`
+  (`slug`, `name`, `color`, `auto`), and `keydrop secrets`/`vars` print
+  `[namespace: group]`, `[namespace: PREFIX, auto]` and `[namespace:
+  ungrouped]` headings (a plain list when nothing is grouped).
 
 ### What agents can say about a key
 Other agents read what one agent writes, so agent text mustn't be a
@@ -446,6 +504,19 @@ limited to what it needs:
   `ext`, so the file stays one it can read; when that release rewrites
   the file it drops `fixups`, and the fix-ups run again on what it wrote,
   which only touches what it could have written.
+- **A third MAC for groups.** The release before groups (733cf9f)
+  parses `ext`, `history` and the rest, and checks `mac2` over everything
+  it parsed. So the group fields (`groups` and `settings` in the state,
+  `group` and `batch` on a key) can't be covered by `mac2`: `mac2` now
+  covers `v2View()`, the state with those fields zeroed, which is what
+  that release parses, and `mac3` (keyed with `HKDF(master key, "state mac
+  v3")`) covers everything. `mac3` is written whenever a group field is
+  set and must verify when either is present. As with `mac2`, stripping
+  every group field and `mac3` gives a file that release could have
+  written, which is accepted; it can only drop groups, the auto-groups
+  setting and batch links. When that release rewrites the file, those are
+  gone; the keys and their values stay. The e2e suite starts both older
+  releases on grouped data, lets them rewrite it, and opens the result.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
