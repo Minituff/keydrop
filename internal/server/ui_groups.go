@@ -69,6 +69,9 @@ type requestCard struct {
 	Color string
 	// AskedBy is who made the first request, "" if that token is gone.
 	AskedBy string
+	// Title heads the card. Never the agent's label: that's shown only
+	// marked as agent-written (and in the group box the admin must tick).
+	Title string
 }
 
 func (s *Server) requestCards(pending []store.Secret) []requestCard {
@@ -96,15 +99,25 @@ func (s *Server) requestCards(pending []store.Secret) []requestCard {
 	}
 	for i := range cards {
 		c := &cards[i]
+		prefix := sharedPrefix(c.Requests)
+		c.Title = c.Namespace
+		if len(c.Requests) == 1 {
+			c.Title = c.Requests[0].Ref()
+		} else if prefix != "" {
+			c.Title = c.Namespace + ": " + prefix // from key names, not agent prose
+		}
 		guess := c.Label
 		if guess == "" {
-			guess = sharedPrefix(c.Requests)
+			guess = prefix
 		}
 		if guess == "" {
 			continue
 		}
 		if g, ok := s.store.FindGroup(c.Namespace, guess); ok {
 			c.GroupName, c.ExistingGroup, c.Color = g.Name, true, g.Color
+			if len(c.Requests) > 1 {
+				c.Title = g.Name
+			}
 		} else if c.Label != "" || len(c.Requests) > 1 {
 			c.GroupName, c.Color = guess, store.AutoColor(guess)
 		}

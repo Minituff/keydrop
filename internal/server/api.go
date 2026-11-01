@@ -455,7 +455,7 @@ func (s *Server) apiRequestBatch(w http.ResponseWriter, r *http.Request, t store
 		out["urls"] = urls
 	}
 	if s.cfg.PublicURL != "" {
-		out["url"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/#batch-" + id
+		out["url"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/inbox#batch-" + id
 	}
 	writeJSON(w, http.StatusCreated, out)
 }

@@ -439,8 +439,8 @@ func matches(q string, sec store.Secret, assign map[string]store.GroupRef) bool 
 
 func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len(query) > 100 {
-		query = query[:100]
+	if rs := []rune(query); len(rs) > 100 {
+		query = string(rs[:100]) // by character, so none is cut in half
 	}
 	assign := s.store.GroupAssignments()
 	var entries []store.Secret

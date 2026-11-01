@@ -11,7 +11,7 @@
 <form method="post" action="/requests/fill" class="card request batch-card g{{if .Color}} color-{{.Color}}{{end}}" id="{{.ID}}">
   <input type="hidden" name="csrf" value="{{$.CSRF}}">
   <input type="hidden" name="namespace" value="{{.Namespace}}">
-  <div class="ch"><b>{{if eq (len .Requests) 1}}{{(index .Requests 0).Ref}}{{else if .GroupName}}{{.GroupName}}{{else}}{{.Namespace}}{{end}}</b><span class="chip">{{len .Requests}} {{if eq (len .Requests) 1}}value{{else}}values{{end}}</span><span class="by">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}}</span></div>
+  <div class="ch"><b>{{.Title}}</b><span class="chip">{{len .Requests}} {{if eq (len .Requests) 1}}value{{else}}values{{end}}</span><span class="by">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}}</span></div>
   {{if .Label}}<p class="agent-text"><small>{{if .LabelBy}}{{.LabelBy}}{{else}}the agent{{end}} suggests the group <span class="badge agent">agent-written</span></small>{{.Label}}</p>{{end}}
   {{$seen := ""}}
   {{range .Requests}}
@@ -21,6 +21,7 @@
     {{with .Ext}}{{with .Proposal}}{{if ne $seen .Description}}<p class="agent-text"><small>{{.By}} says it's for <span class="badge agent">agent-written</span></small>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{$seen = .Description}}{{end}}{{end}}{{end}}
   </div>
   {{end}}
+  <p class="muted"><small>Details, or delete a request: {{range $i, $r := .Requests}}{{if $i}} · {{end}}<a href="/secret/{{$r.Namespace}}/{{$r.Name}}">{{$r.Name}}</a>{{end}}</small></p>
   <details class="paste-file">
     <summary>{{template "icon" "file"}}Paste the downloaded file</summary>
     <label>File contents <small>(lines like key=value or KEY: value; leave the fields below empty)</small>

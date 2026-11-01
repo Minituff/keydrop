@@ -15,7 +15,7 @@ import (
 
 func TestParsePasteAndMap(t *testing.T) {
 	names := []string{"EXAMPLE_API_KEY", "EXAMPLE_API_SECRET", "EXAMPLE_URL"}
-	file := "# downloaded from the router\n\nkey=\"k-123\"\r\nexport secret='s=456=='\nexample_url: https://router.example/api\n"
+	file := "# downloaded from the router\n\nkey=\"k-123\" # comment\r\nexport secret='s=456=='\nexample_url: https://router.example/api\n"
 	lines, err := parsePaste(file)
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +38,10 @@ func TestParsePasteAndMap(t *testing.T) {
 		"two names":      "api=hunter2\n",
 		"twice":          "key=a\nEXAMPLE_API_KEY=hunter2\n",
 		"nothing at all": "# only a comment\n",
+		"unclosed quote": "key=\"hunter2\n",
+		"after quote":    "key=\"hunter2\" junk\n",
+		"escaped quote":  "key=\"hun\\\"ter2\"\n",
+		"inline comment": "key=hunter2 # the key\n",
 	}
 	ambiguous := []string{"A_API", "B_API", "EXAMPLE_API_KEY"}
 	for name, text := range bad {
@@ -319,5 +323,53 @@ func TestBatchRateLimit(t *testing.T) {
 	now := time.Now()
 	if !l.allowN("t", 4, now) || l.allowN("t", 2, now) || !l.allow("t", now) || l.allow("t", now) {
 		t.Fatal("allowN")
+	}
+}
+
+// The agent's proposed label never heads the card (only the marked
+// agent-text block and the unticked group box show it), each request
+// links to its page (where it can be deleted), and the batch link the
+// agent gets points at the inbox, where the card is.
+func TestBatchCardLabelAndLinks(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.srv.cfg.PublicURL = "https://secrets.example.com"
+	tok := h.createToken("bot", "lab")
+	body := map[string]any{"namespace": "lab", "names": []string{"ONE_KEY", "TWO_KEY"}, "group": "Approved By Admin"}
+	code, m, raw := h.api("POST", "/api/v1/requests/batch", tok, body)
+	if code != http.StatusCreated {
+		t.Fatalf("batch: %d %s", code, raw)
+	}
+	if u, _ := m["url"].(string); u != "https://secrets.example.com/inbox#batch-"+m["batch"].(string) {
+		t.Fatalf("batch url %q", u)
+	}
+	_, page := h.get("/inbox")
+	if strings.Contains(page, "<b>Approved By Admin</b>") {
+		t.Fatal("the agent's label heads the card")
+	}
+	if !strings.Contains(page, "<b>lab</b>") {
+		t.Fatal("card title")
+	}
+	if strings.Contains(page, `name="group" value="yes" checked`) {
+		t.Fatal("group box ticked for the admin")
+	}
+	for _, n := range []string{"ONE_KEY", "TWO_KEY"} {
+		if !strings.Contains(page, `href="/secret/lab/`+n+`"`) {
+			t.Fatalf("no link to %s", n)
+		}
+	}
+	// Saving without ticking the box ignores the prefilled name.
+	code, _ = h.form("/requests/fill", url.Values{"namespace": {"lab"}, "name": {"ONE_KEY", "TWO_KEY"},
+		"value.ONE_KEY": {"fake-one"}, "groupname": {"Approved By Admin"}})
+	if code != http.StatusSeeOther && code != http.StatusOK {
+		t.Fatalf("fill: %d", code)
+	}
+	if gs := h.srv.store.Groups("lab"); len(gs) != 0 {
+		t.Fatalf("group made without the box ticked: %+v", gs)
+	}
+	// A search cut at 100 characters keeps whole characters.
+	_, page = h.get("/?q=" + url.QueryEscape(strings.Repeat("é", 150)))
+	if !strings.Contains(page, strings.Repeat("é", 100)+`"`) {
+		t.Fatal("query not cut at 100 characters")
 	}
 }
