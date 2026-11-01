@@ -320,8 +320,12 @@ every read logged, no way to just look). So an entry is either a
 - **Pasting the downloaded file:** services often hand out a file of
   `key=value` lines. The card has a "Paste the downloaded file" box,
   parsed on the server. Lines may be `key=value`, `key: value` or
-  `export KEY=value`, with optional matching quotes around the value;
-  blank lines and `#` comments are skipped. A line splits at its first
+  `export KEY=value`, with optional matching quotes around the value
+  (only a `#` comment may follow the closing quote; an unclosed quote,
+  or any other text after it, refuses the paste); blank lines and `#`
+  comments are skipped. An unquoted value with a `#` after a space is
+  refused too: it could be a comment or part of the value, so the
+  admin quotes it or removes the comment. A line splits at its first
   `=` or `:`. Each line maps to a requested name:
   1. a key equal to the name, ignoring case, maps to it;
   2. otherwise the key must equal the last `_` part of exactly one

@@ -39,8 +39,23 @@ func parsePaste(text string) ([]pasteLine, error) {
 		if !pasteKeyRE.MatchString(key) {
 			return nil, fmt.Errorf("line %d doesn't start with a key name. Fix or remove that line; nothing was saved.", n)
 		}
-		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-			value = value[1 : len(value)-1]
+		if value != "" && (value[0] == '"' || value[0] == '\'') {
+			// Quoted: the value is what's between the quotes, and only a
+			// # comment may follow. Anything else (no closing quote, an
+			// escaped quote, text after it) is refused rather than saved
+			// with stray quotes or a comment in it.
+			end := strings.IndexByte(value[1:], value[0])
+			if end < 0 {
+				return nil, fmt.Errorf("line %d has an opening quote but no closing one. Fix that line; nothing was saved.", n)
+			}
+			rest := strings.TrimSpace(value[end+2:])
+			if rest != "" && !strings.HasPrefix(rest, "#") {
+				return nil, fmt.Errorf("line %d has text after its closing quote. Fix that line; nothing was saved.", n)
+			}
+			value = value[1 : end+1]
+		} else if strings.Contains(value, " #") || strings.Contains(value, "\t#") {
+			// A comment, or part of the value? Don't guess.
+			return nil, fmt.Errorf("line %d has a # after a space. If it starts a comment, remove the comment; if it's part of the value, put the value in quotes; nothing was saved.", n)
 		}
 		if value == "" {
 			return nil, fmt.Errorf("line %d has no value. Fix or remove that line; nothing was saved.", n)
