@@ -126,14 +126,20 @@ func TestCLIDownloads(t *testing.T) {
 	h.srv.cfg.PublicURL = "https://secrets.example.com"
 	h.srv.cfg.KeyPin, h.srv.cfg.CertPin = "sha256//KEYPIN=", "sha256:certpin"
 	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")}
-	_, _, script = fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5")
+	// ...but only when the proxy says the client used https.
+	for _, proto := range [][]string{{"X-Forwarded-For", "10.0.0.5"}, {"X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "http"}} {
+		if code, _, body := fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", proto...); code != http.StatusBadRequest || strings.Contains(body, "curl") {
+			t.Fatalf("install.sh via proxy without https %v: %d\n%s", proto, code, body)
+		}
+	}
+	_, _, script = fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "https")
 	if !strings.Contains(script, "base='https://secrets.example.com'") || !strings.Contains(script, "pin=''") || strings.Contains(script, "--pin sha256") ||
 		!strings.Contains(script, "--proto =https") {
 		t.Fatalf("install.sh via proxy:\n%s", script)
 	}
 	// A proxy with an http public URL would mean an unverified download.
 	h.srv.cfg.PublicURL = "http://secrets.example.com"
-	if code, _, _ := fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5"); code != http.StatusBadRequest {
+	if code, _, _ := fetch(t, http.DefaultClient, h.ts.URL+"/install.sh", "X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "https"); code != http.StatusBadRequest {
 		t.Fatalf("install.sh via an http proxy URL: %d", code)
 	}
 	h.srv.cfg.PublicURL = "https://secrets.example.com"

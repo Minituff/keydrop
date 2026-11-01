@@ -19,7 +19,8 @@ services:
       KEYDROP_PUBLIC_URL: https://secrets.example.com
       # Names/IPs for the self-signed certificate.
       KEYDROP_TLS_HOSTS: secrets.example.com,192.168.1.50
-      # If a reverse proxy sits in front, let it pass the real client IP:
+      # If a reverse proxy sits in front, let it pass the real client IP
+      # (it must also send X-Forwarded-Proto: https, as Traefik does):
       # KEYDROP_TRUSTED_PROXIES: 192.168.1.10
     secrets:
       - keydrop_master_key

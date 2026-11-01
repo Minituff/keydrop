@@ -143,11 +143,17 @@ func TestSetupGuideServed(t *testing.T) {
 	// proxy's normal certificate checks, no pins.
 	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")}
 	h.srv.cfg.PublicURL = "http://secrets.example.com"
-	if code, _, _ := fetch(t, http.DefaultClient, h.ts.URL+"/setup.md", "X-Forwarded-For", "10.0.0.5"); code != http.StatusBadRequest {
+	if code, _, _ := fetch(t, http.DefaultClient, h.ts.URL+"/setup.md", "X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "https"); code != http.StatusBadRequest {
 		t.Fatalf("setup.md via an http proxy URL: %d", code)
 	}
 	h.srv.cfg.PublicURL = "https://secrets.example.com"
-	_, _, body = fetch(t, http.DefaultClient, h.ts.URL+"/setup.md", "X-Forwarded-For", "10.0.0.5")
+	// The proxy must report https; without it this is a plain-http fetch.
+	for _, hdr := range [][]string{{"X-Forwarded-For", "10.0.0.5"}, {"X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "http"}} {
+		if code, _, b := fetch(t, http.DefaultClient, h.ts.URL+"/setup.md", hdr...); code != http.StatusBadRequest || strings.Contains(b, "secrets.example.com") {
+			t.Fatalf("setup.md via proxy without https %v: %d\n%s", hdr, code, b)
+		}
+	}
+	_, _, body = fetch(t, http.DefaultClient, h.ts.URL+"/setup.md", "X-Forwarded-For", "10.0.0.5", "X-Forwarded-Proto", "https")
 	if !strings.Contains(body, "keydrop pair --url https://secrets.example.com\n") || strings.Contains(body, "sha256") || !strings.Contains(body, "nothing to pin") {
 		t.Fatalf("setup.md via proxy:\n%s", body)
 	}
@@ -225,5 +231,24 @@ func TestAgentSetupPage(t *testing.T) {
 	if !strings.Contains(body, "Run `curl -fsS https://secrets.example.com/setup.md` and follow it") || strings.Contains(body, "--pinnedpubkey &#39;") ||
 		!strings.Contains(body, "nothing to pin") {
 		t.Errorf("real certificate:\n%s", body)
+	}
+}
+
+// The setup code is for the person alone: the guide must never have the
+// agent read the log unfiltered or pass the code on.
+func TestSetupGuideKeepsCodeFromAgent(t *testing.T) {
+	for _, g := range []setupGuide{{Generic: true}, {URL: "https://192.168.1.50:8443", CLI: true}} {
+		s, err := g.render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(s, "\n") {
+			if strings.Contains(line, "docker logs keydrop") && !strings.Contains(line, "grep") && !strings.HasPrefix(line, "Don't") {
+				t.Errorf("guide has a plain docker logs line: %q", line)
+			}
+		}
+		if g.Generic && (!strings.Contains(s, "the setup code") || !strings.Contains(s, "test") && !strings.Contains(s, "-e master.key")) {
+			t.Error("generic guide lacks the setup-code rule or the master.key guard")
+		}
 	}
 }

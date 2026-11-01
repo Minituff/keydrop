@@ -23,7 +23,7 @@
 {{end}}
 
 <h2>The whole prompt</h2>
-<p>This is exactly what the agent gets from <code>{{.URL}}/setup.md</code>. You can paste it instead of the short version, or just read it first.</p>
+<p>This is the guide as the agent gets it from <code>{{.URL}}/setup.md</code>. If it reaches the server by another address (directly, or through the proxy), its copy has that address, and the pins that go with it, instead. You can paste this text instead of the short version, or just read it first.</p>
 <pre class="prompt">{{.Prompt}}</pre>
 {{else}}
 <p class="error">There's no setup prompt to show: agents can't reach this server in a way they could check.</p>

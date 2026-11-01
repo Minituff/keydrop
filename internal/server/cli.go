@@ -212,12 +212,18 @@ var safeHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(:[0-9]+)?$|^\[[0-9A-Fa-f:.]+
 // pins the key; through a proxy it uses the public URL and normal
 // certificate checks.
 //
-// It never hands out a script that downloads over plain HTTP: errMsg says
-// why instead.
+// It never hands out a script that downloads over plain HTTP, including
+// when a trusted proxy reports (X-Forwarded-Proto) that the client used
+// http: errMsg says why instead.
 //
 // /setup.md follows the same rules (what names it in the messages).
 func (s *Server) installTarget(r *http.Request, what string) (base, keyPin, certPin, errMsg string) {
 	if s.viaProxy(r) {
+		// The proxy must say the client's hop was https; otherwise this is
+		// the same plain-http fetch refused below.
+		if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+			return "", "", "", what + " is only offered over https (the proxy didn't send X-Forwarded-Proto: https); fetch it with https"
+		}
 		pub := strings.TrimRight(s.cfg.PublicURL, "/")
 		if !strings.HasPrefix(pub, "https://") || s.cfg.PublicURLGuess {
 			return "", "", "", "set KEYDROP_PUBLIC_URL to the proxy's https:// address to fetch " + what + " through it"

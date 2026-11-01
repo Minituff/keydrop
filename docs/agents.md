@@ -3,7 +3,7 @@
 The quickest way to set up keydrop is to let your agent (Claude Code,
 Codex, …) do it. Paste this into it:
 
-> Read https://github.com/Minituff/keydrop/blob/main/docs/agents.md and help me set up keydrop.
+> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agents.md and help me set up keydrop.
 
 **If you're an agent reading this:** follow the section
 [Set up keydrop: steps for the agent](#set-up-keydrop-steps-for-the-agent)
@@ -38,8 +38,10 @@ they say it's done, and don't do their part for them.
 
 ### Rules for the whole setup
 
-- Never print, read, copy or write down a secret value, an agent token or
-  the master key, and never ask the person to paste one into the chat.
+- Never print, read, copy or write down a secret value, an agent token,
+  the master key or the setup code (the one-time code in the server's log
+  that lets whoever has it create the admin login). Don't relay any of
+  them through the chat, and never ask the person to paste one into it.
   Your transcript is stored by your provider and can end up in logs, so
   treat anything in it as public.
 - Do the checks the steps ask for. If a pin or a code doesn't match, or a
@@ -93,13 +95,20 @@ On that machine:
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-docker run --rm ghcr.io/minituff/keydrop genkey > master.key
-sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+if [ -e master.key ]; then echo "master.key already exists: STOP"
+else
+  docker run --rm ghcr.io/minituff/keydrop genkey > master.key
+  if [ -s master.key ]; then sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+  else rm -f master.key; echo "genkey made no key: STOP"; fi
+fi
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 ```
 
 `genkey` writes the master key straight into `master.key`, never to the
-screen. Don't open or print that file (see step 3). keydrop runs as uid
+screen. The commands never overwrite an existing `master.key` (it may be
+the key to data that's already stored) and delete an empty one. If either
+message above printed, stop and tell the person. Don't open or print that
+file (see step 3). keydrop runs as uid
 65532, so the file and `data/` belong to it.
 
 In `compose.example.yml`, set `KEYDROP_PUBLIC_URL` to the address the
@@ -109,15 +118,17 @@ person's browser will use (for example `https://192.168.1.50:8443`) and
 
 ```sh
 docker compose -f compose.example.yml up -d
-docker logs keydrop
+docker logs keydrop 2>&1 | grep -E 'KEYDROP_TLS_PIN|pinnedpubkey|listening'
 ```
 
-The log shows:
+Don't run a plain `docker logs keydrop`: the same log holds the setup
+code, which is for the person alone (step 4). Those lines show:
 
 - `KEYDROP_TLS_PIN=sha256:…`: that's `<cert-pin>`.
 - An install command, `curl -fsSk --pinnedpubkey 'sha256//…' https://…/install.sh | sh`:
   its pin is `<key-pin>` and its address is `<server-url>`.
-- A link to `/setup` with a one-time setup code, for step 4.
+- `listening on …`: the server is up. (You can also check
+  `curl -fsSk <server-url>/healthz`.)
 
 ### 3. STOP: the person saves the master key
 
@@ -138,18 +149,28 @@ Wait until they say it's saved.
 
 ### 4. STOP: the person creates the admin login
 
-Send the person the setup link from the log
-(`<server-url>/setup?code=…`). The code works once and only proves they
-can read the log. Tell them:
+The log holds a one-time setup link for the admin login. Whoever opens it
+first becomes the admin, so the code in it is for the person alone: you
+never read it, repeat it or ask for it, and your chat must not carry it.
+Tell them:
 
-> Open this link. Your browser will warn that the certificate isn't
-> trusted: it's keydrop's own self-signed certificate, so that's expected.
-> (To check it, the SHA-256 fingerprint your browser shows has the same
-> hex digits as `<cert-pin>`.) Choose a password, and add keydrop to your
+> On the server, in your own terminal, run `docker logs keydrop 2>&1 | grep setup`
+> and open the link it shows, exactly as the log prints it. Don't send it
+> to me. That link may use a different address from the one I use to reach
+> keydrop (it uses `KEYDROP_PUBLIC_URL`; I may use the server's direct
+> address), so don't change it to match mine. If keydrop shows its own
+> self-signed certificate, your browser will warn that it isn't trusted:
+> that's expected. (To check it, the SHA-256 fingerprint your browser shows
+> has the same hex digits as `<cert-pin>`.) A proxy with a real
+> certificate gives no warning. Choose a password, and add keydrop to your
 > authenticator app when it offers (recommended).
 
-Never ask for the password or an authenticator code. Wait until they say
-they're logged in, then continue with the values from the log.
+The address can differ because the browser may go through a name or a
+proxy while agents connect to the server directly.
+
+Never ask for the password, the setup code or an authenticator code. Wait
+until they say they're logged in, then continue with the values you got
+from the log in step 2.
 
 ### 5. Install the CLI
 

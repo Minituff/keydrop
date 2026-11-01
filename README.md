@@ -24,14 +24,14 @@ dependencies**, so the whole thing can be audited in an afternoon.
 
 Paste this into your agent (Claude Code, Codex, …):
 
-> Read https://github.com/Minituff/keydrop/blob/main/docs/agents.md and help me set up keydrop.
+> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agents.md and help me set up keydrop.
 
 That sentence is the whole setup. The agent installs the server (or uses
 the one you have), installs the CLI and pairs its machine, and stops when
 it needs you: to save the master key in your password manager, to create
 the admin login in your browser, and to approve the pairing. You can read
 everything it will be told first: the steps are in full in
-[docs/agents.md](docs/agents.md).
+[docs/agents.md](docs/agents.md) (the same text, as a [normal GitHub page](https://github.com/Minituff/keydrop/blob/main/docs/agents.md)).
 
 Already running keydrop? **Agents → Set up an agent** gives a shorter
 prompt with your server's address and certificate pins filled in.
@@ -440,7 +440,10 @@ the check.
 keydrop serves HTTPS itself. With Traefik in front, either point Traefik
 at `https://keydrop:8443` with a `serversTransport` that skips verification,
 or set `KEYDROP_TLS=off` and keep the hop on a private Docker network. Set
-`KEYDROP_TRUSTED_PROXIES` to the proxy's IP. Agents can still talk to the
+`KEYDROP_TRUSTED_PROXIES` to the proxy's IP. The proxy must send
+`X-Forwarded-Proto: https` (Traefik does by default); without it keydrop
+won't serve `/install.sh` or `/setup.md` through the proxy, since it can't
+tell the client didn't use plain http. Agents can still talk to the
 container directly with the pinned certificate, so they don't depend on the
 proxy or DNS.
 
