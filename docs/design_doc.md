@@ -183,7 +183,10 @@ which are the places keydrop exists to keep secrets out of. So a machine
 
 ### Token expiry and renewal
 - Every token has a lifetime, picked when it's made (pairing approval or
-  "New agent"): 30, 90 (the default), 180 or 365 days, or never.
+  "New agent"): 30, 90 (the default), 180 or 365 days, or never. The UI
+  calls it the rotation ("New token every"), because that's what it is to
+  the admin: the agent asks for its replacement and one approval in the
+  Inbox swaps it in, rather than the admin re-granting anything.
   `ExpiresAt` is nil for never. Tokens made before expiry existed have
   none and keep working; the Agents page says "no expiry".
 - **An expired token gets exactly the 401 an unknown one gets**
@@ -195,14 +198,15 @@ which are the places keydrop exists to keep secrets out of. So a machine
   or `never`). The CLI warns once per run in the last 30 days, the same
   window the Agents page marks as "soon". `whoami` prints
   `expires: 2027-01-30 (in 90 days)` or `expires: never`. Days round up.
-- The Agents page shows each token's expiry, a Renew form with a lifetime
-  picker, and a warning on tokens unused for 30 days or more. Expired
-  tokens stay listed until the admin revokes them.
+- The Agents page shows when each token's replacement is due, a "Rotate
+  now" form with the next rotation, each agent's namespaces (editable),
+  and a warning on tokens unused for 30 days or more. Expired tokens stay
+  listed until the admin revokes them.
 - **Renewal is asked for by the agent and granted by the admin.** `keydrop
   renew` (`POST /api/v1/token/renew`) records a request on the token:
   one per token, asking again is a no-op that says so, and status checks
   and requests are rate-limited per (token, address). The Inbox shows it
-  with Approve (with a lifetime) and Decline. If the request came from an
+  with Approve (with the next rotation) and Decline. If the request came from an
   address other than where the token was last used, the Inbox says so in
   red: a stolen token asking to be renewed looks exactly like this.
 - An expired token can call only `GET`/`POST /api/v1/token/renew` and

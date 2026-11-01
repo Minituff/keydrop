@@ -349,7 +349,7 @@ func groupError(err error) string {
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	ns := strings.TrimSpace(r.PostFormValue("namespace"))
+	ns, _ := formNamespace(r, s.store.Namespaces())
 	if !store.ValidName(ns) {
 		s.renderGroups(w, r, se, http.StatusBadRequest, "Namespace: lowercase letters, digits, '.', '_' and '-' only.")
 		return

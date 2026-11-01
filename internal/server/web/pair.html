@@ -13,13 +13,13 @@
   <label>Name
     <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" value="{{.Form.Get "name"}}" placeholder="homelab-agent" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   {{if .Exists}}<label class="check"><input type="checkbox" name="replace" value="yes"{{if eq (.Form.Get "replace") "yes"}} checked{{end}}> Replace it: revoke the existing agent with this name</label>{{end}}
-  <label>Namespaces <small>(comma-separated)</small>
-    <input name="namespaces" required list="namespaces" value="{{.Form.Get "namespaces"}}" placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <datalist id="namespaces">{{range .Namespaces}}<option value="{{.}}">{{end}}</datalist>
+  <p class="label">Namespaces it can read</p>
+  {{template "nschecks" .NSOpts}}
   <label>Permission {{template "permission" (or (.Form.Get "permission") "read")}}</label>
   <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
     <input name="sources" value="{{.Form.Get "sources"}}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <label>Token lifetime {{template "lifetime" .Lifetime}}</label>
+  <label>New token every {{template "lifetime" .Lifetime}}
+    <small class="muted">Near the end the agent asks for a fresh token by itself. Approving it is one tap in the Inbox, and the agent swaps it in; nothing else changes.</small></label>
   <button>Approve</button>
 </form>
 

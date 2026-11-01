@@ -89,7 +89,7 @@ func TestTokenLifetimeForms(t *testing.T) {
 		}
 	}
 	_, body := h.get("/tokens")
-	for _, s := range []string{"no expiry", "expires in 30 days", "expires in 90 days", "Renew"} {
+	for _, s := range []string{"same token, never rotated", "new token due in 30 days", "new token due in 90 days", "Rotate now"} {
 		if !strings.Contains(body, s) {
 			t.Fatalf("Agents page lacks %q", s)
 		}
@@ -124,7 +124,7 @@ func TestExpiredToken(t *testing.T) {
 		t.Fatalf("renew status: %d %v", code, m)
 	}
 	// Still listed (the admin's session has expired by now, so the view).
-	if v := h.srv.tokenViews(); len(v) != 1 || !v[0].Expired || !strings.HasPrefix(v[0].Expiry, "expired ") {
+	if v := h.srv.tokenViews(); len(v) != 1 || !v[0].Expired || !strings.HasPrefix(v[0].Expiry, "token ran out ") {
 		t.Fatalf("expired token not listed: %+v", v)
 	}
 	// Past the grace window, nothing.
@@ -190,7 +190,7 @@ func TestRenewalFlow(t *testing.T) {
 		t.Fatal("request not audited")
 	}
 	_, inbox := h.get("/inbox")
-	if !strings.Contains(inbox, "Token renewals") || !strings.Contains(inbox, "bot") {
+	if !strings.Contains(inbox, "New tokens due") || !strings.Contains(inbox, "bot") {
 		t.Fatal("renewal not in the Inbox")
 	}
 	// Approve and decline are admin forms: CSRF required.

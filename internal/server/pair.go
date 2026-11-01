@@ -307,7 +307,7 @@ func (s *Server) renderPair(w http.ResponseWriter, r *http.Request, se *session,
 	s.render(w, r, "pair", status, se, page{
 		"Title": "Approve an agent", "P": p, "Code": displayCode(p.Code),
 		"Form": form, "Exists": exists, "Error": errMsg, "Namespaces": s.store.Namespaces(),
-		"Lifetime": lifetime,
+		"NSOpts": nsOpts(s.store.Namespaces(), splitList(form.Get("namespaces"))), "Lifetime": lifetime,
 	})
 }
 
@@ -328,9 +328,10 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 		return
 	}
 	form := url.Values{}
-	for _, k := range []string{"name", "namespaces", "permission", "write", "sources", "replace", "lifetime"} {
+	for _, k := range []string{"name", "permission", "write", "sources", "replace", "lifetime"} {
 		form.Set(k, strings.TrimSpace(r.PostFormValue(k)))
 	}
+	form.Set("namespaces", strings.Join(formNamespaces(r), ","))
 	name, nss := form.Get("name"), splitList(form.Get("namespaces"))
 	perm, permOK := formPermission(form)
 	form.Set("permission", string(perm))
@@ -338,7 +339,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 	days, lifeErr := formLifetime(r)
 	switch {
 	case lifeErr != nil:
-		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Lifetime: "+lifeErr.Error()+".")
+		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "New token every: "+lifeErr.Error()+".")
 		return
 	case !permOK:
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, "Permission: read, add or write.")
@@ -441,6 +442,21 @@ func sourcesText(src []string) string {
 		return "anywhere"
 	}
 	return strings.Join(src, ", ")
+}
+
+func (s *Server) handleTokenNamespaces(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	name := r.PathValue("name")
+	nss := formNamespaces(r)
+	if err := s.store.SetTokenNamespaces(name, nss); err != nil {
+		msg := "Namespaces: tick at least one; names are lowercase letters, digits, '.', '_' and '-'."
+		if errors.Is(err, store.ErrNotFound) {
+			msg = "There's no agent called " + name + "."
+		}
+		s.renderTokens(w, r, se, http.StatusBadRequest, msg)
+		return
+	}
+	s.event(r, "admin", "token.namespaces", name, strings.Join(nss, ","))
+	http.Redirect(w, r, "/tokens?msg=namespaces", http.StatusSeeOther)
 }
 
 func (s *Server) handleTokenSources(w http.ResponseWriter, r *http.Request, _ string, se *session) {

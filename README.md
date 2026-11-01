@@ -71,7 +71,11 @@ replacement for Vault or Infisical in a team.
   new keys, and replace only the values of keys this same token created,
   until you save a value there yourself), or **write** (create and replace
   anything in its namespaces). Tokens can be limited to the addresses
-  they're used from. Revoking a token drops its pending requests' link to
+  they're used from. In the UI a namespace is picked from a list; a new
+  one is only made by choosing **+ New namespace…** and typing its name,
+  so a typo can't quietly create one, and the page then reminds you that no
+  agent can read it yet. An agent's namespaces can be changed later on the
+  **Agents** page. Revoking a token drops its pending requests' link to
   it, its pending notes and proposed descriptions; its open flags stay,
   marked *token since revoked*.
 - **Pairing instead of pasting tokens.** `keydrop pair` on the agent's
@@ -135,18 +139,22 @@ replacement for Vault or Infisical in a team.
     namespace, and a token flooding one evicts its own events first.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
-- **Tokens expire.** Each token gets a lifetime when you approve or make
-  it: 30, 90 (the default), 180 or 365 days, or never. The **Agents** page
-  shows "expires in N days", "expired" or "no expiry", points out tokens
-  unused for 30 days or more, and keeps expired tokens listed until you
-  revoke them. An expired token gets the same 401 as an unknown one (the
-  log says "token expired"). From 30 days before expiry every command
-  warns on stderr; `keydrop whoami` shows `expires: 2027-01-30 (in 90
-  days)` or `expires: never`.
+- **Tokens are rotated.** Each token is replaced on a schedule you pick
+  when you approve or make it ("New token every"): 30, 90 (the default),
+  180 or 365 days, or never. Near the end the agent asks for its new token
+  by itself; you approve it with one tap in the **Inbox** and the agent
+  swaps it in, so nothing else changes. The **Agents** page shows "new
+  token due in N days", "token ran out …, waiting for its renewal" or
+  "same token, never rotated", points out tokens unused for 30 days or
+  more, and keeps run-out tokens listed until you revoke them. A token
+  past its date gets the same 401 as an unknown one (the log says "token
+  expired"). From 30 days before then every command warns on stderr;
+  `keydrop whoami` shows `expires: 2027-01-30 (in 90 days)` or `expires:
+  never`.
 - **Renewal is a new token.** `keydrop renew` asks you to renew the token
   (also up to 30 days after it expired); the request shows in the
-  **Inbox**, where you approve it with a lifetime or decline it. Approving,
-  or pressing **Renew** on the Agents page, replaces the token at once:
+  **Inbox**, where you approve it (picking the next rotation) or decline
+  it. Approving, or pressing **Rotate now** on the Agents page, replaces the token at once:
   the old one can then only *collect* the new one, once (repeatable until
   the new one is first used, in case an answer was lost), only from the
   address that asked, within 7 days. `keydrop renew --wait` waits and
@@ -191,7 +199,7 @@ replacement for Vault or Infisical in a team.
 | | |
 |---|---|
 | At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
-| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses, and expires after its lifetime (unless set to never). |
+| Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses, and is replaced on a schedule (unless set to never). |
 | Renewal | Approved by the admin only. Approval replaces the token; the new one is kept sealed with the master key until the agent collects it with the old token, from the address that asked, within 7 days. The Inbox flags a request made from an address other than the token's last one; a collect from another address is refused, logged and alerted. |
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. Pairing and renewal are the only ways a token is handed to an agent. |
 | Admin password | PBKDF2-HMAC-SHA256, 600,000 iterations. Optional TOTP; codes can't be replayed. |
@@ -424,7 +432,7 @@ does this again after the previous release has rewritten the file.
    It prints a link and a short code, then waits.
 2. Open the link (logged in to keydrop). The page shows the code and the
    address the request came from. Check the code matches, then choose the
-   agent's name, its namespaces, its permission (read, add or write), and where it's
+   agent's name, its namespaces (tick existing ones, or type new ones), its permission (read, add or write), and where it's
    allowed from (pre-filled with that address). Approve.
 3. `keydrop pair` picks up the token within a few seconds and writes
    `~/.config/keydrop/{url,token,pin}` with mode 600. The token never

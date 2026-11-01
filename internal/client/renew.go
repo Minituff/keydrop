@@ -66,7 +66,7 @@ func (c *Client) checkExpiry(h string) {
 		return
 	}
 	c.warnedExp = true
-	fmt.Fprintf(warnTo, "keydrop: this token expires in %s. Run `keydrop renew` to ask the admin to extend it.\n", dayText(DaysLeft(t, at)))
+	fmt.Fprintf(warnTo, "keydrop: this token expires in %s. Run `keydrop renew` to ask the admin for its replacement.\n", dayText(DaysLeft(t, at)))
 }
 
 // ExpiredError: the token expired. Renewal can still be asked for during

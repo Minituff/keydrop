@@ -10,8 +10,8 @@
 {{end}}
 
 <h1>Agents</h1>
-<p class="lead">Each agent sees only its namespaces, from the addresses it's allowed. Renew gives it a new token, which it picks up by itself.</p>
-<ul class="list">
+<p class="lead">Each agent sees only its namespaces, from the addresses it's allowed. Each gets a new token on a schedule: it asks, you approve in the Inbox, and it picks the token up by itself.</p>
+<ul class="list agents">
 {{range .Tokens}}
   <li><div>
     <strong>{{.Name}}</strong> <span class="badge">{{.Permission}}</span>
@@ -21,9 +21,16 @@
     {{if .Stale}}<small class="muted">Not used for {{.StaleDays}} days. Revoke it if no agent needs it any more.</small>{{end}}
     <form method="post" action="/tokens/{{.Name}}/renew" class="inline">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
-      <label>Renew for {{template "lifetime" .RenewLifetime}}</label>
-      <button class="small">Renew</button>
+      <label>New token every {{template "lifetime" .RenewLifetime}}</label>
+      <button class="small">Rotate now</button>
     </form>
+    <details class="more"><summary>Namespaces</summary>
+    <form method="post" action="/tokens/{{.Name}}/namespaces">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      {{template "nschecks" (nsOpts $.Namespaces .Namespaces)}}
+      <button class="small">Save namespaces</button>
+    </form>
+    </details>
     <form method="post" action="/tokens/{{.Name}}/sources" class="inline">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <label>Allowed from{{if not .Sources}} <span class="badge">anywhere</span>{{end}}
@@ -65,12 +72,13 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Name
     <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="homelab-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <label>Namespaces <small>(comma-separated)</small>
-    <input name="namespaces" required placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <p class="label">Namespaces it can read</p>
+  {{template "nschecks" (nsOpts .Namespaces nil)}}
   <label>Permission {{template "permission" "read"}}</label>
   <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
     <input name="sources" placeholder="10.0.0.5, 10.0.1.0/24" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-  <label>Token lifetime {{template "lifetime" .DefaultLifetime}}</label>
+  <label>New token every {{template "lifetime" .DefaultLifetime}}
+    <small class="muted">Near the end the agent asks for a fresh token by itself. Approving it is one tap in the Inbox, and the agent swaps it in; nothing else changes.</small></label>
   <button>Create token</button>
 </form>
 {{end}}

@@ -807,7 +807,7 @@ func TestPairing(t *testing.T) {
 	keepTok := m["token"].(string)
 	_, m = h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "keep"})
 	path = m["path"].(string)
-	if c := approve(url.Values{"name": {"keep"}, "namespaces": {"Lab"}, "replace": {"yes"}}); c != http.StatusBadRequest {
+	if c := approve(url.Values{"name": {"keep"}, "namespaces": {"-lab"}, "replace": {"yes"}}); c != http.StatusBadRequest {
 		t.Fatalf("bad namespace on replace: %d", c)
 	}
 	if code, _ := h.apiFrom("10.0.0.5", "GET", "/api/v1/whoami", keepTok, "", nil); code != 200 {

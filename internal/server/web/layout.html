@@ -98,3 +98,23 @@
 {{define "lifetime"}}<select name="lifetime">
   {{$cur := .}}{{range lifetimes}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{lifetimeLabel .}}</option>
   {{end}}</select>{{end}}
+
+{{/* One namespace: existing ones in a list, plus an explicit "+ New namespace". Dot is the page. */}}
+{{define "nspick"}}<label>Namespace
+  <select name="namespace" required>
+    {{if .Namespaces}}{{if not .DefaultNS}}<option value="" disabled selected>Choose a namespace</option>{{end}}{{end}}
+    {{range .Namespaces}}<option value="{{.}}"{{if eq . $.DefaultNS}} selected{{end}}>{{.}}</option>{{end}}
+    <option value="{{newNS}}"{{if not .Namespaces}} selected{{end}}>+ New namespace…</option>
+  </select></label>
+<div class="newns">
+  <label>New namespace name
+    <input name="new_namespace" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <p class="note">This creates a new namespace. No agent can read it until you tick it for one on the Agents page.</p>
+</div>{{end}}
+
+{{/* Several namespaces: a checkbox each, plus new ones typed in. Dot is []nsOpt. */}}
+{{define "nschecks"}}<fieldset class="nschecks">
+  {{range .}}<label class="check"><input type="checkbox" name="ns" value="{{.Name}}"{{if .On}} checked{{end}}> {{.Name}}</label>{{end}}
+  <label class="newns-multi">{{if .}}Or new namespaces{{else}}Namespaces{{end}} <small>(comma-separated; each one typed here is created)</small>
+    <input name="namespaces" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</fieldset>{{end}}

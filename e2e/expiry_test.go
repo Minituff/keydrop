@@ -123,7 +123,7 @@ func TestExpiryRenewalAndCanary(t *testing.T) {
 
 	// Five days left: every command warns.
 	moveClock(t, clockFile, 25*24*time.Hour)
-	if r := g.ok(t, "", "secrets"); !strings.Contains(r.stderr, "keydrop: this token expires in 5 days. Run `keydrop renew` to ask the admin to extend it.") {
+	if r := g.ok(t, "", "secrets"); !strings.Contains(r.stderr, "keydrop: this token expires in 5 days. Run `keydrop renew` to ask the admin for its replacement.") {
 		t.Fatalf("no warning: %q", r.stderr)
 	}
 
@@ -144,7 +144,7 @@ func TestExpiryRenewalAndCanary(t *testing.T) {
 	oldToken := strings.TrimSpace(readFile(t, tokenFile))
 
 	web = login(t, in) // the session expired with the clock
-	if _, inbox := web.get(t, "/inbox"); !strings.Contains(inbox, "Token renewals") || !strings.Contains(inbox, "renewer") {
+	if _, inbox := web.get(t, "/inbox"); !strings.Contains(inbox, "New tokens due") || !strings.Contains(inbox, "renewer") {
 		t.Fatal("the renewal isn't in the Inbox")
 	}
 	web.mustPost(t, "/tokens/renewer/renew", url.Values{"lifetime": {"90"}, "back": {"inbox"}})

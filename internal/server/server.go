@@ -235,6 +235,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
+	m.HandleFunc("POST /tokens/{name}/namespaces", s.admin(s.handleTokenNamespaces))
 	m.HandleFunc("POST /tokens/{name}/permission", s.admin(s.handleTokenPermission))
 	m.HandleFunc("POST /tokens/{name}/renew", s.admin(s.handleRenewToken))
 	m.HandleFunc("POST /tokens/{name}/renewal/decline", s.admin(s.handleDeclineRenewal))

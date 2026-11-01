@@ -29,6 +29,8 @@ type expiryInfo struct{ Text, Class string }
 var funcs = template.FuncMap{
 	"join":          strings.Join,
 	"cssv":          func() string { return cssVersion },
+	"nsOpts":        nsOpts,
+	"newNS":         func() string { return newNamespace },
 	"statuses":      func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
 	"code":          displayCode,
 	"lifetimes":     func() []int { return store.TokenLifetimes },
@@ -113,9 +115,11 @@ var flashes = map[string]string{
 	"groupsaved":     "Group saved.",
 	"groupdel":       "Group deleted. Its entries are ungrouped; none was deleted.",
 	"autogroups":     "Auto groups setting saved.",
-	"renewed":        "Renewed. The agent collects its new token the next time it runs keydrop; the old token now only works for that.",
-	"declined":       "Renewal request declined. The token keeps its current expiry.",
+	"renewed":        "Approved. The agent picks up its new token the next time it runs keydrop; the old token now only works for that.",
+	"declined":       "Declined. The agent keeps its current token until it runs out.",
 	"canary":         "Canary setting saved.",
+	"newns":          "Saved in a new namespace. No agent can read it yet: tick the namespace for an agent on the Agents page.",
+	"namespaces":     "Namespaces saved.",
 	"dismissed":      "Canary alert dismissed. The audit log keeps the read.",
 	"canarysettings": "Canary setting saved.",
 	"alerttest":      "Test alert sent. If it doesn't arrive, keydrop's log says why (without the URL).",
@@ -591,7 +595,7 @@ func formMeta(r *http.Request) (store.Meta, error) {
 }
 
 func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	ns := strings.TrimSpace(r.PostFormValue("namespace"))
+	ns, newNS := formNamespace(r, s.store.Namespaces())
 	// Upper-cased so a phone keyboard's lower case still gives an env-style name.
 	name := strings.ToUpper(strings.TrimSpace(r.PostFormValue("name")))
 	val, hint := readValue(r, "value")
@@ -651,7 +655,11 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		}
 	}
 	s.noteDups(se, ns+"/"+name)
-	http.Redirect(w, r, "/secret/"+url.PathEscape(ns)+"/"+url.PathEscape(name)+"?msg=saved", http.StatusSeeOther)
+	msg := "saved"
+	if newNS {
+		msg = "newns"
+	}
+	http.Redirect(w, r, "/secret/"+url.PathEscape(ns)+"/"+url.PathEscape(name)+"?msg="+msg, http.StatusSeeOther)
 }
 
 func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request, _ string, se *session) {
@@ -806,7 +814,7 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, _ string, 
 func (s *Server) renderTokens(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
 	public, direct := s.cfg.InstallCommands()
 	s.sweepRotations(s.now())
-	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.tokenViews(), "DefaultLifetime": store.DefaultTokenLifetime, "Pairings": s.pendingPairings(), "Error": errMsg,
+	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.tokenViews(), "Namespaces": s.store.Namespaces(), "DefaultLifetime": store.DefaultTokenLifetime, "Pairings": s.pendingPairings(), "Error": errMsg,
 		"InstallPublic": public, "InstallDirect": direct, "CLI": s.cfg.CLI, "CertPin": s.cfg.CertPin, "Version": s.cfg.Version})
 }
 
@@ -820,7 +828,7 @@ func splitList(s string) []string {
 
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
-	nss := splitList(r.PostFormValue("namespaces"))
+	nss := formNamespaces(r)
 	perm, ok := formPermission(url.Values{"permission": {r.PostFormValue("permission")}, "write": {r.PostFormValue("write")}})
 	if !ok {
 		s.renderTokens(w, r, se, http.StatusBadRequest, "Permission: read, add or write.")
@@ -833,7 +841,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 	}
 	days, err := formLifetime(r)
 	if err != nil {
-		s.renderTokens(w, r, se, http.StatusBadRequest, "Lifetime: "+err.Error()+".")
+		s.renderTokens(w, r, se, http.StatusBadRequest, "New token every: "+err.Error()+".")
 		return
 	}
 	tok, err := s.store.CreateTokenExpiring(name, nss, perm, sources, days)

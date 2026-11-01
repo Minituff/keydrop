@@ -1681,6 +1681,27 @@ func (s *Store) SetTokenSources(name string, sources []string) error {
 	return s.commit(snap)
 }
 
+// SetTokenNamespaces replaces the namespaces a token may read.
+func (s *Store) SetTokenNamespaces(name string, namespaces []string) error {
+	if len(namespaces) == 0 {
+		return ErrBadName
+	}
+	for _, n := range namespaces {
+		if !ValidName(n) {
+			return ErrBadName
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.st.clone()
+	t, ok := s.st.Tokens[name]
+	if !ok {
+		return ErrNotFound
+	}
+	t.Namespaces = append([]string(nil), namespaces...)
+	return s.commit(snap)
+}
+
 // ListTokens returns all tokens sorted by name.
 func (s *Store) ListTokens() []Token {
 	s.mu.Lock()

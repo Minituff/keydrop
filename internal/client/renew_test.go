@@ -129,7 +129,7 @@ func TestExpiryWarning(t *testing.T) {
 	}
 	c.checkExpiry(time.Now().Add(5*24*time.Hour - time.Minute).Format(time.RFC3339))
 	c.checkExpiry(time.Now().Add(5 * 24 * time.Hour).Format(time.RFC3339))
-	if out.String() != "keydrop: this token expires in 5 days. Run `keydrop renew` to ask the admin to extend it.\n" {
+	if out.String() != "keydrop: this token expires in 5 days. Run `keydrop renew` to ask the admin for its replacement.\n" {
 		t.Fatalf("got %q", out.String())
 	}
 }

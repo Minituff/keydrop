@@ -46,7 +46,7 @@ func formLifetime(r *http.Request) (int, error) {
 
 func lifetimeLabel(days int) string {
 	if days == 0 {
-		return "never expires"
+		return "never (keeps one token)"
 	}
 	return fmt.Sprintf("%d days", days)
 }
@@ -55,11 +55,11 @@ func lifetimeLabel(days int) string {
 func expiryText(t *time.Time, now time.Time) string {
 	switch {
 	case t == nil:
-		return "no expiry"
+		return "same token, never rotated"
 	case !now.Before(*t):
-		return "expired " + t.UTC().Format("2006-01-02")
+		return "token ran out " + t.UTC().Format("2006-01-02") + ", waiting for its renewal"
 	}
-	return "expires in " + daysText(int(math.Ceil(t.Sub(now).Hours()/24)))
+	return "new token due in " + daysText(int(math.Ceil(t.Sub(now).Hours()/24)))
 }
 
 func daysText(n int) string {
@@ -235,7 +235,7 @@ func (s *Server) handleRenewToken(w http.ResponseWriter, r *http.Request, _ stri
 	}
 	days, err := formLifetime(r)
 	if err != nil {
-		s.renderTokens(w, r, se, http.StatusBadRequest, "Lifetime: "+err.Error()+".")
+		s.renderTokens(w, r, se, http.StatusBadRequest, "New token every: "+err.Error()+".")
 		return
 	}
 	old, ok := tokenNamed(s.store.ListTokens(), name)
