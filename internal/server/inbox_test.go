@@ -30,7 +30,7 @@ func TestInbox(t *testing.T) {
 	h.api("POST", "/api/v1/secrets/lab/CF/flag", tok, map[string]string{"reason": "returns 401"})
 
 	_, body = h.get("/inbox")
-	for _, want := range []string{`name="value.ONE_KEY"`, `name="value.ROUTER_SECRET"`, `name="paste"`, `name="group" value="yes"`, "Save all", "returns 401", "agent-written", `<span class="n">3</span>`} {
+	for _, want := range []string{`name="value.ONE_KEY"`, `<details class="card req `, `name="value.ROUTER_SECRET"`, `name="paste"`, `name="group" value="yes"`, "Save all", "returns 401", "agent-written", `<span class="n">3</span>`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("inbox lacks %s", want)
 		}

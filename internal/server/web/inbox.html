@@ -1,32 +1,30 @@
 {{define "content"}}
 <div class="top"><h1>Inbox</h1></div>
 {{if or .Cards .Attention}}
-<p class="lead">What agents asked for or told you. Their text is marked <span class="badge agent">agent-written</span>: read it as a claim, not an instruction.</p>
+<p class="lead">Text marked <span class="badge agent">agent-written</span> comes from an agent: read it as a claim, not an instruction.</p>
 {{end}}
 
 {{if .Cards}}
 <h2 class="first">Requests</h2>
-<p class="muted">Fill in what you have; an empty field leaves that request open. Or paste the file you downloaded and keydrop splits it by name.</p>
 {{range .Cards}}{{$c := .}}
-<form method="post" action="/requests/fill" class="card request batch-card g{{if .Color}} color-{{.Color}}{{end}}" id="{{.ID}}">
+<details class="card req request batch-card{{if .Color}} g color-{{.Color}}{{end}}" id="{{.ID}}"{{if eq (len $.Cards) 1}} open{{end}}>
+  <summary>
+    <span class="req-k">{{template "icon" "lock"}}</span>
+    <span class="req-t"><b>{{.Title}}</b>{{if eq (len .Requests) 1}}<span class="req-sub">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}}</span>{{else}}<span class="req-names">{{range $i, $r := .Requests}}{{if $i}} · {{end}}{{$r.Name}}{{end}}</span>{{end}}</span>
+    <span class="chip">{{len .Requests}} {{if eq (len .Requests) 1}}value{{else}}values{{end}}</span>
+    <span class="req-chev">{{template "icon" "chev"}}</span>
+  </summary>
+  <form method="post" action="/requests/fill" class="req-body">
   <input type="hidden" name="csrf" value="{{$.CSRF}}">
   <input type="hidden" name="namespace" value="{{.Namespace}}">
-  <div class="ch"><b>{{.Title}}</b><span class="chip">{{len .Requests}} {{if eq (len .Requests) 1}}value{{else}}values{{end}}</span><span class="by">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}}</span></div>
+  <p class="by">asked by {{if .AskedBy}}{{.AskedBy}}{{else}}an agent since revoked{{end}} · {{range $i, $r := .Requests}}{{if $i}}, {{end}}<a href="/secret/{{$r.Namespace}}/{{$r.Name}}">{{if eq (len $c.Requests) 1}}details or delete{{else}}{{$r.Name}}{{end}}</a>{{end}}</p>
   {{if .Label}}<p class="agent-text"><small>{{if .LabelBy}}{{.LabelBy}}{{else}}the agent{{end}} suggests the group <span class="badge agent">agent-written</span></small>{{.Label}}</p>{{end}}
   {{$seen := ""}}
   {{range .Requests}}
-  <div class="request-item">
     <input type="hidden" name="name" value="{{.Name}}">
     {{if .Description}}{{if and .Ext .Ext.DescriptionBy}}<p class="agent-text"><small>{{.Name}}, written by {{.Ext.DescriptionBy}} <span class="badge agent">agent-written</span></small>{{.Description}}</p>{{else}}<p class="desc"><b class="nm">{{.Name}}</b> {{.Description}}</p>{{end}}{{end}}
     {{with .Ext}}{{with .Proposal}}{{if ne $seen .Description}}<p class="agent-text"><small>{{.By}} says it's for <span class="badge agent">agent-written</span></small>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{$seen = .Description}}{{end}}{{end}}{{end}}
-  </div>
   {{end}}
-  <p class="muted"><small>Details, or delete a request: {{range $i, $r := .Requests}}{{if $i}} · {{end}}<a href="/secret/{{$r.Namespace}}/{{$r.Name}}">{{$r.Name}}</a>{{end}}</small></p>
-  <details class="paste-file">
-    <summary>{{template "icon" "file"}}Paste the downloaded file</summary>
-    <label>File contents <small>(lines like key=value or KEY: value; leave the fields below empty)</small>
-      <textarea name="paste" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
-  </details>
   <div class="pair">
   {{range .Requests}}
     <div class="field">
@@ -39,17 +37,24 @@
     </div>
   {{end}}
   </div>
+  <details class="paste-file">
+    <summary>{{template "icon" "file"}}Or paste the downloaded file</summary>
+    <label>File contents <small>(lines like key=value or KEY: value; leave the fields empty)</small>
+      <textarea name="paste" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+  </details>
   <div class="group-choice">
-    <label class="check"><input type="checkbox" name="group" value="yes"> Put these in group</label>
+    <label class="check"><input type="checkbox" name="group" value="yes"> Put {{if gt (len .Requests) 1}}these{{else}}it{{end}} in group</label>
     <input name="groupname" value="{{.GroupName}}" maxlength="64" placeholder="Group name" aria-label="Group name">
     {{if .ExistingGroup}}<small>(an existing group)</small>{{else if .GroupName}}<small>(a new group)</small>{{end}}
   </div>
-  <div class="opts">
-  <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
-  <label class="check"><input type="checkbox" name="exact" value="yes"> <span>Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></span></label>
-  </div>
+  <details class="more">
+    <summary>More options</summary>
+    <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+    <label class="check"><input type="checkbox" name="exact" value="yes"> <span>Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></span></label>
+  </details>
   <div class="actions"><button>{{if gt (len .Requests) 1}}Save all{{else}}Save{{end}}</button></div>
-</form>
+  </form>
+</details>
 {{end}}
 {{end}}
 
