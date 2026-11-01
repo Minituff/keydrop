@@ -18,7 +18,10 @@ a:hover{text-decoration:underline}
 .ic{width:16px;height:16px;flex:none}
 
 /* shell */
-.app{display:flex;min-height:100vh}
+/* The sidebar's colour is also painted down the page's left edge, so on a
+   page taller than the window the dark column runs to the bottom while
+   the sticky sidebar (one window tall) keeps its links in view. */
+.app{display:flex;min-height:100vh;background:linear-gradient(to right,var(--side) 220px,transparent 220px)}
 .side{width:220px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:20px;background:var(--side);color:var(--side-fg);position:sticky;top:0;height:100vh;align-self:flex-start}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;padding:0 6px;color:var(--side-strong,#fff)}
 .brand:hover{text-decoration:none}
@@ -182,7 +185,7 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
 
 @media (max-width:700px){
   body{font-size:15px}
-  .app{display:block}
+  .app{display:block;background:none}
   .side{display:none}
   .mtop{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:2;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}
