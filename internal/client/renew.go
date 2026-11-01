@@ -26,7 +26,7 @@ var now = time.Now
 func SetClock(f func() time.Time) { now = f }
 
 // warnWithin is how close to expiry every command starts warning.
-const warnWithin = 14 * 24 * time.Hour
+const warnWithin = 30 * 24 * time.Hour
 
 // RenewState is where a token's renewal stands.
 type RenewState struct {

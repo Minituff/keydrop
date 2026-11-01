@@ -192,7 +192,7 @@ which are the places keydrop exists to keep secrets out of. So a machine
   the admin. The check is in the one token check (`LookupToken`), so no
   endpoint can forget it.
 - Every authenticated answer carries `X-Keydrop-Token-Expires` (RFC 3339
-  or `never`). The CLI warns once per run in the last 14 days, the same
+  or `never`). The CLI warns once per run in the last 30 days, the same
   window the Agents page marks as "soon". `whoami` prints
   `expires: 2027-01-30 (in 90 days)` or `expires: never`. Days round up.
 - The Agents page shows each token's expiry, a Renew form with a lifetime

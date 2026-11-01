@@ -140,7 +140,7 @@ replacement for Vault or Infisical in a team.
   shows "expires in N days", "expired" or "no expiry", points out tokens
   unused for 30 days or more, and keeps expired tokens listed until you
   revoke them. An expired token gets the same 401 as an unknown one (the
-  log says "token expired"). From 14 days before expiry every command
+  log says "token expired"). From 30 days before expiry every command
   warns on stderr; `keydrop whoami` shows `expires: 2027-01-30 (in 90
   days)` or `expires: never`.
 - **Renewal is a new token.** `keydrop renew` asks you to renew the token

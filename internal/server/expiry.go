@@ -88,7 +88,7 @@ func (s *Server) tokenViews() []tokenView {
 	var out []tokenView
 	for _, t := range s.store.ListTokens() {
 		v := tokenView{Token: t, Expiry: expiryText(t.ExpiresAt, now), Expired: t.Expired(now)}
-		v.Soon = !v.Expired && t.ExpiresAt != nil && t.ExpiresAt.Sub(now) < 14*24*time.Hour
+		v.Soon = !v.Expired && t.ExpiresAt != nil && t.ExpiresAt.Sub(now) < 30*24*time.Hour
 		last := t.CreatedAt
 		if t.LastUsedAt != nil {
 			last = *t.LastUsedAt
