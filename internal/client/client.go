@@ -23,6 +23,9 @@ import (
 // Secret is the metadata the API returns.
 type Secret = server.APISecret
 
+// Group is an entry's group.
+type Group = server.APIGroup
+
 // Whoami describes the token in use.
 type Whoami struct {
 	Name       string   `json:"name"`
@@ -394,6 +397,41 @@ func (c *Client) Request(ref, description, usage string) (string, error) {
 		"namespace": ns, "name": name, "description": description, "usage": usage,
 	}, &out)
 	return out.URL, err
+}
+
+// Batch is the answer to a batch request.
+type Batch struct {
+	Refs []string          `json:"refs"`
+	ID   string            `json:"batch"`
+	URL  string            `json:"url"`  // the batch's card, if the server knows its public URL
+	URLs map[string]string `json:"urls"` // each key's page
+}
+
+// RequestBatch asks the human for several keys at once, filled on one
+// card. They must be in one namespace. group is a group name to propose:
+// the human decides whether to use it.
+func (c *Client) RequestBatch(refs []string, group, description, usage string) (*Batch, error) {
+	var ns string
+	var names []string
+	for _, ref := range refs {
+		n, name, err := c.Resolve(ref)
+		if err != nil {
+			return nil, err
+		}
+		if ns != "" && n != ns {
+			return nil, fmt.Errorf("one request can't mix namespaces (%s and %s); make one per namespace", ns, n)
+		}
+		ns = n
+		names = append(names, name)
+	}
+	var out Batch
+	err := c.do("POST", "/api/v1/requests/batch", map[string]any{
+		"namespace": ns, "names": names, "group": group, "description": description, "usage": usage,
+	}, &out)
+	if IsNotFound(err) {
+		return nil, errors.New("this keydrop server is too old to request several keys at once; request them one at a time, or ask the admin to upgrade it")
+	}
+	return &out, err
 }
 
 // Expiring lists secrets that expire within days (or already have).

@@ -17,20 +17,43 @@
 {{end}}
 </section>
 {{end}}
-{{if .Pending}}
+{{if .Cards}}
 <section>
 <h1>Requested by agents</h1>
-{{range .Pending}}
-<div class="card request">
-  <p><strong>{{.Ref}}</strong> <span class="badge">{{if .RequestedBy}}asked by {{.RequestedBy}}{{else}}asked by an agent since revoked{{end}}</span></p>
-  {{if .Description}}{{if and .Ext .Ext.DescriptionBy}}<p class="agent-text"><small>written by {{.Ext.DescriptionBy}}</small><br>{{.Description}}</p>{{else}}<p class="desc">{{.Description}}</p>{{end}}{{end}}
-  {{with .Ext}}{{with .Proposal}}<p class="agent-text"><small>{{.By}} says it's for:</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}{{end}}
-  <form method="post" action="/secret/{{.Namespace}}/{{.Name}}/value">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    {{template "valuefield"}}
-    <button>Save</button>
-  </form>
-</div>
+<p class="muted">Fill in what you have; an empty field leaves that request open. Or paste the file you downloaded and keydrop splits it by name.</p>
+{{range .Cards}}
+<form method="post" action="/requests/fill" class="card request batch-card" id="{{.ID}}">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <input type="hidden" name="namespace" value="{{.Namespace}}">
+  {{range .Requests}}
+  <div class="request-item">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <p><strong>{{.Ref}}</strong> <span class="badge">{{if .RequestedBy}}asked by {{.RequestedBy}}{{else}}asked by an agent since revoked{{end}}</span></p>
+    {{if .Description}}{{if and .Ext .Ext.DescriptionBy}}<p class="agent-text"><small>written by {{.Ext.DescriptionBy}}</small><br>{{.Description}}</p>{{else}}<p class="desc">{{.Description}}</p>{{end}}{{end}}
+    {{with .Ext}}{{with .Proposal}}<p class="agent-text"><small>{{.By}} says it's for:</small><br>{{.Description}}{{if .Usage}}<br><small>usage:</small> {{.Usage}}{{end}}</p>{{end}}{{end}}
+    <label>Value for {{.Name}}
+      <textarea name="value.{{.Name}}" rows="2" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+    <fieldset class="kind">
+      <label class="check"><input type="radio" name="kind.{{.Name}}" value="secret" checked> Secret</label>
+      <label class="check"><input type="radio" name="kind.{{.Name}}" value="variable"> Variable</label>
+    </fieldset>
+  </div>
+  {{end}}
+  <details class="paste-file">
+    <summary>Paste the downloaded file</summary>
+    <label>File contents <small>(lines like key=value or KEY: value; leave the fields above empty)</small>
+      <textarea name="paste" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+  </details>
+  {{if .Label}}<p class="agent-text"><small>{{if .LabelBy}}{{.LabelBy}}{{else}}the agent{{end}} suggests the group <span class="badge agent">agent-written</span></small><br>{{.Label}}</p>{{end}}
+  <div class="group-choice">
+    <label class="check"><input type="checkbox" name="group" value="yes"> Put these in group</label>
+    <input name="groupname" value="{{.GroupName}}" maxlength="64" placeholder="Group name" aria-label="Group name">
+    {{if .ExistingGroup}}<small>(an existing group)</small>{{else if .GroupName}}<small>(a new group)</small>{{end}}
+  </div>
+  <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+  <label class="check"><input type="checkbox" name="exact" value="yes"> Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></label>
+  <button>{{if gt (len .Requests) 1}}Save all{{else}}Save{{end}}</button>
+</form>
 {{end}}
 </section>
 {{end}}
@@ -64,20 +87,9 @@
 
 <h1>Secrets</h1>
 {{range .Groups}}
-<section>
+<section class="namespace">
 <h2>{{.Namespace}}</h2>
-<ul class="list">
-{{range .Secrets}}
-  <li><a href="/secret/{{.Namespace}}/{{.Name}}">
-    <strong>{{.Name}}</strong>
-    {{if .New}}<span class="badge new">new</span>{{end}}
-    {{with .StatusOf}}<span class="badge expired">{{.}}</span>{{end}}
-    {{with expiry .Expires}}<span class="badge {{.Class}}">{{.Text}}</span>{{end}}
-    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
-    <small>read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}</small>
-  </a></li>
-{{end}}
-</ul>
+{{range .Groups}}{{template "groupsection" .}}{{end}}
 </section>
 {{else}}
 <p class="muted">No secrets yet.</p>
@@ -85,20 +97,30 @@
 
 <h1>Variables</h1>
 {{range .Vars}}
-<section>
+<section class="namespace">
 <h2>{{.Namespace}}</h2>
-<ul class="list">
-{{range .Vars}}
-  <li><a href="/secret/{{.Namespace}}/{{.Name}}">
-    <strong>{{.Name}}</strong>
-    {{if .New}}<span class="badge new">new</span>{{end}}
-    <code class="value">{{.Value}}</code>
-    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
-  </a></li>
-{{end}}
-</ul>
+{{range .Groups}}{{template "groupsection" .}}{{end}}
 </section>
 {{else}}
 <p class="muted">No variables yet.</p>
 {{end}}
+{{end}}
+
+{{define "groupsection"}}
+<div class="group{{if .Color}} color-{{.Color}}{{end}}{{if .Auto}} auto{{end}}{{if .Ungrouped}} ungrouped{{end}}" data-color="{{.Color}}"{{if .Auto}} data-auto="true"{{end}}>
+<h3 class="group-header"><span class="group-name">{{.Name}}</span>{{if .Auto}} <span class="badge">auto</span>{{end}} <small class="count">{{.Count}}</small>{{if .Description}} <span class="desc">{{.Description}}</span>{{end}}</h3>
+<ul class="list">
+{{range .Rows}}
+  <li class="entry-row"><a href="/secret/{{.Namespace}}/{{.Name}}">
+    <strong>{{.Name}}</strong>
+    {{if .New}}<span class="badge new">new</span>{{end}}
+    {{with .StatusOf}}<span class="badge expired">{{.}}</span>{{end}}
+    {{with expiry .Expires}}<span class="badge {{.Class}}">{{.Text}}</span>{{end}}
+    {{if .Variable}}<code class="value">{{.Value}}</code>{{end}}
+    {{if .Description}}<span class="desc">{{.Description}}</span>{{end}}
+    {{if not .Variable}}<small>read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}</small>{{end}}
+  </a></li>
+{{end}}
+</ul>
+</div>
 {{end}}

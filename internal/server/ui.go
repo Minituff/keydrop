@@ -27,6 +27,9 @@ var funcs = template.FuncMap{
 	"join":     strings.Join,
 	"statuses": func() []string { return []string{"expired", "revoked", "leaked", "replaced-by"} },
 	"code":     displayCode,
+	"colorPick": func(palette []string, selected string) map[string]any {
+		return map[string]any{"Palette": palette, "Selected": selected}
+	},
 	"fmtTime": func(t time.Time) string {
 		if t.IsZero() {
 			return "—"
@@ -77,7 +80,7 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup", "groups"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
@@ -100,6 +103,10 @@ var flashes = map[string]string{
 	"totpon":     "Authenticator turned on. Logging in now needs a code.",
 	"totpoff":    "Authenticator turned off. Logging in now needs only your password.",
 	"password":   "Password changed. Any other logged-in browsers were logged out.",
+	"grouped":    "Group saved.",
+	"groupsaved": "Group saved.",
+	"groupdel":   "Group deleted. Its entries are ungrouped; none was deleted.",
+	"autogroups": "Auto groups setting saved.",
 }
 
 type page map[string]any
@@ -112,6 +119,8 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		data["CSRF"] = se.csrf
 	}
 	if f, ok := flashes[r.URL.Query().Get("msg")]; ok {
+		data["Flash"] = f
+	} else if f := filledFlash(r); f != "" {
 		data["Flash"] = f
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -348,20 +357,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, sid string
 
 // ---- secrets ----
 
-type group struct {
-	Namespace string
-	Secrets   []store.Secret
-}
-
 // varRow is a variable with its value, which the dashboard shows in full.
 type varRow struct {
 	store.Secret
 	Value string
-}
-
-type varGroup struct {
-	Namespace string
-	Vars      []varRow
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, _ string, se *session) {
@@ -369,44 +368,46 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, _ strin
 }
 
 func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
-	var pending []store.Secret
-	var groups []group
-	var vars []varGroup
+	var pending, secrets, vars []store.Secret
 	for _, sec := range s.store.ListSecrets(nil) {
 		switch {
 		case sec.Pending:
 			pending = append(pending, sec)
 		case sec.Variable:
-			if len(vars) == 0 || vars[len(vars)-1].Namespace != sec.Namespace {
-				vars = append(vars, varGroup{Namespace: sec.Namespace})
-			}
-			v, _ := s.store.VariableValue(sec.Namespace, sec.Name)
-			vars[len(vars)-1].Vars = append(vars[len(vars)-1].Vars, varRow{sec, string(v)})
+			vars = append(vars, sec)
 		default:
-			if len(groups) == 0 || groups[len(groups)-1].Namespace != sec.Namespace {
-				groups = append(groups, group{Namespace: sec.Namespace})
-			}
-			groups[len(groups)-1].Secrets = append(groups[len(groups)-1].Secrets, sec)
+			secrets = append(secrets, sec)
 		}
 	}
+	assign := s.store.GroupAssignments()
 	nss := s.store.Namespaces()
 	def := ""
 	if len(nss) == 1 {
 		def = nss[0]
 	}
 	s.render(w, r, "dashboard", status, se, page{
-		"Title": "Secrets", "Pending": pending, "Groups": groups, "Vars": vars,
+		"Title": "Secrets", "Cards": s.requestCards(pending),
+		"Groups": s.arrange(secrets, assign, false), "Vars": s.arrange(vars, assign, true),
 		"Namespaces": nss, "DefaultNS": def, "Error": errMsg, "Attention": s.store.NeedsAttention(),
 		"NoAgents": len(s.store.ListTokens()) == 0,
 	})
 }
 
-func formValue(r *http.Request) []byte {
-	v := r.PostFormValue("value")
-	if r.PostFormValue("keepws") != "yes" {
-		v = strings.TrimSpace(v) // phone keyboards love adding a trailing space
+// readValue reads a value field. It's trimmed (phone keyboards love a
+// trailing space) unless "keep whitespace" or "save it exactly as pasted"
+// is ticked. hint is set when the value looks like a paste mistake (see
+// pasteMistake); ticking "save it exactly as pasted" skips that check.
+func readValue(r *http.Request, field string) (val []byte, hint string) {
+	v := r.PostFormValue(field)
+	exact := r.PostFormValue("exact") == "yes"
+	keep := exact || r.PostFormValue("keepws") == "yes"
+	if !keep {
+		v = strings.TrimSpace(v)
 	}
-	return []byte(v)
+	if !exact && v != "" {
+		hint = pasteMistake(v, keep)
+	}
+	return []byte(v), hint
 }
 
 func parseDate(s string) (*time.Time, error) {
@@ -439,9 +440,12 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 	ns := strings.TrimSpace(r.PostFormValue("namespace"))
 	// Upper-cased so a phone keyboard's lower case still gives an env-style name.
 	name := strings.ToUpper(strings.TrimSpace(r.PostFormValue("name")))
-	val := formValue(r)
+	val, hint := readValue(r, "value")
 	meta, err := formMeta(r)
 	switch {
+	case hint != "":
+		s.renderDashboard(w, r, se, http.StatusBadRequest, hint+" Nothing was saved.")
+		return
 	case err != nil:
 		s.renderDashboard(w, r, se, http.StatusBadRequest, err.Error())
 		return
@@ -514,6 +518,7 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 	s.render(w, r, "secret", status, se, page{
 		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
 		"Readers": readers, "Error": errMsg, "Value": value, "X": ext,
+		"GroupList": s.store.Groups(ns), "InGroup": s.store.GroupAssignments()[sec.Ref()],
 		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
 	})
 }
@@ -552,7 +557,11 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
 		return
 	}
-	val := formValue(r)
+	val, hint := readValue(r, "value")
+	if hint != "" {
+		s.renderSecret(w, r, se, http.StatusBadRequest, hint+" Nothing was saved.")
+		return
+	}
 	if len(val) == 0 {
 		s.renderSecret(w, r, se, http.StatusBadRequest, "The value is empty.")
 		return
@@ -705,6 +714,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 		data = s.otpView(seed)
 	}
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
+	data["AutoGroups"] = s.store.AutoGroups()
 	s.render(w, r, "settings", status, se, data)
 }
 

@@ -28,6 +28,13 @@
 </form>
 {{end}}
 
+<h2>Auto groups</h2>
+<form method="post" action="/settings/autogroups" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label class="check"><input type="checkbox" name="on" value="yes"{{if .AutoGroups}} checked{{end}}> Group entries by name: entries not in a group are grouped by the part before the first _ (CLOUDFLARE_TOKEN and CLOUDFLARE_ZONE go under CLOUDFLARE) when at least two share it</label>
+  <button>Save</button>
+</form>
+
 <h2>Password</h2>
 <form method="post" action="/settings/password" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

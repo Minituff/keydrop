@@ -12,6 +12,7 @@
   <a class="brand" href="/">🔑 keydrop</a>
   {{if .CSRF}}<nav>
     <a href="/">Secrets</a>
+    <a href="/groups">Groups</a>
     <a href="/tokens">Agents</a>
     <a href="/audit">Log</a>
     <a href="/settings">Settings</a>
@@ -31,6 +32,7 @@
 <label>Value
   <textarea name="value" rows="3" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
 <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+<label class="check"><input type="checkbox" name="exact" value="yes"> Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></label>
 {{end}}
 
 

@@ -45,6 +45,18 @@ type APISecret struct {
 	DescriptionPending bool `json:"description_pending,omitempty"`
 	// DescriptionBy names the agent that wrote the current description.
 	DescriptionBy string `json:"description_by,omitempty"`
+	// Group is the group the admin put the key in, or its auto group (by
+	// name prefix). Absent: ungrouped.
+	Group *APIGroup `json:"group,omitempty"`
+}
+
+// APIGroup is an entry's group as agents see it.
+type APIGroup struct {
+	Slug  string `json:"slug"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	// Auto: grouped by name prefix, not by the admin.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // APIFlag is what agents see of a flag.
@@ -77,7 +89,8 @@ type APIEvent struct {
 }
 
 // toAPI shapes a secret for token tok; "new" is relative to that token.
-func (s *Server) toAPI(sec store.Secret, tok string) APISecret {
+// assign is the store's GroupAssignments, or nil to look it up.
+func (s *Server) toAPI(sec store.Secret, tok string, assign map[string]store.GroupRef) APISecret {
 	a := APISecret{
 		Ref: sec.Ref(), Namespace: sec.Namespace, Name: sec.Name, Kind: sec.Kind(),
 		Description: sec.Description, Usage: sec.Usage, Expires: sec.Expires,
@@ -97,6 +110,12 @@ func (s *Server) toAPI(sec store.Secret, tok string) APISecret {
 				a.Notes = append(a.Notes, APINote{Text: n.Text, By: n.By, At: n.At, ApprovedAt: *n.ApprovedAt, Edited: n.Edited})
 			}
 		}
+	}
+	if assign == nil {
+		assign = s.store.GroupAssignments()
+	}
+	if g, ok := assign[sec.Ref()]; ok && !g.Ungrouped() {
+		a.Group = &APIGroup{Slug: g.Slug, Name: g.Name, Color: g.Color, Auto: g.Auto}
 	}
 	if sec.Variable && sec.HasValue() {
 		if v, err := s.store.VariableValue(sec.Namespace, sec.Name); err == nil {
@@ -180,20 +199,21 @@ func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) 
 	q := r.URL.Query()
 	onlyNew, onlyPending, ns := q.Get("new") != "", q.Get("pending") != "", q.Get("namespace")
 	out := []APISecret{}
+	assign := s.store.GroupAssignments()
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool {
 		return t.Allows(sec.Namespace) &&
 			(ns == "" || sec.Namespace == ns) &&
 			(!onlyNew || sec.NewFor(t.Name)) &&
 			(!onlyPending || sec.Pending)
 	}) {
-		out = append(out, s.toAPI(sec, t.Name))
+		out = append(out, s.toAPI(sec, t.Name, assign))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) apiGet(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if sec, ok := s.lookup(w, r, t); ok {
-		writeJSON(w, http.StatusOK, s.toAPI(sec, t.Name))
+		writeJSON(w, http.StatusOK, s.toAPI(sec, t.Name, nil))
 	}
 }
 
@@ -363,6 +383,83 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
+type batchBody struct {
+	Namespace   string   `json:"namespace"`
+	Names       []string `json:"names"`
+	Group       string   `json:"group"` // a proposed group name: agent text
+	Description string   `json:"description"`
+	Usage       string   `json:"usage"`
+}
+
+// apiRequestBatch requests several keys at once, linked so the admin
+// fills them on one card. The group name is only a proposal: the admin
+// must tick a box to use it. A batch of N counts as N requests towards
+// the rate limit and the open-request cap.
+func (s *Server) apiRequestBatch(w http.ResponseWriter, r *http.Request, t store.Token) {
+	var b batchBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		apiError(w, http.StatusBadRequest, "body must be JSON: "+err.Error())
+		return
+	}
+	if b.Namespace == "" && len(t.Namespaces) == 1 {
+		b.Namespace = t.Namespaces[0]
+	}
+	if !t.Allows(b.Namespace) {
+		apiError(w, http.StatusForbidden, "this token isn't granted namespace "+b.Namespace)
+		return
+	}
+	if len(b.Names) == 0 || len(b.Names) > store.MaxBatch {
+		apiError(w, http.StatusBadRequest, "name 1 to "+strconv.Itoa(store.MaxBatch)+" keys")
+		return
+	}
+	if !s.writesAllowed(w, t, len(b.Names)) {
+		return
+	}
+	desc, usage := strings.TrimSpace(b.Description), strings.TrimSpace(b.Usage)
+	id, err := s.store.RequestBatch(b.Namespace, b.Names, desc, usage, b.Group, t.Name)
+	switch {
+	case errors.Is(err, store.ErrExists):
+		apiError(w, http.StatusConflict, err.Error()+"; nothing was requested")
+		return
+	case errors.Is(err, store.ErrRequestedByOther):
+		apiError(w, http.StatusConflict, err.Error()+": only that agent or the admin can change the request; nothing was requested")
+		return
+	case errors.Is(err, store.ErrLimit):
+		apiError(w, http.StatusTooManyRequests, "this token would have too many open requests; wait for the admin to fill some, or ask for fewer")
+		return
+	case errors.Is(err, store.ErrBatch):
+		apiError(w, http.StatusBadRequest, "name 1 to "+strconv.Itoa(store.MaxBatch)+" different keys")
+		return
+	case err != nil:
+		apiError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	refs := make([]string, 0, len(b.Names))
+	urls := map[string]string{}
+	for _, n := range b.Names {
+		ref := b.Namespace + "/" + n
+		refs = append(refs, ref)
+		if u := s.secretURL(b.Namespace, n); u != "" {
+			urls[ref] = u
+		}
+		s.event(r, actor(t), "secret.request", ref, "batch of "+strconv.Itoa(len(b.Names)))
+		if desc != "" || usage != "" {
+			s.event(r, actor(t), "secret.propose", ref, "description")
+		}
+	}
+	if strings.TrimSpace(b.Group) != "" {
+		s.event(r, actor(t), "group.propose", refs[0], "a group name for the batch")
+	}
+	out := map[string]any{"refs": refs, "batch": id}
+	if len(urls) > 0 {
+		out["urls"] = urls
+	}
+	if s.cfg.PublicURL != "" {
+		out["url"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/#batch-" + id
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
 // maxExpiringDays bounds ?days= (100 years), so days*24h can't overflow.
 const maxExpiringDays = 36500
 
@@ -373,10 +470,11 @@ func (s *Server) apiExpiring(w http.ResponseWriter, r *http.Request, t store.Tok
 	}
 	cutoff := s.now().Add(time.Duration(days) * 24 * time.Hour)
 	out := []APISecret{}
+	assign := s.store.GroupAssignments()
 	for _, sec := range s.store.ListSecrets(func(sec *store.Secret) bool {
 		return t.Allows(sec.Namespace) && sec.Expires != nil && sec.Expires.Before(cutoff)
 	}) {
-		out = append(out, s.toAPI(sec, t.Name))
+		out = append(out, s.toAPI(sec, t.Name, assign))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -522,7 +620,13 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 // writeAllowed applies the per-token limit on puts and requests, which
 // add to the store and its history.
 func (s *Server) writeAllowed(w http.ResponseWriter, t store.Token) bool {
-	if s.writes.allow(t.Name, s.now()) {
+	return s.writesAllowed(w, t, 1)
+}
+
+// writesAllowed is writeAllowed for n writes at once (a batch request):
+// all n fit in the limit, or none is counted.
+func (s *Server) writesAllowed(w http.ResponseWriter, t store.Token, n int) bool {
+	if s.writes.allowN(t.Name, n, s.now()) {
 		return true
 	}
 	apiError(w, http.StatusTooManyRequests, "too many puts and requests from this token; try again later")
@@ -542,6 +646,11 @@ func newRateLimit(n int, window time.Duration) *rateLimit {
 }
 
 func (l *rateLimit) allow(tok string, now time.Time) bool {
+	return l.allowN(tok, 1, now)
+}
+
+// allowN counts n actions at once, if they all fit.
+func (l *rateLimit) allowN(tok string, n int, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	recent := l.seen[tok][:0:0]
@@ -550,10 +659,13 @@ func (l *rateLimit) allow(tok string, now time.Time) bool {
 			recent = append(recent, at)
 		}
 	}
-	if len(recent) >= l.n {
+	if len(recent)+n > l.n {
 		l.seen[tok] = recent
 		return false
 	}
-	l.seen[tok] = append(recent, now)
+	for range n {
+		recent = append(recent, now)
+	}
+	l.seen[tok] = recent
 	return true
 }

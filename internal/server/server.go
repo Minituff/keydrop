@@ -223,6 +223,14 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/totp/on", s.admin(s.handleTOTPOn))
 	m.HandleFunc("POST /settings/totp/off", s.admin(s.handleTOTPOff))
 	m.HandleFunc("POST /settings/password", s.admin(s.handlePassword))
+	m.HandleFunc("POST /settings/autogroups", s.admin(s.handleAutoGroups))
+	m.HandleFunc("GET /groups", s.admin(s.handleGroups))
+	m.HandleFunc("POST /groups", s.admin(s.handleCreateGroup))
+	m.HandleFunc("POST /groups/promote", s.admin(s.handlePromoteGroup))
+	m.HandleFunc("POST /groups/{ns}/{slug}", s.admin(s.handleUpdateGroup))
+	m.HandleFunc("POST /groups/{ns}/{slug}/delete", s.admin(s.handleDeleteGroup))
+	m.HandleFunc("POST /secret/{ns}/{name}/group", s.admin(s.handleSetEntryGroup))
+	m.HandleFunc("POST /requests/fill", s.admin(s.handleFillRequests))
 
 	m.HandleFunc("POST /api/v1/pair", s.apiPairStart) // no token yet: the admin approves
 	m.HandleFunc("POST /api/v1/pair/poll", s.apiPairPoll)
@@ -233,6 +241,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/reveal", s.agent(s.apiReveal))
 	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/ack", s.agent(s.apiAck))
 	m.HandleFunc("POST /api/v1/requests", s.agent(s.apiRequest))
+	m.HandleFunc("POST /api/v1/requests/batch", s.agent(s.apiRequestBatch))
 	m.HandleFunc("GET /api/v1/expiring", s.agent(s.apiExpiring))
 	m.HandleFunc("GET /api/v1/history", s.agent(s.apiHistory))
 	m.HandleFunc("POST /api/v1/secrets/{ns}/{name}/flag", s.agent(s.apiFlag))
