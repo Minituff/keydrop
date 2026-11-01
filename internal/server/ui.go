@@ -77,7 +77,7 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
@@ -397,6 +397,7 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, se *ses
 	s.render(w, r, "dashboard", status, se, page{
 		"Title": "Secrets", "Pending": pending, "Groups": groups, "Vars": vars,
 		"Namespaces": nss, "DefaultNS": def, "Error": errMsg, "Attention": s.store.NeedsAttention(),
+		"NoAgents": len(s.store.ListTokens()) == 0,
 	})
 }
 

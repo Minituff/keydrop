@@ -1,4 +1,5 @@
 {{define "content"}}
+{{if .NoAgents}}<p class="flash">No agents yet. <a href="/tokens/setup">Set up an agent</a>: one prompt to paste into it.</p>{{end}}
 {{if .Attention}}
 <section>
 <h1>Waiting for you</h1>

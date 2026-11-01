@@ -214,11 +214,13 @@ var safeHost = regexp.MustCompile(`^[A-Za-z0-9.\-]+(:[0-9]+)?$|^\[[0-9A-Fa-f:.]+
 //
 // It never hands out a script that downloads over plain HTTP: errMsg says
 // why instead.
-func (s *Server) installTarget(r *http.Request) (base, keyPin, certPin, errMsg string) {
+//
+// /setup.md follows the same rules (what names it in the messages).
+func (s *Server) installTarget(r *http.Request, what string) (base, keyPin, certPin, errMsg string) {
 	if s.viaProxy(r) {
 		pub := strings.TrimRight(s.cfg.PublicURL, "/")
 		if !strings.HasPrefix(pub, "https://") || s.cfg.PublicURLGuess {
-			return "", "", "", "set KEYDROP_PUBLIC_URL to the proxy's https:// address to install through it"
+			return "", "", "", "set KEYDROP_PUBLIC_URL to the proxy's https:// address to fetch " + what + " through it"
 		}
 		return pub, "", "", ""
 	}
@@ -226,7 +228,7 @@ func (s *Server) installTarget(r *http.Request) (base, keyPin, certPin, errMsg s
 		return "", "", "", "unexpected Host header"
 	}
 	if r.TLS == nil {
-		return "", "", "", "the installer is only offered over https (it would download the CLI unverified); fetch install.sh with https"
+		return "", "", "", what + " is only offered over https (over http, nothing would check it came from keydrop); fetch it with https"
 	}
 	return "https://" + r.Host, s.cfg.KeyPin, s.cfg.CertPin, ""
 }
@@ -301,7 +303,7 @@ func (s *Server) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this server has no CLI builds to hand out (KEYDROP_CLI_DIR isn't set)", http.StatusNotFound)
 		return
 	}
-	base, keyPin, certPin, errMsg := s.installTarget(r)
+	base, keyPin, certPin, errMsg := s.installTarget(r, "install.sh")
 	if errMsg != "" {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
@@ -317,13 +319,12 @@ func (c Config) InstallCommands() (public, direct string) {
 	if len(c.CLI) == 0 {
 		return "", ""
 	}
-	if c.KeyPin == "" || len(c.TrustedProxies) > 0 {
-		if strings.HasPrefix(c.PublicURL, "https://") && !c.PublicURLGuess {
-			public = "curl -fsS " + strings.TrimRight(c.PublicURL, "/") + "/install.sh | sh"
-		}
+	public, direct = c.fetchCommands("/install.sh")
+	if public != "" {
+		public += " | sh"
 	}
-	if c.KeyPin != "" && c.DirectURL != "" {
-		direct = "curl -fsSk --pinnedpubkey '" + c.KeyPin + "' " + strings.TrimRight(c.DirectURL, "/") + "/install.sh | sh"
+	if direct != "" {
+		direct += " | sh"
 	}
 	return public, direct
 }

@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -270,6 +271,44 @@ func servedPin(t *testing.T, addr string) string {
 	defer c.Close()
 	h := sha256.Sum256(c.ConnectionState().PeerCertificates[0].Raw)
 	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+// servedKeyPin is curl's --pinnedpubkey form of the served certificate's
+// public key, sha256//<base64 of SHA-256(SPKI)>, computed independently of
+// the server.
+func servedKeyPin(t *testing.T, addr string) string {
+	t.Helper()
+	c, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	h := sha256.Sum256(c.ConnectionState().PeerCertificates[0].RawSubjectPublicKeyInfo)
+	return "sha256//" + base64.StdEncoding.EncodeToString(h[:])
+}
+
+// keyPinnedGet fetches a URL the way curl -k --pinnedpubkey does: no CA
+// check, but the connection fails unless the server's public key hashes
+// to keyPin.
+func keyPinnedGet(rawURL, keyPin string) (int, string, error) {
+	hc := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, // replaced by the key check below, as with curl -k --pinnedpubkey
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			h := sha256.Sum256(cs.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			if "sha256//"+base64.StdEncoding.EncodeToString(h[:]) != keyPin {
+				return errors.New("public key doesn't match the pin")
+			}
+			return nil
+		},
+	}}}
+	defer hc.CloseIdleConnections()
+	resp, err := hc.Get(rawURL)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), err
 }
 
 // auditLines reads the main and unauthenticated audit logs.

@@ -186,6 +186,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /static/style.css", s.handleCSS)
 	m.HandleFunc("GET /install.sh", s.handleInstallScript)
 	m.HandleFunc("GET /cli/{file}", s.handleCLI)
+	m.HandleFunc("GET /setup.md", s.handleSetupGuide)
 
 	m.HandleFunc("GET /setup", s.handleSetupForm)
 	m.HandleFunc("POST /setup", s.handleSetup)
@@ -207,6 +208,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /secret/{ns}/{name}/proposal/approve", s.admin(s.handleApproveProposal))
 	m.HandleFunc("POST /secret/{ns}/{name}/proposal/reject", s.admin(s.handleRejectProposal))
 	m.HandleFunc("GET /tokens", s.admin(s.handleTokens))
+	m.HandleFunc("GET /tokens/setup", s.admin(s.handleAgentSetup))
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))

@@ -90,7 +90,7 @@ GitHub Actions are the exception; keep them to well-known actions
 | `cmd/keydrop` | Entry point. `main.go` (dispatch, usage text), `serve.go` (server config from env), `agent.go` (CLI commands). |
 | `internal/store` | State file, encryption, secrets, namespaces, tokens. |
 | `internal/auth` | Password hashing, TOTP, login limiter. |
-| `internal/server` | HTTP server: UI (`ui.go`, `web/`), API (`api.go`), pairing (`pair.go`), TLS. |
+| `internal/server` | HTTP server: UI (`ui.go`, `web/`), API (`api.go`), pairing (`pair.go`), the agent setup guide (`setup.go`), TLS. |
 | `internal/client` | API client used by the CLI (with certificate pinning). |
 | `internal/mask` | Streaming output masker. |
 | `internal/qr` | QR encoder for the authenticator setup (stdlib only). |
@@ -138,6 +138,14 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - Go: `gofmt`, stdlib style, short comments that explain *why*.
 - Keep the CLI help text in `cmd/keydrop/main.go`, the README and
   `docs/` in sync with behaviour in the same change.
+- **The agent setup guide has one source:**
+  `internal/server/web/agent-setup.md.tmpl`. The server renders it for
+  `/setup.md` and the "Set up an agent" page; the section of
+  `docs/agents.md` between the `BEGIN agent setup` / `END agent setup`
+  markers is its generic rendering. Edit the template, never that
+  section, then run `go test ./internal/server -run TestAgentsDoc -update`
+  and commit both; `TestAgentsDoc` fails while they differ. It's served
+  without auth, so it must only ever hold public values (address, pins).
 - New config is an env var named `KEYDROP_*`, documented in the README's
   configuration table, with a safe default.
 - Error messages and UI text: plain English, say what to do next.

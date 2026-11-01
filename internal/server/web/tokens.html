@@ -40,6 +40,8 @@
 </ul>
 
 <h2>Add an agent</h2>
+<p><a class="button" href="/tokens/setup">Set up an agent</a> The easy way: a prompt for your AI agent that installs the CLI and pairs it, with this server's address and pins filled in.</p>
+<p>Or by hand:</p>
 {{if .CLI}}
 <p>1. Install the CLI on the agent's machine (Linux or macOS, amd64 or arm64). It's keydrop {{.Version}}, the same build as this server.</p>
 {{if .InstallPublic}}<pre><code>{{.InstallPublic}}</code></pre>{{end}}

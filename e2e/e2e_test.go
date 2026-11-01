@@ -86,6 +86,27 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
+	step("00 /setup.md, fetched with the key pinned like curl, names this server's pins and nothing secret", func(t *testing.T) {
+		keyPin := servedKeyPin(t, in.addr)
+		code, guide, err := keyPinnedGet(in.url+"/setup.md", keyPin)
+		if err != nil || code != http.StatusOK {
+			t.Fatalf("GET /setup.md: %d %v", code, err)
+		}
+		// The pins in it are those of the certificate actually served.
+		for _, want := range []string{"keydrop pair --url " + in.url + " --pin " + servedPin(t, in.addr), "Key pin (`curl --pinnedpubkey` checks it): `" + keyPin + "`"} {
+			if !strings.Contains(guide, want) {
+				t.Fatalf("setup.md lacks %q:\n%s", want, guide)
+			}
+		}
+		if code := in.setupCode(t); strings.Contains(guide, code) || strings.Contains(guide, code[:3]+"-"+code[3:]) {
+			t.Fatal("setup.md holds the setup code")
+		}
+		// Another key pin is refused before anything is read.
+		if _, _, err := keyPinnedGet(in.url+"/setup.md", "sha256//"+base64.StdEncoding.EncodeToString(make([]byte, 32))); err == nil {
+			t.Fatal("fetched with a wrong key pin")
+		}
+	})
+
 	step("01 setup, then pairing approved in the UI; pins agree; whoami", func(t *testing.T) {
 		if got := servedPin(t, in.addr); got != pin {
 			t.Fatalf("the certificate served hashes to %s, the log says %s", got, pin)

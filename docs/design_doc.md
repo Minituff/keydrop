@@ -548,6 +548,36 @@ seconds is cut off, and none runs past 10 minutes. Authenticated API responses c
 CLI warns once if it differs. The header isn't sent to anyone without a
 token, so the server doesn't announce its version.
 
+### Setting up an agent from one prompt
+The setup is written for an agent to follow: the person pastes one
+sentence and the agent installs the server or pairs with an existing one,
+stopping where only the person can act (saving the master key, the admin
+login, approving the pairing). The guide is one template embedded in the
+binary, `internal/server/web/agent-setup.md.tmpl`, rendered two ways:
+
+- **A server's own copy**, `GET /setup.md` (no auth), and the same text on
+  the admin's **Agents → Set up an agent** page. It has that server's
+  address and both pins filled in, and skips installing a server. It
+  follows `/install.sh`'s transport rules (the address comes from the
+  Host header, checked the same way), because the pins in it are what the
+  agent will trust: it's only served over https straight to keydrop, or
+  through a trusted proxy with an https public URL. With a certificate the
+  system already trusts (`KEYDROP_TLS=files`, or a proxy) it has no pins
+  and says so. It holds nothing secret: no token and no setup code, so
+  it's fine for anyone on the network to read.
+- **The generic copy** in `docs/agents.md`, with placeholders
+  (`<server-url>`, `<cert-pin>`, `<key-pin>`) and the steps to install a
+  server first. A test (`TestAgentsDoc`) fails when the checked-in section
+  differs from the rendering; `-update` rewrites it. So the docs can't
+  drift from what servers hand out.
+
+The page's short version is `Run curl -fsSk --pinnedpubkey 'sha256//…'
+https://…/setup.md and follow it`: the key pin protects the guide itself,
+and the guide carries the certificate pin for `keydrop pair`. The pins only
+prove which server the agent is talking to. They don't make the agent
+trustworthy; the admin's approval of the pairing, the token's permission
+and namespaces, and the audit log do that.
+
 ### Deployment hardening (recommended in the example compose file)
 Non-root, read-only root filesystem, `cap_drop: ALL`,
 `no-new-privileges`, master key as a Docker secret. Pin the image by digest

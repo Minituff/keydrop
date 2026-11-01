@@ -275,7 +275,8 @@ keydrop login --url "$(cat ~/.config/keydrop/url)" --pin sha256:NEW < ~/.config/
 `login` checks the token against the server with the new pin before it
 saves anything, and keeps the token as it was. Replace `KEYDROP_TLS_PIN`
 too, wherever it's set. The `install.sh` command on the **Agents** page
-changes as well (it pins the new key). To undo before anyone has
+changes as well (it pins the new key), and so does the prompt under
+**Agents → Set up an agent**. To undo before anyone has
 re-pinned, stop keydrop and rename the two `.bak` files back. Once every
 agent works, delete them.
 
@@ -388,8 +389,9 @@ not an identity: anything with the token can set it.
 Without pairing, you can still create a token by hand under **Agents** and
 paste it into `keydrop login --url URL`.
 
-See [docs/agents.md](docs/agents.md) for wiring this into Claude Code and
-Codex, with a session-start history hook and a guard against `--raw`.
+The rules to give the agent (for its `CLAUDE.md` or `AGENTS.md`), a
+session-start history hook and a guard against `--raw` are in
+[docs/agents.md](docs/agents.md).
 [docs/design_doc.md](docs/design_doc.md) explains how keydrop is built and
 why.
 
@@ -452,6 +454,7 @@ get 429, as do puts and requests past theirs, and a request past a token's
 | `POST /api/v1/pair` | No auth. `{"host","user"}` (shown to the admin, unchecked) → `{"code","path","link","poll","expires_in"}`. At most 3 waiting per address and 8 per IPv6 /64, 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer |
 | `POST /api/v1/pair/poll` | No auth. `{"poll"}` → `{"state":"pending"}`, or once approved `{"state":"approved","token","name","namespaces"}`, exactly once and only to the address that asked (403 from any other). 404 once expired, denied, collected, or the approved token was revoked |
 | `GET /healthz` | No auth |
+| `GET /setup.md` | No auth. The agent setup guide for this server, with the address it was fetched from and the certificate and key pins filled in (no token, no setup code). Same transport rules as `/install.sh` |
 | `GET /install.sh` | No auth. Installer for Linux/macOS; downloads from the address it was fetched from (pinned to keydrop's key when that's keydrop itself). Only over https, or through a trusted proxy with an https `KEYDROP_PUBLIC_URL` |
 | `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 8 downloads at a time, 2 per address |
 

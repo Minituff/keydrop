@@ -43,3 +43,4 @@ pre { padding:.75rem; overflow-x:auto; background:var(--card); border:1px solid 
 dl { display:grid; grid-template-columns:max-content 1fr; gap:.3rem 1rem; } dt { color:var(--muted); } dd { margin:0; }
 table { width:100%; border-collapse:collapse; font-size:.9rem; } th, td { text-align:left; padding:.4rem; border-bottom:1px solid var(--line); vertical-align:top; }
 .qr { width:min(15rem, 100%); margin:.5rem 0; } .qr svg { display:block; width:100%; height:auto; border-radius:8px; }
+pre.prompt { white-space:pre-wrap; overflow-wrap:anywhere; max-height:70vh; overflow-y:auto; }
