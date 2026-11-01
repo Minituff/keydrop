@@ -120,6 +120,13 @@ with a message, so fetch the full history to run it. CI runs the suite as
 its own job. When a change touches the server and CLI together (pairing,
 `run`, the data format, TLS), add a step there as well as unit tests.
 
+While iterating, run only the package and tests you're changing
+(`go test ./internal/store -run TestFlag`). Run the full list above once
+before pushing. In CI, `test`, `e2e` and `image` (one Docker build plus the
+CLI install check) run in parallel; `dev-image` pushes afterwards from the
+build cache. To confirm a change, wait for `test` and `e2e`; the image jobs
+only matter when deploying.
+
 Run it locally:
 
 ```sh
