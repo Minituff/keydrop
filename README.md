@@ -155,9 +155,11 @@ replacement for Vault or Infisical in a team.
   `keydrop: token renewed; new token saved to <path>`. A renewal not
   collected in 7 days revokes the token: pair the agent again. Nothing
   renews without you.
-- **Canaries.** Tick **Canary** when you add a secret (or on its page) to
-  make it a decoy no agent should need. To agents it's an ordinary
-  secret. When an agent reads it (or writes, flags, notes or sets a status
+- **Canaries.** Pick **Canary** as the kind when you add one (or use
+  **Make it a canary** on a secret's page) to make a decoy no agent should
+  need. Leave the value empty and keydrop fills in a random one shaped
+  like an API key. To agents it's an ordinary secret, and they see its
+  description and usage, so write those as if it were real. When an agent reads it (or writes, flags, notes or sets a status
   on it), the log marks it *canary*, the **Inbox** shows one entry per
   canary and token (first and last time, count, addresses) until you
   dismiss it, and, with `KEYDROP_ALERT_WEBHOOK` set, keydrop posts an

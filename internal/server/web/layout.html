@@ -72,9 +72,9 @@
 </html>{{end}}
 
 
-{{define "valuefield"}}
+{{define "valuefield"}}{{/* dot true: the value may be left empty (the New page fills a canary in) */}}
 <label>Value
-  <textarea name="value" rows="3" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+  <textarea name="value" rows="3"{{if not .}} required{{end}} autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
 <label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
 <label class="check"><input type="checkbox" name="exact" value="yes"> <span>Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></span></label>
 {{end}}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
@@ -559,6 +560,26 @@ func parseDate(s string) (*time.Time, error) {
 	return &t, nil
 }
 
+// decoyValue is a random value for a canary left empty: 40 letters and
+// digits, the shape of a typical API key.
+func decoyValue() []byte {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 0, 40)
+	var buf [64]byte
+	for len(b) < cap(b) {
+		if _, err := rand.Read(buf[:]); err != nil {
+			panic(err) // crypto/rand never fails on supported platforms
+		}
+		for _, c := range buf {
+			// 248 = 4*62: rejecting the rest keeps every character equally likely.
+			if c < 248 && len(b) < cap(b) {
+				b = append(b, chars[c%62])
+			}
+		}
+	}
+	return b
+}
+
 func formMeta(r *http.Request) (store.Meta, error) {
 	exp, err := parseDate(r.PostFormValue("expires"))
 	return store.Meta{
@@ -575,6 +596,12 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 	name := strings.ToUpper(strings.TrimSpace(r.PostFormValue("name")))
 	val, hint := readValue(r, "value")
 	meta, err := formMeta(r)
+	// "Canary" is a third kind on the New page; the checkbox is the older form.
+	canary := (r.PostFormValue("kind") == "canary" || r.PostFormValue("canary") == "yes") && !meta.Variable
+	if canary && len(val) == 0 && hint == "" {
+		// The value of a decoy doesn't matter, only that it looks real.
+		val = decoyValue()
+	}
 	switch {
 	case hint != "":
 		s.renderNew(w, r, se, http.StatusBadRequest, hint+" Nothing was saved.")
@@ -616,7 +643,7 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 	if exists && old.Variable != meta.Variable {
 		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(meta.Variable))
 	}
-	if r.PostFormValue("canary") == "yes" && !meta.Variable {
+	if canary {
 		if err := s.store.SetCanary(ns, name, true); err != nil {
 			log.Printf("canary %s/%s: %v", ns, name, err)
 		} else {

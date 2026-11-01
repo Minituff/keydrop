@@ -516,3 +516,45 @@ func TestDuplicateWarning(t *testing.T) {
 var tagRE = regexp.MustCompile(`<[^>]*>`)
 
 func stripTags(s string) string { return tagRE.ReplaceAllString(s, "") }
+
+// The New page offers Canary as a third kind, and a canary left empty gets a
+// random value.
+func TestNewCanaryKind(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	_, body := h.get("/new")
+	if !strings.Contains(body, `name="kind" value="canary"`) || strings.Contains(body, `name="canary"`) {
+		t.Fatal("New page: want a Canary kind and no canary checkbox")
+	}
+	if code, _ := h.form("/secrets", url.Values{"namespace": {"lab"}, "name": {"BAIT_A"}, "kind": {"canary"}, "value": {""}}); code != http.StatusSeeOther {
+		t.Fatalf("empty canary: %d", code)
+	}
+	sec, _ := h.st.GetSecret("lab", "BAIT_A")
+	if !sec.Canary || sec.Variable {
+		t.Fatalf("BAIT_A: canary %v variable %v", sec.Canary, sec.Variable)
+	}
+	a, _, err := h.st.Reveal("lab", "BAIT_A", "test")
+	if err != nil || len(a) != 40 {
+		t.Fatalf("decoy value: len %d, %v", len(a), err)
+	}
+	h.form("/secrets", url.Values{"namespace": {"lab"}, "name": {"BAIT_B"}, "kind": {"canary"}})
+	if b, _, _ := h.st.Reveal("lab", "BAIT_B", "test"); string(a) == string(b) {
+		t.Fatal("two decoys got the same value")
+	}
+	// A value typed for a canary is kept.
+	h.form("/secrets", url.Values{"namespace": {"lab"}, "name": {"BAIT_C"}, "kind": {"canary"}, "value": {"fake-typed-value"}})
+	if c, _, _ := h.st.Reveal("lab", "BAIT_C", "test"); string(c) != "fake-typed-value" {
+		t.Fatal("typed canary value not kept")
+	}
+	// Anything else still needs a value, and a variable is never a canary.
+	if code, _ := h.form("/secrets", url.Values{"namespace": {"lab"}, "name": {"PLAIN"}, "kind": {"secret"}}); code != http.StatusBadRequest {
+		t.Fatalf("empty secret: %d", code)
+	}
+	if _, ok := h.st.GetSecret("lab", "PLAIN"); ok {
+		t.Fatal("empty secret saved")
+	}
+	h.form("/secrets", url.Values{"namespace": {"lab"}, "name": {"VAR"}, "kind": {"variable"}, "value": {"x"}, "canary": {"yes"}})
+	if v, _ := h.st.GetSecret("lab", "VAR"); v.Canary {
+		t.Fatal("variable became a canary")
+	}
+}

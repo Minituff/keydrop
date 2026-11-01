@@ -82,6 +82,11 @@ input.envname{text-transform:uppercase;font-family:ui-monospace,monospace}
 .row{display:flex;gap:.75rem;flex-wrap:wrap}.row label{flex:1 1 12rem}
 fieldset.kind{border:0;padding:0;margin:0 0 .5rem}
 fieldset.kind small{display:block}
+/* New page: a canary needs no value (keydrop makes one up). Without :has()
+   the value stays visible and optional, and the note explains it. */
+.canary-note{display:none}
+form:has(input[name=kind][value=canary]:checked) .canary-note{display:block}
+form:has(input[name=kind][value=canary]:checked) .valueblock{display:none}
 
 /* cards */
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:0 0 12px}
@@ -241,7 +246,7 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
   .pair{grid-template-columns:1fr}
   .actions{flex-wrap:wrap}
   .actions button,.actions .button{flex:1;padding:11px 14px}
-  .row{flex-direction:column;gap:0}
+  .row{flex-direction:column;gap:0}.row label{flex:none}
   .group-choice input[name=groupname]{width:100%}
   dl{grid-template-columns:1fr;gap:0}dt{margin-top:.5rem}
   .scroll table{min-width:34rem}
