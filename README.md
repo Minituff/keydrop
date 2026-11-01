@@ -170,11 +170,16 @@ replacement for Vault or Infisical in a team.
   description and usage, so write those as if it were real. When an agent reads it (or writes, flags, notes or sets a status
   on it), the log marks it *canary*, the **Inbox** shows one entry per
   canary and token (first and last time, count, addresses) until you
-  dismiss it, and, with `KEYDROP_ALERT_WEBHOOK` set, keydrop posts an
+  dismiss it, and, with an alert webhook set, keydrop posts an
   alert (at most one per canary and token every 10 minutes; at most 5 at
   once and one a minute after that, the rest summed up in one message).
-  Settings shows whether a webhook is configured, sends a test alert, and
-  can **revoke a token that reads a canary**. That's off by default,
+  Add the webhook in **Settings** (paste a Discord webhook URL; it's
+  stored encrypted and never shown again), or set `KEYDROP_ALERT_WEBHOOK`.
+  One added in Settings wins; removing it falls back to the variable.
+  Settings shows where alerts go (for Discord: the webhook's name and a
+  link to its channel), and **Send test alert** sends one at once and
+  says whether the webhook accepted it. Settings can also **revoke a
+  token that reads a canary**. That's off by default,
   because the revocation tells whoever holds the token which secret was
   the canary. Variables can't be canaries.
 - **Duplicate values.** When you save a value in the web page (Add,
@@ -332,6 +337,11 @@ don't need `upgrade-data`. An older release that has the integrity check
 starts on data this release wrote, and ignores what it doesn't know. When
 it next saves, those fields are gone: rolling back loses groups (the keys
 stay, ungrouped), and requests stop being linked as one batch.
+
+**The alert webhook added in Settings** is a newer field too. The
+release before it starts on the data and uses `KEYDROP_ALERT_WEBHOOK` (or
+none); once it saves, the webhook is gone from the file, so add it again
+in Settings after rolling forward. `downgrade-data` isn't needed for it.
 
 **Token expiry, renewal and canaries are different.** Once any of them is
 in use (and a token made with the default lifetime counts), the sealed key
@@ -521,7 +531,7 @@ why.
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
-| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible; Slack and ntfy accept it too). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only whether one is set. |
+| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible; Slack and ntfy accept it too). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
 override the files written by `keydrop pair` / `keydrop login`. A pin

@@ -264,12 +264,21 @@ which are the places keydrop exists to keep secrets out of. So a machine
   count, and the first 5 addresses. The first touch is never overwritten.
   Entries are capped at 100; past that, new ones are only counted (the
   audit log has them all). The admin dismisses entries.
-- **Alerts** go to `KEYDROP_ALERT_WEBHOOK` (Discord-compatible: a JSON
+- **Alerts** go to the webhook added in Settings, or else
+  `KEYDROP_ALERT_WEBHOOK` (Discord-compatible: a JSON
   `{"content": ...}` with `allowed_mentions` empty, so a name can't ping
   anyone). The body names the canary, the token, the address and the
   time, never a value or a token. The URL is a credential: it's never
-  logged, shown, put in an error or the audit log; Settings shows only
-  whether it's set, and has a test button. Sending is asynchronous, from
+  logged, shown, put in an error or the audit log. One added in Settings
+  is sealed (AES-GCM, its own AAD) in the `alerts` field under MAC5 and
+  never shown again. Settings shows only where it posts: the host, and
+  for a Discord webhook the name and channel from Discord's answer to a
+  GET on it (cleaned, capped, and the ids checked as digits before
+  they make a link). The webhook doesn't restrict access, so unlike the
+  MAC4 fields it isn't tied to the key check: stripping it with MAC5
+  gives a file the previous release could have written, and alerts fall
+  back to the variable. **Send test alert** posts at once, against the
+  same budget, and shows the webhook's answer. Other alerts are sent asynchronously, from
   one goroutine with a queue of 32 and a 5-second timeout: at most one
   alert per canary and token every 10 minutes, and a global budget of 5
   at once then one a minute. What's over the budget is counted and sent
@@ -651,6 +660,13 @@ limited to what it needs:
   canaries become ordinary secrets, the canary Inbox entries go; the
   audit log keeps everything) and lists by name what it dropped; run
   again, it goes back to the v1 key check as before.
+- **A fifth MAC for the alert webhook.** 7b184c1 checks `mac4` over all it
+  parses, so `mac4` now covers `v4View()` (the state with `alerts`
+  zeroed) and `mac5` (`HKDF(master key, "state mac v5")`) covers
+  everything; `mac5` is written whenever `alerts` is set and must verify
+  when either is present. The webhook doesn't restrict access, so it
+  doesn't need the key check: stripping `alerts` and `mac5` gives a file
+  7b184c1 could have written, and only loses the webhook.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the

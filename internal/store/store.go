@@ -309,6 +309,10 @@ type state struct {
 	// MAC4 covers them; see v3View.
 	Canary *CanaryState `json:"canary,omitempty"`
 	MAC4   []byte       `json:"mac4,omitempty"`
+	// Alerts (the webhook set in Settings) came in the release after
+	// MAC4, and MAC5 covers it; see v4View and alerts.go.
+	Alerts *AlertSettings `json:"alerts,omitempty"`
+	MAC5   []byte         `json:"mac5,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -347,8 +351,8 @@ func (st *state) v2View() state {
 // verifies a file this one wrote. The maps are copies; pointers inside
 // them are shared with st: don't write through them.
 func (st *state) v3View() state {
-	c := *st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.Canary = nil, nil, nil, nil, nil
+	c := st.v4View()
+	c.MAC4, c.Canary = nil, nil
 	c.Secrets = make(map[string]*Secret, len(st.Secrets))
 	for k, v := range st.Secrets {
 		cp := *v
@@ -361,6 +365,16 @@ func (st *state) v3View() state {
 		cp.ExpiresAt, cp.Lifetime, cp.Renewal, cp.Rotation = nil, 0, nil, nil
 		c.Tokens[k] = &cp
 	}
+	return c
+}
+
+// v4View is the state as the release with MAC4 (and without the alert
+// webhook in Settings) sees it: the alerts field and MAC5 dropped, the MACs
+// empty. Marshalled, it's byte-for-byte what that release marshals for its
+// MAC4. A shallow copy: don't write through it.
+func (st *state) v4View() state {
+	c := *st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.Alerts = nil, nil, nil, nil, nil, nil
 	return c
 }
 
@@ -453,6 +467,7 @@ type Store struct {
 	mac2Key []byte
 	mac3Key []byte
 	mac4Key []byte
+	mac5Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -600,6 +615,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s.mac2Key = s.DeriveKey("state mac v2")
 	s.mac3Key = s.DeriveKey("state mac v3")
 	s.mac4Key = s.DeriveKey("state mac v4")
+	s.mac5Key = s.DeriveKey("state mac v5")
 	return s, nil
 }
 
@@ -630,6 +646,10 @@ func (s *Store) load(data []byte) error {
 		}
 		// And for the fields after MAC3, under MAC4.
 		if (s.v4 || s.st.hasNewer4() || s.st.MAC4 != nil) && !hmac.Equal(s.st.MAC4, s.mac4()) {
+			return ErrIntegrity
+		}
+		// And for the alert webhook, under MAC5.
+		if (s.st.Alerts != nil || s.st.MAC5 != nil) && !hmac.Equal(s.st.MAC5, s.mac5()) {
 			return ErrIntegrity
 		}
 	}
@@ -688,11 +708,17 @@ func (s *Store) mac3() []byte {
 	return macOf(s.mac3Key, &c)
 }
 
-// mac4 is the HMAC of the whole state with the MAC fields empty.
+// mac4 is the HMAC of v4View: everything the release with MAC4 knows.
 func (s *Store) mac4() []byte {
-	c := s.st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4 = nil, nil, nil, nil
+	c := s.st.v4View()
 	return macOf(s.mac4Key, &c)
+}
+
+// mac5 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac5() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5 = nil, nil, nil, nil, nil
+	return macOf(s.mac5Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -791,7 +817,7 @@ func (s *Store) save() error {
 }
 
 func (s *Store) write(v4 bool) error {
-	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4 = s.mac(), nil, nil, nil
+	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5 = s.mac(), nil, nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
 	}
@@ -800,6 +826,9 @@ func (s *Store) write(v4 bool) error {
 	}
 	if v4 || s.st.hasNewer4() {
 		s.st.MAC4 = s.mac4()
+	}
+	if s.st.Alerts != nil {
+		s.st.MAC5 = s.mac5()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {

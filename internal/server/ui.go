@@ -122,7 +122,9 @@ var flashes = map[string]string{
 	"namespaces":     "Namespaces saved.",
 	"dismissed":      "Canary alert dismissed. The audit log keeps the read.",
 	"canarysettings": "Canary setting saved.",
-	"alerttest":      "Test alert sent. If it doesn't arrive, keydrop's log says why (without the URL).",
+	"alerttest":      "Test alert delivered: the webhook accepted it. Look for it in the channel below.",
+	"webhookset":     "Webhook saved. Send a test alert to check it.",
+	"webhookremoved": "Webhook removed.",
 }
 
 type page map[string]any
@@ -899,6 +901,9 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
 	data["AutoGroups"] = s.store.AutoGroups()
 	data["AlertsConfigured"] = s.alerts.configured()
+	data["AlertDest"] = s.alerts.destination(false)
+	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
+	data["AlertEnv"] = s.cfg.AlertWebhook != ""
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }

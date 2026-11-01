@@ -7,7 +7,7 @@
 //	go test -tags e2e ./e2e/...
 //
 // It builds the binary once, and for the upgrade and rollback tests the
-// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit and v3RollbackCommit (needs git history;
+// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit, v3RollbackCommit and v4RollbackCommit (needs git history;
 // skipped in a shallow clone).
 package e2e
 
@@ -41,6 +41,10 @@ const v2RollbackCommit = "733cf9f"
 // v3RollbackCommit is the release before token expiry, renewal and
 // canaries. It refuses data that used them until downgrade-data is run.
 const v3RollbackCommit = "b0b9efe"
+
+// v4RollbackCommit is the release before the alert webhook could be set in
+// Settings. It opens data with one set, ignoring it.
+const v4RollbackCommit = "7b184c1"
 
 var (
 	binary   string // the keydrop under test, built by TestMain

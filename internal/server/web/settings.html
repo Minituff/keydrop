@@ -36,12 +36,30 @@
 </form>
 
 <h2>Alerts and canaries</h2>
-<p>Alert webhook: {{if .AlertsConfigured}}<span class="badge new">configured</span>{{else}}<span class="badge">not configured</span> <small>set KEYDROP_ALERT_WEBHOOK and restart keydrop</small>{{end}}</p>
-{{if .AlertsConfigured}}<form method="post" action="/settings/alert-test" class="inline">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <button class="secondary">Send test alert</button>
-</form>
-<p class="muted">The test goes out in the background: check the channel. A failure shows in keydrop's log.</p>{{end}}
+<div class="card alerts">
+{{if .AlertsConfigured}}
+  <p>Alerts go to: {{with .AlertDest}}{{if .Discord}}<strong>Discord</strong>{{if .Name}}, posted as <strong>{{.Name}}</strong>{{end}}{{if .ChannelURL}} · <a href="{{.ChannelURL}}" target="_blank" rel="noopener noreferrer">open the channel</a>{{end}}{{else if .Host}}a webhook at <strong>{{.Host}}</strong>{{else}}the webhook{{end}}{{end}}</p>
+  {{with .AlertDest.Problem}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <p><small class="muted">{{if eq .AlertSource "settings"}}Added here {{fmtTime .AlertSetAt}}.{{if .AlertEnv}} keydrop's container also sets KEYDROP_ALERT_WEBHOOK; that one is used again if you remove this.{{end}}{{else}}Set by KEYDROP_ALERT_WEBHOOK in keydrop's container. A webhook added here is used instead.{{end}}</small></p>
+  <form method="post" action="/settings/alert-test" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="secondary">Send test alert</button>
+  </form>
+{{else}}
+  <p>Alert webhook: <span class="badge">not configured</span>. Canary reads still show in the Inbox; add a webhook to get them in a chat channel too.</p>
+{{end}}
+  <form method="post" action="/settings/alert-webhook">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>{{if eq .AlertSource "settings"}}Replace the webhook{{else if .AlertsConfigured}}Use a different webhook{{else}}Webhook URL{{end}}
+      <input type="password" name="webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <p><small class="muted">Stored encrypted and never shown again. In Discord: the channel's settings → Integrations → Webhooks → Copy Webhook URL.</small></p>
+    <button>Save webhook</button>
+  </form>
+{{if eq .AlertSource "settings"}}  <form method="post" action="/settings/alert-webhook/remove" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="secondary">Remove this webhook</button>
+  </form>
+{{end}}</div>
 <form method="post" action="/settings/canary" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label class="check"><input type="checkbox" name="revoke" value="yes"{{if .RevokeOnCanary}} checked{{end}}> <span>Revoke a token that reads a canary <small>(or changes one). Stops it at once, but the agent then knows which secret was the decoy.</small></span></label>

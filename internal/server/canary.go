@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +45,6 @@ const (
 // channel): it's never logged, shown, put in an error or written to the
 // audit log.
 type alerter struct {
-	url    string
 	client *http.Client
 	now    func() time.Time
 	queue  chan []byte
@@ -52,6 +52,8 @@ type alerter struct {
 	wg     sync.WaitGroup // alerts queued and not yet sent, for tests
 
 	mu     sync.Mutex
+	url    string               // set with setURL; read with webhook
+	dest   alertDest            // where url posts, for Settings
 	last   map[string]time.Time // canary ref + token -> last alert
 	tokens float64              // the global budget
 	filled time.Time
@@ -89,7 +91,21 @@ func CheckAlertWebhook(raw string) error {
 	return nil
 }
 
-func (a *alerter) configured() bool { return a.url != "" }
+func (a *alerter) configured() bool { return a.webhook() != "" }
+
+func (a *alerter) webhook() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.url
+}
+
+// setURL changes where alerts go, including those already queued. The
+// destination is looked up again (describe).
+func (a *alerter) setURL(u string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.url, a.dest = u, alertDest{}
+}
 
 // allow reports whether an alert for key may go out now (one per key per
 // alertEvery), and if so counts it.
@@ -198,7 +214,11 @@ func (a *alerter) post(body []byte) error {
 func (a *alerter) postOnce(body []byte) (time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.url, bytes.NewReader(body))
+	u := a.webhook()
+	if u == "" {
+		return 0, errors.New("no webhook is configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return 0, errors.New("couldn't build the request")
 	}
@@ -305,14 +325,54 @@ func (s *Server) handleCanarySettings(w http.ResponseWriter, r *http.Request, _ 
 	http.Redirect(w, r, "/settings?msg=canarysettings", http.StatusSeeOther)
 }
 
-// handleAlertTest sends a test alert. Whether it arrived only shows in the
-// channel (and a failure in keydrop's log): the send is in the background.
+// handleAlertTest sends a test alert now and shows the webhook's answer.
 func (s *Server) handleAlertTest(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	if !s.alerts.configured() {
-		s.renderSettings(w, r, se, http.StatusBadRequest, "No alert webhook is configured: set KEYDROP_ALERT_WEBHOOK and restart keydrop.")
+		s.renderSettings(w, r, se, http.StatusBadRequest, "No alert webhook is configured: add one below.")
 		return
 	}
-	s.alerts.send("keydrop: test alert, sent from Settings at " + s.now().UTC().Format(time.RFC3339) + ".")
-	s.event(r, "admin", "alert.test", "", "")
+	err := s.alerts.test("keydrop: test alert, sent from Settings at " + s.now().UTC().Format(time.RFC3339) + ".")
+	s.alerts.destination(true)
+	if err != nil {
+		s.event(r, "admin", "alert.test", "", "failed: "+err.Error())
+		s.renderSettings(w, r, se, http.StatusBadGateway, "Test alert not delivered: "+err.Error()+".")
+		return
+	}
+	s.event(r, "admin", "alert.test", "", "delivered")
 	http.Redirect(w, r, "/settings?msg=alerttest", http.StatusSeeOther)
+}
+
+// handleAlertWebhook stores the webhook pasted in Settings. It's never
+// shown again; Settings shows only where it posts.
+func (s *Server) handleAlertWebhook(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	raw := strings.TrimSpace(r.PostFormValue("webhook"))
+	if raw == "" {
+		s.renderSettings(w, r, se, http.StatusBadRequest, "Paste the webhook URL first.")
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || CheckAlertWebhook(raw) != nil || len(raw) > store.MaxWebhookLen {
+		s.renderSettings(w, r, se, http.StatusBadRequest, "That isn't a webhook URL: it should start with https://.")
+		return
+	}
+	if err := s.store.SetAlertWebhook(raw); err != nil {
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save the webhook: "+err.Error()+".")
+		return
+	}
+	s.alerts.setURL(raw)
+	s.alerts.destination(true)
+	s.event(r, "admin", "settings.alertwebhook", "", "set ("+u.Hostname()+")")
+	http.Redirect(w, r, "/settings?msg=webhookset", http.StatusSeeOther)
+}
+
+// handleAlertWebhookRemove forgets the webhook set in Settings; alerts go
+// to KEYDROP_ALERT_WEBHOOK again, if that's set.
+func (s *Server) handleAlertWebhookRemove(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	if err := s.store.SetAlertWebhook(""); err != nil {
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't remove the webhook: "+err.Error()+".")
+		return
+	}
+	s.alerts.setURL(s.cfg.AlertWebhook)
+	s.event(r, "admin", "settings.alertwebhook", "", "removed")
+	http.Redirect(w, r, "/settings?msg=webhookremoved", http.StatusSeeOther)
 }

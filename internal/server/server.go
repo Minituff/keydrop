@@ -50,7 +50,8 @@ type Config struct {
 	// pinned install command, e.g. https://10.0.0.5:8443.
 	DirectURL string
 	// AlertWebhook is where canary alerts are POSTed ({"content": ...},
-	// Discord-compatible). Empty: no alerts. It's never logged or shown.
+	// Discord-compatible), unless one is set in Settings. Empty: no alerts
+	// without one. It's never logged or shown.
 	AlertWebhook string
 	// Now replaces the clock; nil is time.Now. Only the e2e tests' build
 	// (tag e2eclock) sets it.
@@ -155,6 +156,17 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	if cfg.Now != nil {
 		s.now = cfg.Now
 	}
+	// A webhook set in Settings wins over KEYDROP_ALERT_WEBHOOK.
+	switch u, _, err := st.AlertWebhook(); {
+	case err != nil:
+		log.Printf("canary alerts: %v; using KEYDROP_ALERT_WEBHOOK instead", err)
+	case u != "":
+		s.alerts.setURL(u)
+		log.Printf("canary alerts: webhook set in Settings")
+	}
+	if s.alerts.configured() {
+		go s.alerts.destination(false) // so Settings needn't wait for it
+	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()
 		s.setupSeed = auth.NewTOTPSecret()
@@ -243,6 +255,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /canary/{id}/dismiss", s.admin(s.handleDismissCanary))
 	m.HandleFunc("POST /settings/canary", s.admin(s.handleCanarySettings))
 	m.HandleFunc("POST /settings/alert-test", s.admin(s.handleAlertTest))
+	m.HandleFunc("POST /settings/alert-webhook", s.admin(s.handleAlertWebhook))
+	m.HandleFunc("POST /settings/alert-webhook/remove", s.admin(s.handleAlertWebhookRemove))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))
