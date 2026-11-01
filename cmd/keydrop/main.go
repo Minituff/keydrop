@@ -18,7 +18,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
                                          secrets masked (-e NAME sets $NAME; VAR=REF renames)
   secrets [--new] [--pending]           list secrets this token can see (no values;
-                                         --new: changed since this token last read it)
+                                         --new: changed since this token last read it),
+                                         under [namespace: group] headings
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
   history [NAME] [--since 72h]          recent changes to what this token can see: who
@@ -30,7 +31,10 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          when it uses one that isn't ok
   note REF "text"                       propose a note on a key; other agents see it
                                          once the admin approves (prints the link)
-  request REF --desc TEXT [--usage U]   ask the human for a secret; prints a link
+  request REF [REF...] --desc TEXT [--usage U] [--group NAME]
+                                        ask the human for one or more keys (up to 10, one
+                                         namespace), filled on one card; prints a link.
+                                         --group suggests a group; the human decides
   wait REF [--timeout 30m]              wait until a requested secret has a value
   expiring [--days 14] [--check]        secrets expiring soon (--check: exit 1 if any)
   get NAME                              print a variable (refuses secrets)

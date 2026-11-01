@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/minituff/keydrop/internal/client"
 	"github.com/minituff/keydrop/internal/store"
 )
 
@@ -192,5 +193,28 @@ func TestMasterKeyModeWarning(t *testing.T) {
 	masterKey()
 	if out.String() != "" {
 		t.Fatalf("warned about 0400: %q", out.String())
+	}
+}
+
+func TestPrintListGroups(t *testing.T) {
+	sec := func(ns, name string, g *client.Group) client.Secret {
+		return client.Secret{Ref: ns + "/" + name, Namespace: ns, Name: name, Kind: "secret", HasValue: true, Group: g}
+	}
+	cf := &client.Group{Slug: "cloudflare", Name: "Cloudflare", Color: "orange"}
+	gh := &client.Group{Slug: "gh", Name: "GH", Color: "blue", Auto: true}
+	evil := &client.Group{Slug: "x", Name: "x]\n[lab: fake\x1b[31m", Color: "red"}
+	var b strings.Builder
+	printList(&b, []client.Secret{
+		sec("lab", "A", nil), sec("lab", "CF_TOKEN", cf), sec("lab", "GH_A", gh), sec("lab", "GH_B", gh),
+		sec("home", "Z", nil), sec("lab", "CF_ZONE", cf), sec("lab", "W", evil),
+	})
+	want := "[home: ungrouped]\nhome/Z\n[lab: Cloudflare]\nlab/CF_TOKEN\nlab/CF_ZONE\n[lab: x]\\x0a[lab: fake\\x1b[31m]\nlab/W\n[lab: GH, auto]\nlab/GH_A\nlab/GH_B\n[lab: ungrouped]\nlab/A\n"
+	if b.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", b.String(), want)
+	}
+	b.Reset()
+	printList(&b, []client.Secret{sec("lab", "B", nil), sec("lab", "A", nil)})
+	if b.String() != "lab/B\nlab/A\n" {
+		t.Fatalf("ungrouped list: %q", b.String())
 	}
 }

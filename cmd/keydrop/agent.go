@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -139,6 +140,13 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 		if s.CreatedBy != "" {
 			fmt.Fprintf(w, "    created by %s\n", clean(s.CreatedBy, false))
 		}
+		if g := s.Group; g != nil {
+			auto := ""
+			if g.Auto {
+				auto = " (auto, by name)"
+			}
+			fmt.Fprintf(w, "    group: %s%s\n", clean(g.Name, false), auto)
+		}
 		fmt.Fprintf(w, "    updated %s", ago(s.UpdatedAt))
 		if s.LastReadAt != nil {
 			fmt.Fprintf(w, ", last read %s by %s", ago(*s.LastReadAt), clean(s.LastReadBy, false))
@@ -213,13 +221,67 @@ func cmdList(kind string, args []string) error {
 			list = append(list, s)
 		}
 	}
-	if len(list) == 0 {
-		fmt.Println("(none)")
-	}
-	for _, s := range list {
-		printSecret(os.Stdout, s, false)
-	}
+	printList(os.Stdout, list)
 	return nil
+}
+
+// printList prints secrets under group headings: "[ns: Name]" for the
+// admin's groups, "[ns: PREFIX, auto]" for ones grouped by name, and
+// "[ns: ungrouped]" last. With no groups at all it's a plain list.
+func printList(w io.Writer, list []client.Secret) {
+	if len(list) == 0 {
+		fmt.Fprintln(w, "(none)")
+		return
+	}
+	grouped := false
+	for _, s := range list {
+		grouped = grouped || s.Group != nil
+	}
+	if !grouped {
+		for _, s := range list {
+			printSecret(w, s, false)
+		}
+		return
+	}
+	rank := func(s client.Secret) int {
+		switch {
+		case s.Group == nil:
+			return 2
+		case s.Group.Auto:
+			return 1
+		}
+		return 0
+	}
+	name := func(s client.Secret) string {
+		if s.Group == nil {
+			return ""
+		}
+		return strings.ToLower(s.Group.Name) + "\x00" + s.Group.Slug
+	}
+	sorted := slices.Clone(list)
+	slices.SortStableFunc(sorted, func(a, b client.Secret) int {
+		if c := strings.Compare(a.Namespace, b.Namespace); c != 0 {
+			return c
+		}
+		if c := rank(a) - rank(b); c != 0 {
+			return c
+		}
+		return strings.Compare(name(a), name(b))
+	})
+	last := ""
+	for _, s := range sorted {
+		head := "[" + s.Namespace + ": ungrouped]"
+		if g := s.Group; g != nil && g.Auto {
+			head = "[" + s.Namespace + ": " + g.Name + ", auto]"
+		} else if g != nil {
+			head = "[" + s.Namespace + ": " + g.Name + "]"
+		}
+		if head = clean(head, false); head != last {
+			fmt.Fprintln(w, head)
+			last = head
+		}
+		printSecret(w, s, false)
+	}
 }
 
 func cmdInfo(args []string) error {
@@ -390,23 +452,50 @@ func cmdRequest(args []string) error {
 	fs := flag.NewFlagSet("request", flag.ExitOnError)
 	desc := fs.String("desc", "", "what it's for and how to create it (shown to the human)")
 	use := fs.String("usage", "", "how it'll be used, e.g. 'Authorization: Bearer {}'")
+	group := fs.String("group", "", "a group name to suggest for these keys (the human decides)")
 	pos := parse(fs, args)
-	if len(pos) != 1 || *desc == "" {
-		return errors.New("usage: keydrop request REF --desc \"what it's for, which scopes, how long it should last\"")
+	if len(pos) == 0 || *desc == "" {
+		return errors.New("usage: keydrop request REF [REF...] [--group NAME] --desc \"what it's for, which scopes, how long it should last\"")
+	}
+	if len(pos) > maxBatch {
+		return fmt.Errorf("one request can name at most %d keys; split it up", maxBatch)
 	}
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
-	link, err := c.Request(pos[0], *desc, *use)
+	if len(pos) == 1 && *group == "" {
+		link, err := c.Request(pos[0], *desc, *use)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Requested. The human can fill it in here:")
+		fmt.Println(clean(link, false))
+		fmt.Println("Then: keydrop wait " + pos[0])
+		return nil
+	}
+	b, err := c.RequestBatch(pos, *group, *desc, *use)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Requested. The human can fill it in here:")
-	fmt.Println(clean(link, false))
-	fmt.Println("Then: keydrop wait " + pos[0])
+	fmt.Printf("Requested %d key%s together. The human fills them in on one card", len(b.Refs), plural(len(b.Refs)))
+	if b.URL != "" {
+		fmt.Println(" here:")
+		fmt.Println(clean(b.URL, false))
+	} else {
+		fmt.Println(".")
+	}
+	if *group != "" {
+		fmt.Println("The group you suggested is shown to the human, who decides whether to use it.")
+	}
+	for _, ref := range b.Refs {
+		fmt.Println("Then: keydrop wait " + clean(ref, false))
+	}
 	return nil
 }
+
+// maxBatch matches the server's limit on keys per request.
+const maxBatch = store.MaxBatch
 
 func cmdWait(args []string) error {
 	fs := flag.NewFlagSet("wait", flag.ExitOnError)
