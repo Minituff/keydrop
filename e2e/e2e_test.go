@@ -6,8 +6,9 @@
 //
 //	go test -tags e2e ./e2e/...
 //
-// It builds the binary once, and for the upgrade test the release at
-// oldFormatCommit (needs git history; skipped in a shallow clone).
+// It builds the binary once, and for the upgrade and rollback tests the
+// releases at oldFormatCommit and rollbackCommit (needs git history;
+// skipped in a shallow clone).
 package e2e
 
 import (
@@ -27,6 +28,10 @@ import (
 // oldFormatCommit is the last commit that writes the data format before
 // the integrity check (no HMAC, plaintext tls.key).
 const oldFormatCommit = "57fef22"
+
+// rollbackCommit is the release before history, flags, statuses, notes
+// and the add permission. It must still open what this one writes.
+const rollbackCommit = "038a737"
 
 var (
 	binary   string // the keydrop under test, built by TestMain
@@ -443,30 +448,140 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatal("API_TOKEN reads differently after re-pinning")
 		}
 	})
+
+	adder := newAgent(t, binary) // an add token (11 on)
+
+	step("11 an add token creates keys and replaces only its own", func(t *testing.T) {
+		web = login(t, in) // the browser accepts the rotated certificate
+		adder.login(t, in.url, in.pin(t), web.createTokenPerm(t, "adder", ns, "add"))
+		if w := adder.ok(t, "", "whoami"); !strings.Contains(w.stdout, "permission: add") {
+			t.Fatalf("whoami: %q", w.stdout)
+		}
+		first, second := fakeSecret(t), fakeSecret(t)
+		adder.ok(t, first+"\n", "put", "ADDED")
+		if r := adder.run(t, second+"\n", "put", "ADDED"); r.code == 0 {
+			t.Fatal("put over an existing value without --overwrite")
+		}
+		adder.ok(t, second+"\n", "put", "ADDED", "--overwrite")
+		if got := agent1.valueHash(t, "ADDED"); got != sha(second) {
+			t.Fatal("ADDED reads back different after the add token replaced it")
+		}
+		if info := agent1.ok(t, "", "info", "ADDED"); !strings.Contains(info.stdout, "created by adder") {
+			t.Fatalf("info ADDED: %q", info.stdout)
+		}
+		r := adder.run(t, first+"\n", "put", "API_TOKEN", "--overwrite")
+		if r.code == 0 || !strings.Contains(r.stderr, "only replace values it created") {
+			t.Fatalf("an add token replacing the admin's key: exit %d, %q", r.code, r.stderr)
+		}
+		if got := agent1.valueHash(t, "API_TOKEN"); got != sha(secret) {
+			t.Fatal("API_TOKEN changed after a refused put")
+		}
+		r = agent1.run(t, first+"\n", "put", "OTHER")
+		if r.code == 0 || !strings.Contains(r.stderr, "can't write") {
+			t.Fatalf("put with a read token: exit %d, %q", r.code, r.stderr)
+		}
+	})
+
+	step("12 a flag's text is seen by the admin, not by agents", func(t *testing.T) {
+		const reason = "e2e-flag-reason: this key returned 401 twice"
+		agent1.ok(t, "", "flag", "API_TOKEN", reason, "--link", "https://example.com/issue/1")
+		if r := agent1.run(t, "", "flag", "API_TOKEN", "again"); r.code == 0 {
+			t.Fatal("a second open flag by the same token was accepted")
+		}
+		for who, g := range map[string]*agent{"agent1": agent1, "adder": adder} {
+			info := g.ok(t, "", "info", "API_TOKEN")
+			hist := g.ok(t, "", "history", "API_TOKEN")
+			if !strings.Contains(info.stdout, "flagged by agent1 on") || !strings.Contains(hist.stdout, "flagged") {
+				t.Fatalf("%s doesn't see the flag: %q %q", who, info.stdout, hist.stdout)
+			}
+			for _, out := range []string{info.all(), hist.all()} {
+				if strings.Contains(out, "e2e-flag-reason") || strings.Contains(out, "example.com/issue") {
+					t.Fatalf("%s sees the flag's text: %q", who, out)
+				}
+			}
+		}
+		_, dash := web.get(t, "/")
+		if !strings.Contains(dash, "e2e-flag-reason") || !strings.Contains(dash, "https://example.com/issue/1") {
+			t.Fatal("the dashboard doesn't show the flag")
+		}
+		_, page := web.get(t, "/secret/e2e/API_TOKEN")
+		m := regexp.MustCompile(`/secret/e2e/API_TOKEN/flags/([A-Za-z0-9_-]+)/resolve`).FindStringSubmatch(page)
+		if m == nil {
+			t.Fatal("no resolve form on the secret's page")
+		}
+		web.mustPost(t, "/secret/e2e/API_TOKEN/flags/"+m[1]+"/resolve", nil)
+		if info := adder.ok(t, "", "info", "API_TOKEN"); strings.Contains(info.stdout, "flagged by") {
+			t.Fatalf("a resolved flag still shows: %q", info.stdout)
+		}
+		if _, dash := web.get(t, "/"); strings.Contains(dash, "e2e-flag-reason") {
+			t.Fatal("a resolved flag is still on the dashboard")
+		}
+		if _, page := web.get(t, "/secret/e2e/API_TOKEN"); !strings.Contains(page, "e2e-flag-reason") {
+			t.Fatal("the admin's history lost the flag's text")
+		}
+	})
+
+	step("13 any token sets a status; run warns but runs", func(t *testing.T) {
+		adder.ok(t, "", "status", "API_TOKEN", "leaked")
+		r := agent1.run(t, "", "run", "-e", "API_TOKEN", "--", "true")
+		if r.code != 0 || !strings.Contains(r.stderr, "API_TOKEN is marked leaked (by token:adder") {
+			t.Fatalf("run on a leaked key: exit %d, %q", r.code, r.stderr)
+		}
+		noLeak(t, "run", r.all(), secret)
+		if info := agent1.ok(t, "", "info", "API_TOKEN"); !strings.Contains(info.stdout, "status: leaked (set by token:adder") {
+			t.Fatalf("info: %q", info.stdout)
+		}
+		if s := agent1.ok(t, "", "secrets"); !strings.Contains(s.stdout, "leaked") {
+			t.Fatalf("secrets: %q", s.stdout)
+		}
+		if r := adder.run(t, "", "status", "API_TOKEN", "replaced-by", "not a name"); r.code == 0 {
+			t.Fatal("replaced-by took an invalid name")
+		}
+		if r := adder.run(t, "", "status", "API_TOKEN", "broken"); r.code == 0 {
+			t.Fatal("an unknown status was accepted")
+		}
+		adder.ok(t, "", "status", "API_TOKEN", "replaced-by", "ADDED")
+		if r := agent1.ok(t, "", "run", "-e", "API_TOKEN", "--", "true"); !strings.Contains(r.stderr, "replaced-by ADDED") {
+			t.Fatalf("run on a replaced key: %q", r.stderr)
+		}
+		// The admin clears it in the UI.
+		web.mustPost(t, "/secret/e2e/API_TOKEN/status", url.Values{"status": {"ok"}})
+		if r := agent1.ok(t, "", "run", "-e", "API_TOKEN", "--", "true"); strings.Contains(r.stderr, "marked") {
+			t.Fatalf("run warns after the status was cleared: %q", r.stderr)
+		}
+	})
+
+	step("14 an agent's note waits for the admin, then shows with who approved it", func(t *testing.T) {
+		r := adder.ok(t, "", "note", "API_TOKEN", "e2e note: rotate monthly")
+		if !strings.Contains(r.stdout, "Note sent") {
+			t.Fatalf("note: %q", r.stdout)
+		}
+		info := agent1.ok(t, "", "info", "API_TOKEN")
+		if !strings.Contains(info.stdout, "1 note awaiting approval") || strings.Contains(info.stdout, "rotate monthly") {
+			t.Fatalf("info with a pending note: %q", info.stdout)
+		}
+		_, page := web.get(t, "/secret/e2e/API_TOKEN")
+		m := regexp.MustCompile(`/secret/e2e/API_TOKEN/notes/([A-Za-z0-9_-]+)/approve`).FindStringSubmatch(page)
+		if m == nil || !strings.Contains(page, "rotate monthly") {
+			t.Fatal("the admin doesn't see the pending note")
+		}
+		web.mustPost(t, "/secret/e2e/API_TOKEN/notes/"+m[1]+"/approve", url.Values{"text": {"e2e note: rotate every month"}})
+		info = agent1.ok(t, "", "info", "API_TOKEN")
+		if !strings.Contains(info.stdout, "note from agent adder") || !strings.Contains(info.stdout, "edited by the admin") ||
+			!strings.Contains(info.stdout, "| e2e note: rotate every month") || strings.Contains(info.stdout, "awaiting approval") {
+			t.Fatalf("info after approval: %q", info.stdout)
+		}
+	})
+
+	step("15 the previous release starts on data this one wrote", func(t *testing.T) {
+		testRollback(t)
+	})
 }
 
 // testUpgrade builds the release before the integrity check, makes data
 // with it, and moves that data to this release and back.
 func testUpgrade(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git isn't installed, so the old release can't be built")
-	}
-	if err := exec.Command("git", "-C", repoRoot, "cat-file", "-e", oldFormatCommit+"^{commit}").Run(); err != nil {
-		t.Skipf("commit %s isn't in this clone (shallow? fetch with fetch-depth: 0), so the old release can't be built", oldFormatCommit)
-	}
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "src")
-	if out, err := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", src, oldFormatCommit).CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v\n%s", err, out)
-	}
-	t.Cleanup(func() {
-		exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", src).Run()
-		exec.Command("git", "-C", repoRoot, "worktree", "prune").Run()
-	})
-	old := filepath.Join(tmp, "keydrop-old")
-	if err := buildKeydrop(src, old, "dev"); err != nil {
-		t.Fatal(err)
-	}
+	old := buildOld(t, oldFormatCommit)
 
 	// Data made by the old release: an admin, a token, a secret, a variable.
 	in := newInstance(t, binary)
@@ -519,6 +634,80 @@ func testUpgrade(t *testing.T) {
 	}
 	if got := g.valueHash(t, "OLD_SECRET"); got != sha(secret) {
 		t.Fatal("the downgraded data returns a different value")
+	}
+	in.stop(t)
+}
+
+// buildOld checks out commit in a worktree and builds it.
+func buildOld(t *testing.T, commit string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git isn't installed, so the old release can't be built")
+	}
+	if err := exec.Command("git", "-C", repoRoot, "cat-file", "-e", commit+"^{commit}").Run(); err != nil {
+		t.Skipf("commit %s isn't in this clone (shallow? fetch with fetch-depth: 0), so the old release can't be built", commit)
+	}
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	if out, err := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", src, commit).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", src).Run()
+		exec.Command("git", "-C", repoRoot, "worktree", "prune").Run()
+	})
+	old := filepath.Join(tmp, "keydrop-old")
+	if err := buildKeydrop(src, old, "dev"); err != nil {
+		t.Fatal(err)
+	}
+	return old
+}
+
+// testRollback writes data with every newer field in use, starts the
+// previous release on it, has that release rewrite it, and starts this one
+// again.
+func testRollback(t *testing.T) {
+	old := buildOld(t, rollbackCommit)
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	secret, added := fakeSecret(t), fakeSecret(t)
+	web.addEntry(t, "rb", "KEPT", secret, "secret", "made by the admin")
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createTokenPerm(t, "rb-agent", "rb", "add"))
+	g.ok(t, added+"\n", "put", "ADDED_BY_AGENT", "--desc", "an agent's description")
+	g.ok(t, "", "flag", "KEPT", "e2e rollback flag")
+	g.ok(t, "", "status", "KEPT", "expired")
+	g.ok(t, "", "note", "KEPT", "e2e rollback note")
+	in.stop(t)
+
+	in.start(t, old)
+	if got := in.pin(t); got != pin {
+		t.Fatalf("the old release's pin %s, was %s", got, pin)
+	}
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("the old release returns a different value")
+	}
+	if got := g.valueHash(t, "ADDED_BY_AGENT"); got != sha(added) {
+		t.Fatal("the old release returns a different value for the agent's key")
+	}
+	// A change makes the old release rewrite the file without the newer
+	// fields; the add token reads as read-only there.
+	web = login(t, in)
+	web.addEntry(t, "rb", "AFTER", "plain-setting", "variable", "")
+	in.stop(t)
+
+	in.start(t, binary)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("this release returns a different value after the old one rewrote the file")
+	}
+	if r := g.ok(t, "", "vars"); !strings.Contains(r.stdout, "rb/AFTER=plain-setting") {
+		t.Fatalf("vars after the round trip: %q", r.stdout)
+	}
+	if w := g.ok(t, "", "whoami"); !strings.Contains(w.stdout, "permission: read") {
+		t.Fatalf("whoami after the old release rewrote the file: %q", w.stdout)
 	}
 	in.stop(t)
 }

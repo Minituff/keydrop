@@ -424,8 +424,19 @@ func (a *admin) createToken(t *testing.T, name, namespaces string, write bool) s
 	t.Helper()
 	form := url.Values{"name": {name}, "namespaces": {namespaces}}
 	if write {
-		form.Set("write", "yes")
+		form.Set("write", "yes") // the form field before read/add/write
 	}
+	return a.postToken(t, form)
+}
+
+// createTokenPerm makes a token with a permission: read, add or write.
+func (a *admin) createTokenPerm(t *testing.T, name, namespaces, perm string) string {
+	t.Helper()
+	return a.postToken(t, url.Values{"name": {name}, "namespaces": {namespaces}, "permission": {perm}})
+}
+
+func (a *admin) postToken(t *testing.T, form url.Values) string {
+	t.Helper()
 	code, body, _ := a.post(t, "/tokens", form)
 	m := tokenRE.FindStringSubmatch(body)
 	if code != http.StatusOK || m == nil {
