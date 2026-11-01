@@ -226,17 +226,20 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
      rather than 100dvh tall: some Android browsers draw the page behind
      the gesture bar, and 100dvh then reaches under it, hiding the tab
      labels; a fixed box ends where a fixed bottom bar would.
-     viewport-fit=cover (layout.html) is what makes Chrome on Android
-     report the gesture bar as env(safe-area-inset-bottom), which the tab
-     bar pads by; without it the inset reads 0 there. */
+     No viewport-fit=cover: Firefox on Android then reports the gesture
+     bar as a safe-area inset without drawing the page behind it, and the
+     tab bar grew a chin of that height. */
   body.shell{overflow:hidden;overscroll-behavior:none}
   .app{display:flex;flex-direction:column;height:100%;background:none}
   .shell .app{position:fixed;inset:0;height:auto;padding:0 env(safe-area-inset-right) 0 env(safe-area-inset-left)}
   /* The tab bar itself is pinned with bottom:0, the one placement that
-     showed in full on every phone so far; main scrolls behind it and is
-     padded by its height so nothing ends up hidden under it. */
+     showed in full on every phone so far. In Firefox on Android the frame
+     (inset:0) runs past the bottom of the screen by about the address
+     bar's height, while bottom:0 sticks to what's visible; so main is
+     padded by the tab bar plus that much, or the end of a page hides
+     behind the bar. Elsewhere it's just extra room at the end. */
   .shell .tabs{position:fixed;left:0;right:0;bottom:0;z-index:2}
-  .shell main{padding-bottom:calc(92px + env(safe-area-inset-bottom))}
+  .shell main{padding-bottom:calc(160px + env(safe-area-inset-bottom))}
   .side{display:none}
   .mtop{display:flex;flex:none;align-items:center;gap:10px;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}
