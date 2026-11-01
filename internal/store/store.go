@@ -110,6 +110,14 @@ type Secret struct {
 	// (status, flags, notes, proposals). It's nil when there's nothing, so
 	// such a secret is stored exactly as before (see legacyView).
 	Ext *SecretExt `json:"ext,omitempty"`
+	// Group and Batch came after Ext, in the release after it: outside
+	// both older MACs' views (see v2View), so both older releases still
+	// open the file. Group is the slug of an explicit group in the same
+	// namespace; empty means none (auto or ungrouped, worked out when
+	// shown). Batch links a pending request to the others an agent asked
+	// for with it.
+	Group string        `json:"group,omitempty"`
+	Batch *RequestBatch `json:"batch,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -258,24 +266,27 @@ type state struct {
 	// what an older release reads and checks, so it can still start on
 	// this file.
 	MAC []byte `json:"mac,omitempty"`
-	// MAC2 covers the whole state, newer fields included. It's required
-	// whenever any newer field is set, so they can't be edited either;
+	// MAC2 covers v2View: the state with the newer fields, but not those
+	// after it (groups), which MAC3 covers. It's required whenever any
+	// newer field is set, so they can't be edited either;
 	// stripping all of them and MAC2 together gives the file an older
 	// release would have written (see the design doc).
 	MAC2 []byte `json:"mac2,omitempty"`
+	// Groups (keyed "namespace/slug") and Settings came in the release
+	// after MAC2, and MAC3 covers them; see v2View.
+	Groups   map[string]*Group `json:"groups,omitempty"`
+	Settings *Settings         `json:"settings,omitempty"`
+	MAC3     []byte            `json:"mac3,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
 // it: they're all dropped. Marshalled, it's byte-for-byte what that
 // release marshals, so both compute the same MAC.
 func (st *state) legacyView() state {
-	c := *st
-	c.MAC, c.MAC2, c.History, c.Fixups = nil, nil, nil, 0
-	c.Secrets = make(map[string]*Secret, len(st.Secrets))
-	for k, v := range st.Secrets {
-		cp := *v
-		cp.Ext = nil
-		c.Secrets[k] = &cp
+	c := st.v2View()
+	c.History, c.Fixups = nil, 0
+	for _, v := range c.Secrets {
+		v.Ext = nil // a copy, made by v2View
 	}
 	c.Tokens = make(map[string]*Token, len(st.Tokens))
 	for k, v := range st.Tokens {
@@ -286,7 +297,38 @@ func (st *state) legacyView() state {
 	return c
 }
 
-// hasNewer reports whether any field outside the legacy view is set.
+// v2View is the state as the release with MAC2 (and without groups) sees
+// it: groups, settings, each entry's group and batch, and MAC3 dropped,
+// the MACs empty. Marshalled, it's byte-for-byte what that release
+// marshals for its MAC2, so it still verifies a file this one wrote.
+// Pointers inside (Ext) are shared with st: don't write through them.
+func (st *state) v2View() state {
+	c := *st
+	c.MAC, c.MAC2, c.MAC3, c.Groups, c.Settings = nil, nil, nil, nil, nil
+	c.Secrets = make(map[string]*Secret, len(st.Secrets))
+	for k, v := range st.Secrets {
+		cp := *v
+		cp.Group, cp.Batch = "", nil
+		c.Secrets[k] = &cp
+	}
+	return c
+}
+
+// hasNewer3 reports whether any field outside v2View is set.
+func (st *state) hasNewer3() bool {
+	if len(st.Groups) > 0 || st.Settings != nil {
+		return true
+	}
+	for _, v := range st.Secrets {
+		if v.Group != "" || v.Batch != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNewer reports whether any field outside the legacy view, and inside
+// v2View, is set.
 func (st *state) hasNewer() bool {
 	if len(st.History) > 0 || st.Fixups > 0 {
 		return true
@@ -319,6 +361,13 @@ func (st *state) clone() state {
 		cp := *v
 		c.Tokens[k] = &cp
 	}
+	if st.Groups != nil {
+		c.Groups = make(map[string]*Group, len(st.Groups))
+		for k, v := range st.Groups {
+			cp := *v
+			c.Groups[k] = &cp
+		}
+	}
 	return c
 }
 
@@ -332,8 +381,9 @@ type Store struct {
 	st     state
 	now    func() time.Time
 	macKey []byte
-	// mac2Key keys MAC2, independent of macKey.
+	// mac2Key keys MAC2, mac3Key MAC3, each independent of the others.
 	mac2Key []byte
+	mac3Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -475,6 +525,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s := &Store{path: filepath.Join(dir, stateFile), aead: aead, master: slices.Clone(key), now: time.Now}
 	s.macKey = s.DeriveKey("state mac")
 	s.mac2Key = s.DeriveKey("state mac v2")
+	s.mac3Key = s.DeriveKey("state mac v3")
 	return s, nil
 }
 
@@ -496,6 +547,10 @@ func (s *Store) load(data []byte) error {
 		// Newer fields are only trusted under MAC2. Without it the file
 		// must have none: what an older release writes.
 		if (s.st.hasNewer() || s.st.MAC2 != nil) && !hmac.Equal(s.st.MAC2, s.mac2()) {
+			return ErrIntegrity
+		}
+		// The same again for the fields after MAC2, under MAC3.
+		if (s.st.hasNewer3() || s.st.MAC3 != nil) && !hmac.Equal(s.st.MAC3, s.mac3()) {
 			return ErrIntegrity
 		}
 	}
@@ -542,11 +597,17 @@ func (s *Store) mac() []byte {
 	return macOf(s.macKey, &c)
 }
 
-// mac2 is the HMAC of the whole state with both MAC fields empty.
+// mac2 is the HMAC of v2View: everything the release with MAC2 knows.
 func (s *Store) mac2() []byte {
-	c := s.st
-	c.MAC, c.MAC2 = nil, nil
+	c := s.st.v2View()
 	return macOf(s.mac2Key, &c)
+}
+
+// mac3 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac3() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3 = nil, nil, nil
+	return macOf(s.mac3Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -626,9 +687,12 @@ func (s *Store) commit(snap state) error {
 }
 
 func (s *Store) save() error {
-	s.st.MAC, s.st.MAC2 = s.mac(), nil
+	s.st.MAC, s.st.MAC2, s.st.MAC3 = s.mac(), nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
+	}
+	if s.st.hasNewer3() {
+		s.st.MAC3 = s.mac3()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
@@ -852,16 +916,28 @@ func (s *Store) AgentPut(ns, name string, value []byte, p AgentPut) (PutResult, 
 }
 
 func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bool, ap *AgentPut) (PutResult, error) {
-	var res PutResult
 	if !ValidName(ns) {
-		return res, ErrBadName
+		return PutResult{}, ErrBadName
 	}
 	if !ValidSecretName(name) {
-		return res, ErrBadSecret
+		return PutResult{}, ErrBadSecret
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := s.st.clone()
+	res, err := s.putLocked(ns, name, value, meta, nil, overwrite, ap)
+	if err != nil {
+		s.st = snap
+		return res, err
+	}
+	return res, s.commit(snap)
+}
+
+// putLocked is putValue's work, with s.mu held and no commit. kind, when
+// set, is the new value's kind (meta and ap set it otherwise). On error
+// the caller restores its snapshot.
+func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool, overwrite bool, ap *AgentPut) (PutResult, error) {
+	var res PutResult
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	res = PutResult{Existed: ok && len(sec.Value) > 0, WasVariable: ok && sec.Variable}
@@ -898,8 +974,12 @@ func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bo
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
 	sec.Pending, sec.New, sec.AckedBy, sec.UpdatedAt = false, true, nil, now
+	sec.Batch = nil // a filled request is no longer part of a batch
 	if meta != nil {
 		applyMeta(sec, *meta)
+	}
+	if kind != nil {
+		sec.Variable = *kind
 	}
 	if ap == nil && sec.creator() != "" {
 		// The admin's value now: the add token that made the key can't
@@ -939,7 +1019,7 @@ func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bo
 		action = "replaced"
 	}
 	s.record(Event{Namespace: ns, Name: name, Action: action, Actor: actor, Detail: sec.Kind()})
-	return res, s.commit(snap)
+	return res, nil
 }
 
 func aad(ns, name, field string) string { return field + ":" + key(ns, name) }
@@ -1187,6 +1267,11 @@ func (s *Store) forgetToken(tok string) {
 		}
 		if sec.Pending && sec.RequestedBy == tok {
 			sec.RequestedBy = ""
+			if sec.Batch != nil && sec.Batch.Label != "" {
+				b := *sec.Batch
+				b.Label = "" // its proposal, like the description
+				sec.Batch = &b
+			}
 		}
 		if sec.Ext == nil {
 			continue

@@ -554,10 +554,10 @@ func must(t *testing.T, err error) {
 // back to) a file this release wrote. What it writes back must open here.
 func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	dir := t.TempDir()
-	annotated(t, dir)
+	grouped(t, dir)
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
-	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`} {
+	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`} {
 		if !bytes.Contains(data, []byte(f)) {
 			t.Fatalf("no %s in the file", f)
 		}
