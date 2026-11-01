@@ -14,6 +14,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -192,6 +193,13 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	step("03 run masks output, passes the exit code, keeps values out of argv and KEYDROP_* out of the env", func(t *testing.T) {
+		// New until this token reads it.
+		if s := agent1.ok(t, "", "secrets", "--new"); !strings.Contains(s.stdout, "e2e/API_TOKEN") {
+			t.Fatalf("secrets --new before any read: %q", s.stdout)
+		}
+		if _, page := web.get(t, "/secret/e2e/API_TOKEN"); !strings.Contains(page, "no agent has picked it up yet") {
+			t.Fatal("no new badge before any agent read it")
+		}
 		g := *agent1
 		// Settings a user might have in their environment: run must not
 		// pass any of them on.
@@ -246,6 +254,13 @@ func TestEndToEnd(t *testing.T) {
 		if got := agent1.valueHash(t, "API_TOKEN"); got != sha(secret) {
 			t.Fatal("the child got a different value than was stored")
 		}
+		// Read now: no longer new to agent1, nor on the admin's page.
+		if s := agent1.ok(t, "", "secrets", "--new"); strings.Contains(s.stdout, "e2e/API_TOKEN") {
+			t.Fatalf("secrets --new after run read it: %q", s.stdout)
+		}
+		if _, page := web.get(t, "/secret/e2e/API_TOKEN"); strings.Contains(page, "no agent has picked it up yet") {
+			t.Fatal("still new on the admin's page after an agent read it")
+		}
 	})
 
 	step("04 read-only token can't put; a write token can; requests can't be taken over", func(t *testing.T) {
@@ -282,7 +297,12 @@ func TestEndToEnd(t *testing.T) {
 		if _, page := web.get(t, "/secret/e2e/NEEDED"); !strings.Contains(page, "asked by the writer") || strings.Contains(page, "someone else") {
 			t.Fatal("the admin doesn't see the writer's proposed description")
 		}
-		web.mustPost(t, "/secret/e2e/NEEDED/proposal/approve", url.Values{"description": {"asked by the writer, checked by the admin"}})
+		_, page := web.get(t, "/secret/e2e/NEEDED")
+		v := versionRE.FindStringSubmatch(page)
+		if v == nil {
+			t.Fatal("no proposal version on the page")
+		}
+		web.mustPost(t, "/secret/e2e/NEEDED/proposal/approve", url.Values{"version": {v[1]}, "description": {"asked by the writer, checked by the admin"}})
 		info = agent1.ok(t, "", "info", "NEEDED")
 		if !strings.Contains(info.stdout, "| asked by the writer, checked by the admin") || !strings.Contains(info.stdout, "untrusted text from another agent") {
 			t.Fatalf("info after approval: %q", info.stdout)
@@ -480,13 +500,24 @@ func TestEndToEnd(t *testing.T) {
 		if r.code == 0 || !strings.Contains(r.stderr, "can't write") {
 			t.Fatalf("put with a read token: exit %d, %q", r.code, r.stderr)
 		}
+		// Another token's request isn't the add token's to fill.
+		agent1.ok(t, "", "request", "WANTED", "--desc", "asked by agent1")
+		for _, args := range [][]string{{"put", "WANTED"}, {"put", "WANTED", "--overwrite"}} {
+			r = adder.run(t, first+"\n", args...)
+			if r.code == 0 || !strings.Contains(r.stderr, "only replace values it created") {
+				t.Fatalf("an add token filling agent1's request: exit %d, %q", r.code, r.stderr)
+			}
+		}
+		if info := agent1.ok(t, "", "info", "WANTED"); !strings.Contains(info.stdout, "waiting for a value") {
+			t.Fatalf("WANTED after the refused puts: %q", info.stdout)
+		}
 	})
 
 	step("12 a flag's text is seen by the admin, not by agents", func(t *testing.T) {
 		const reason = "e2e-flag-reason: this key returned 401 twice"
 		agent1.ok(t, "", "flag", "API_TOKEN", reason, "--link", "https://example.com/issue/1")
-		if r := agent1.run(t, "", "flag", "API_TOKEN", "again"); r.code == 0 {
-			t.Fatal("a second open flag by the same token was accepted")
+		if r := agent1.run(t, "", "flag", "API_TOKEN", "again"); r.code == 0 || !strings.Contains(r.stderr, "already has an open flag") || !strings.Contains(r.stderr, "409") {
+			t.Fatalf("a second open flag by the same token: exit %d, %q", r.code, r.stderr)
 		}
 		for who, g := range map[string]*agent{"agent1": agent1, "adder": adder} {
 			info := g.ok(t, "", "info", "API_TOKEN")
@@ -521,28 +552,38 @@ func TestEndToEnd(t *testing.T) {
 		}
 	})
 
-	step("13 any token sets a status; run warns but runs", func(t *testing.T) {
-		adder.ok(t, "", "status", "API_TOKEN", "leaked")
+	step("13 any token, even read-only, sets a status; run warns but runs; the admin's status is the admin's", func(t *testing.T) {
+		agent1.ok(t, "", "status", "API_TOKEN", "leaked")
 		r := agent1.run(t, "", "run", "-e", "API_TOKEN", "--", "true")
-		if r.code != 0 || !strings.Contains(r.stderr, "API_TOKEN is marked leaked (by token:adder") {
+		if r.code != 0 || !strings.Contains(r.stderr, "API_TOKEN is marked leaked (by token:agent1") {
 			t.Fatalf("run on a leaked key: exit %d, %q", r.code, r.stderr)
 		}
 		noLeak(t, "run", r.all(), secret)
-		if info := agent1.ok(t, "", "info", "API_TOKEN"); !strings.Contains(info.stdout, "status: leaked (set by token:adder") {
+		if info := adder.ok(t, "", "info", "API_TOKEN"); !strings.Contains(info.stdout, "status: leaked (set by token:agent1") {
 			t.Fatalf("info: %q", info.stdout)
 		}
-		if s := agent1.ok(t, "", "secrets"); !strings.Contains(s.stdout, "leaked") {
+		if s := adder.ok(t, "", "secrets"); !strings.Contains(s.stdout, "leaked") {
 			t.Fatalf("secrets: %q", s.stdout)
 		}
-		if r := adder.run(t, "", "status", "API_TOKEN", "replaced-by", "not a name"); r.code == 0 {
+		if r := agent1.run(t, "", "status", "API_TOKEN", "replaced-by", "not a name"); r.code == 0 {
 			t.Fatal("replaced-by took an invalid name")
 		}
-		if r := adder.run(t, "", "status", "API_TOKEN", "broken"); r.code == 0 {
+		if r := agent1.run(t, "", "status", "API_TOKEN", "replaced-by", "NO_SUCH_KEY"); r.code == 0 || !strings.Contains(r.stderr, "exists in the same namespace") {
+			t.Fatalf("replaced-by a missing key: exit %d, %q", r.code, r.stderr)
+		}
+		if r := agent1.run(t, "", "status", "API_TOKEN", "broken"); r.code == 0 {
 			t.Fatal("an unknown status was accepted")
 		}
-		adder.ok(t, "", "status", "API_TOKEN", "replaced-by", "ADDED")
+		agent1.ok(t, "", "status", "API_TOKEN", "replaced-by", "ADDED")
 		if r := agent1.ok(t, "", "run", "-e", "API_TOKEN", "--", "true"); !strings.Contains(r.stderr, "replaced-by ADDED") {
 			t.Fatalf("run on a replaced key: %q", r.stderr)
+		}
+		// A status the admin sets, no token can clear or change.
+		web.mustPost(t, "/secret/e2e/API_TOKEN/status", url.Values{"status": {"leaked"}})
+		for _, who := range []*agent{agent1, adder} {
+			if r := who.run(t, "", "status", "API_TOKEN", "ok"); r.code == 0 || !strings.Contains(r.stderr, "only the admin can change it") {
+				t.Fatalf("a token cleared the admin's status: exit %d, %q", r.code, r.stderr)
+			}
 		}
 		// The admin clears it in the UI.
 		web.mustPost(t, "/secret/e2e/API_TOKEN/status", url.Values{"status": {"ok"}})
@@ -573,10 +614,85 @@ func TestEndToEnd(t *testing.T) {
 		}
 	})
 
-	step("15 the previous release starts on data this one wrote", func(t *testing.T) {
+	step("15 revoking a token drops its request, notes and proposals; a new one of that name starts clean", func(t *testing.T) {
+		temp := newAgent(t, binary)
+		temp.login(t, in.url, in.pin(t), web.createTokenPerm(t, "temp", ns, "add"))
+		temp.ok(t, "", "request", "TEMP_REQ", "--desc", "e2e-temp-proposal")
+		temp.ok(t, "", "flag", "API_URL", "e2e-temp-flag")
+		temp.ok(t, "", "note", "API_URL", "e2e-temp-note")
+		web.mustPost(t, "/tokens/temp/revoke", url.Values{"confirm": {"yes"}})
+
+		info := agent1.ok(t, "", "info", "API_URL")
+		if !strings.Contains(info.stdout, "flagged by temp") || !strings.Contains(info.stdout, "since been revoked") || strings.Contains(info.stdout, "awaiting approval") {
+			t.Fatalf("API_URL after temp was revoked: %q", info.stdout)
+		}
+		if info := agent1.ok(t, "", "info", "TEMP_REQ"); strings.Contains(info.stdout, "awaiting approval") {
+			t.Fatalf("TEMP_REQ still has temp's proposal: %q", info.stdout)
+		}
+		if _, page := web.get(t, "/"); !strings.Contains(page, "asked by an agent since revoked") || strings.Contains(page, "e2e-temp-proposal") || strings.Contains(page, "e2e-temp-note") {
+			t.Fatal("the dashboard still shows temp's request or note as pending")
+		}
+
+		// A new token given the same name: its own flag, but not the old
+		// request.
+		temp.login(t, in.url, in.pin(t), web.createTokenPerm(t, "temp", ns, "add"))
+		temp.ok(t, "", "flag", "API_URL", "e2e-temp-flag again")
+		if r := temp.run(t, "filled-by-new-temp\n", "put", "TEMP_REQ"); r.code == 0 || !strings.Contains(r.stderr, "only replace values it created") {
+			t.Fatalf("the new temp filled the old one's request: exit %d, %q", r.code, r.stderr)
+		}
+		if r := temp.run(t, "", "request", "TEMP_REQ", "--desc", "mine now"); r.code == 0 || !strings.Contains(r.stderr, "already requested by another agent") {
+			t.Fatalf("the new temp took over the old one's request: exit %d, %q", r.code, r.stderr)
+		}
+
+		// The admin saving a value takes an add token's key from it.
+		temp.ok(t, "temp-value-1\n", "put", "TEMP_KEY")
+		web.mustPost(t, "/secret/e2e/TEMP_KEY/value", url.Values{"value": {"admin-value-1"}, "kind": {"secret"}})
+		if r := temp.run(t, "temp-value-2\n", "put", "TEMP_KEY", "--overwrite"); r.code == 0 || !strings.Contains(r.stderr, "only replace values it created") {
+			t.Fatalf("the add token replaced the admin's value: exit %d, %q", r.code, r.stderr)
+		}
+		web.mustPost(t, "/tokens/temp/revoke", url.Values{"confirm": {"yes"}})
+	})
+
+	step("16 puts and requests are rate-limited per token; a flood evicts only its own namespace's history", func(t *testing.T) {
+		web.addEntry(t, "flood", "SEED", "seed-value", "variable", "")
+		// Three tokens at the limit put more events in "flood" than its
+		// history keeps.
+		for i := 0; i < 3; i++ {
+			name := fmt.Sprintf("flood%d", i)
+			c := newBearer(t, in, web.createTokenPerm(t, name, "flood", "write"))
+			for j := 0; ; j++ {
+				code := c.put(t, "flood", "SPAM", fmt.Sprintf("v-%d-%d", i, j))
+				if code == http.StatusTooManyRequests {
+					if j != writesPerHour {
+						t.Fatalf("%s: 429 after %d puts, want %d", name, j, writesPerHour)
+					}
+					break
+				}
+				if code != http.StatusOK || j > writesPerHour {
+					t.Fatalf("%s put %d: %d", name, j, code)
+				}
+			}
+			if code := c.request(t, "flood", "MORE"); code != http.StatusTooManyRequests {
+				t.Fatalf("%s request over the limit: %d", name, code)
+			}
+		}
+		if h := agent1.ok(t, "", "history", "API_TOKEN", "--limit", "1000"); !strings.Contains(h.stdout, "e2e/API_TOKEN  created") {
+			t.Fatalf("another namespace's history was evicted: %q", h.stdout)
+		}
+		if _, page := web.get(t, "/secret/flood/SEED"); !strings.Contains(page, "<strong>created</strong>") {
+			t.Fatal("the admin's event in the flooded namespace was evicted")
+		}
+	})
+
+	step("17 the previous release starts on data this one wrote", func(t *testing.T) {
 		testRollback(t)
 	})
 }
+
+var versionRE = regexp.MustCompile(`name="version" value="([0-9a-f]+)"`)
+
+// writesPerHour is the server's per-token limit on puts and requests.
+const writesPerHour = 200
 
 // testUpgrade builds the release before the integrity check, makes data
 // with it, and moves that data to this release and back.
@@ -697,6 +813,8 @@ func testRollback(t *testing.T) {
 	// fields; the add token reads as read-only there.
 	web = login(t, in)
 	web.addEntry(t, "rb", "AFTER", "plain-setting", "variable", "")
+	// That release writes a request's text straight into the description.
+	g.ok(t, "", "request", "OLD_REQ", "--desc", "e2e-old-release-request-text")
 	in.stop(t)
 
 	in.start(t, binary)
@@ -708,6 +826,10 @@ func testRollback(t *testing.T) {
 	}
 	if w := g.ok(t, "", "whoami"); !strings.Contains(w.stdout, "permission: read") {
 		t.Fatalf("whoami after the old release rewrote the file: %q", w.stdout)
+	}
+	// ...which this release turns back into a proposal for the admin.
+	if info := g.ok(t, "", "info", "OLD_REQ"); !strings.Contains(info.stdout, "description from an agent is awaiting approval") || strings.Contains(info.stdout, "e2e-old-release-request-text") {
+		t.Fatalf("an old release's request text after the round trip: %q", info.stdout)
 	}
 	in.stop(t)
 }

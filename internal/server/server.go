@@ -92,6 +92,8 @@ type Server struct {
 
 	// annotations rate-limits flags, statuses and notes per token.
 	annotations *rateLimit
+	// writes rate-limits puts and requests per token.
+	writes *rateLimit
 }
 
 // noisyEvents throttles the audit events an unauthenticated client can
@@ -112,6 +114,10 @@ type noisyKey struct {
 // send an hour.
 const annotationsPerHour = 60
 
+// writesPerHour is how many puts and requests (together) one token may
+// send an hour: plenty for provisioning, too few to churn the history.
+const writesPerHour = 200
+
 const (
 	noisyPerKey    = time.Minute // one recorded event per address and action
 	noisyPerMinute = 60          // and at most this many overall
@@ -126,6 +132,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		mux: http.NewServeMux(), now: time.Now, sessions: map[string]*session{},
 		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
 		annotations: newRateLimit(annotationsPerHour, time.Hour),
+		writes:      newRateLimit(writesPerHour, time.Hour),
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		s.setupCode = newSetupCode()

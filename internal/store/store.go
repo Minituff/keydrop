@@ -245,8 +245,12 @@ type state struct {
 	Secrets  map[string]*Secret `json:"secrets"`
 	Tokens   map[string]*Token  `json:"tokens"`
 	// History is the change log agents read with `keydrop history`,
-	// oldest first, capped at maxHistory.
+	// oldest first, capped per namespace (see trimHistory).
 	History []Event `json:"history,omitempty"`
+	// Fixups is how many of the load-time fix-ups (see fixup) this file
+	// has had. Outside the legacy view, so an older release drops it when
+	// it rewrites the file, and the fix-ups run again on what it wrote.
+	Fixups int `json:"fixups,omitempty"`
 	// MAC is HMAC-SHA256 over the rest of the state, with a key derived
 	// from the master key, so the file can't be edited (a token hash
 	// added, the admin password replaced) without it. It covers the
@@ -266,7 +270,7 @@ type state struct {
 // release marshals, so both compute the same MAC.
 func (st *state) legacyView() state {
 	c := *st
-	c.MAC, c.MAC2, c.History = nil, nil, nil
+	c.MAC, c.MAC2, c.History, c.Fixups = nil, nil, nil, 0
 	c.Secrets = make(map[string]*Secret, len(st.Secrets))
 	for k, v := range st.Secrets {
 		cp := *v
@@ -284,7 +288,7 @@ func (st *state) legacyView() state {
 
 // hasNewer reports whether any field outside the legacy view is set.
 func (st *state) hasNewer() bool {
-	if len(st.History) > 0 {
+	if len(st.History) > 0 || st.Fixups > 0 {
 		return true
 	}
 	for _, v := range st.Secrets {
@@ -374,7 +378,7 @@ func Open(dir string, key []byte) (*Store, error) {
 	data, err := os.ReadFile(s.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		s.st = state{Version: 1, Secrets: map[string]*Secret{}, Tokens: map[string]*Token{}}
+		s.st = state{Version: 1, Secrets: map[string]*Secret{}, Tokens: map[string]*Token{}, Fixups: fixupVersion}
 		s.st.KeyCheck = s.seal([]byte(keyCheckMAC), "keycheck")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
@@ -392,7 +396,49 @@ func Open(dir string, key []byte) (*Store, error) {
 	if s.legacy {
 		return nil, ErrNeedsUpgrade
 	}
+	if err := s.fixup(); err != nil {
+		return nil, fmt.Errorf("updating %s: %w", s.path, err)
+	}
 	return s, nil
+}
+
+// fixupVersion is the number of fix-ups fixup knows.
+const fixupVersion = 1
+
+// fixup corrects data an older release wrote that this one would read
+// wrongly. It runs only on a file whose MAC verified, changes only what
+// that release could also have written, and records that it ran (Fixups),
+// so it never touches what this release wrote since.
+//
+// 1: the release before proposals wrote an agent's request text straight
+// into the description, where it would now read as the admin's. On a
+// pending request it becomes the requester's proposal again, waiting for
+// the admin; on a filled one it stays, marked as written by the requester.
+// (A key a write token created with put --desc then left no trace of who
+// wrote its description, so that can't be told apart from the admin's.)
+func (s *Store) fixup() error {
+	if s.st.Fixups >= fixupVersion {
+		return nil
+	}
+	snap := s.st.clone()
+	for _, sec := range s.st.Secrets {
+		if sec.RequestedBy == "" || (sec.Description == "" && sec.Usage == "") {
+			continue
+		}
+		e := sec.ext()
+		if e.DescriptionBy != "" {
+			continue
+		}
+		if sec.Pending && e.Proposal == nil {
+			e.Proposal = &Proposal{Description: sec.Description, Usage: sec.Usage, By: sec.RequestedBy, At: sec.UpdatedAt}
+			sec.Description, sec.Usage = "", ""
+		} else {
+			e.DescriptionBy = sec.RequestedBy
+		}
+		sec.setExt(e)
+	}
+	s.st.Fixups = fixupVersion
+	return s.commit(snap)
 }
 
 // OpenExisting loads the state file in dir for the data commands
@@ -792,10 +838,15 @@ type PutResult struct {
 // ErrReadOnly for a read-only token, ErrNotOwner when an add token tries to
 // replace a value (or fill a request) another token or the admin made.
 func (s *Store) AgentPut(ns, name string, value []byte, p AgentPut) (PutResult, error) {
-	for _, t := range []*string{p.Description, p.Usage} {
-		if t != nil && len(*t) > MaxText {
-			return PutResult{}, ErrTooLong
-		}
+	var d, u string
+	if p.Description != nil {
+		d = *p.Description
+	}
+	if p.Usage != nil {
+		u = *p.Usage
+	}
+	if err := CheckAgentText(d, u); err != nil {
+		return PutResult{}, err
 	}
 	return s.putValue(ns, name, value, nil, p.Overwrite, &p)
 }
@@ -850,6 +901,13 @@ func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bo
 	if meta != nil {
 		applyMeta(sec, *meta)
 	}
+	if ap == nil && sec.creator() != "" {
+		// The admin's value now: the add token that made the key can't
+		// replace it any more.
+		e := sec.ext()
+		e.CreatedBy = ""
+		sec.setExt(e)
+	}
 	if ap != nil {
 		sec.Variable = ap.Variable // never inherited: see the API's put
 		if ap.Expires != nil {
@@ -897,11 +955,19 @@ func (s *Store) reseal(ct []byte, ns, name, from, to string) ([]byte, error) {
 	return s.seal(pt, aad(ns, name, to)), nil
 }
 
+// sameText compares text from a form with stored text, ignoring the CRLF
+// line ends browsers send for a textarea.
+func sameText(a, b string) bool {
+	return strings.ReplaceAll(a, "\r\n", "\n") == strings.ReplaceAll(b, "\r\n", "\n")
+}
+
 func applyMeta(sec *Secret, m Meta) {
 	sec.Description, sec.Usage, sec.Expires, sec.Variable = m.Description, m.Usage, m.Expires, m.Variable
 }
 
-// UpdateMeta changes description, usage and expiry without touching the value.
+// UpdateMeta changes description, usage and expiry without touching the
+// value. An agent-written description stays marked as the agent's unless
+// the admin changes its text.
 func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -910,9 +976,10 @@ func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	if !ok {
 		return ErrNotFound
 	}
+	same := sameText(sec.Description, m.Description) && sameText(sec.Usage, m.Usage)
 	applyMeta(sec, m)
 	sec.UpdatedAt = s.now().UTC()
-	if sec.Ext != nil && sec.Ext.DescriptionBy != "" {
+	if !same && sec.Ext != nil && sec.Ext.DescriptionBy != "" {
 		e := sec.ext()
 		e.DescriptionBy = "" // the admin's text now
 		sec.setExt(e)
@@ -933,8 +1000,8 @@ func (s *Store) Request(ns, name, description, usage, by string) error {
 	if !ValidSecretName(name) {
 		return ErrBadSecret
 	}
-	if len(description) > MaxText || len(usage) > MaxText {
-		return ErrTooLong
+	if err := CheckAgentText(description, usage); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -946,6 +1013,17 @@ func (s *Store) Request(ns, name, description, usage, by string) error {
 	}
 	if ok && sec.RequestedBy != by {
 		return ErrRequestedByOther
+	}
+	if !ok {
+		open := 0
+		for _, other := range s.st.Secrets {
+			if other.Pending && other.RequestedBy == by {
+				open++
+			}
+		}
+		if open >= maxRequestsPerToken {
+			return ErrLimit
+		}
 	}
 	if !ok {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
@@ -1007,10 +1085,22 @@ func (s *Store) Rollback(ns, name string) error {
 	return s.commit(snap)
 }
 
-// Reveal decrypts a value and, for a secret, records who read it. variable
-// is the kind read under the same lock as the value, so callers deciding
-// whether to audit or mask can't be fooled by a kind change in between.
+// Reveal decrypts a value for the admin and, for a secret, records the
+// read. variable is the kind read under the same lock as the value, so
+// callers deciding whether to audit or mask can't be fooled by a kind
+// change in between.
 func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err error) {
+	return s.reveal(ns, name, by, "")
+}
+
+// AgentReveal is Reveal for the token named tok. It also marks the value
+// as picked up by that token: no longer new to it, and no longer "new"
+// on the admin's page.
+func (s *Store) AgentReveal(ns, name, tok string) (value []byte, variable bool, err error) {
+	return s.reveal(ns, name, tok, tok)
+}
+
+func (s *Store) reveal(ns, name, by, tok string) (value []byte, variable bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snap := s.st.clone()
@@ -1025,12 +1115,25 @@ func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err er
 	if err != nil {
 		return nil, false, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
 	}
-	if sec.Variable {
-		return pt, true, nil
+	changed := false
+	if tok != "" && (sec.New || !slices.Contains(sec.AckedBy, tok)) {
+		sec.New = false
+		if !slices.Contains(sec.AckedBy, tok) {
+			sec.AckedBy = append(slices.Clone(sec.AckedBy), tok)
+		}
+		changed = true
 	}
-	now := s.now().UTC()
-	sec.LastReadAt, sec.LastReadBy = &now, by
-	return pt, false, s.commit(snap)
+	if !sec.Variable {
+		now := s.now().UTC()
+		sec.LastReadAt, sec.LastReadBy = &now, by
+		changed = true
+	}
+	if changed {
+		if err := s.commit(snap); err != nil {
+			return nil, false, err
+		}
+	}
+	return pt, sec.Variable, nil
 }
 
 // VariableValue decrypts a variable's value. It refuses secrets, so code
@@ -1069,19 +1172,39 @@ func (s *Store) Ack(ns, name, by string) error {
 	return s.commit(snap)
 }
 
-// forgetAcks drops a revoked token's acks, and its ownership of the keys
-// it created, so a new token given the same name starts with its own inbox
-// and can't replace them under add permission. Call with s.mu held.
-func (s *Store) forgetAcks(tok string) {
+// forgetToken drops what a revoked token left attached to its name, so a
+// new token given the same name starts clean: its acks; its ownership of
+// the keys it created (else the new token could replace them under add
+// permission); its pending requests (they become the admin's, so no
+// token can change or fill them under add permission); its pending notes
+// and proposals (never approved, and nobody left to stand behind them);
+// and its open flags, which stay for the admin but are marked so they
+// don't count against, or block, the new token. Call with s.mu held.
+func (s *Store) forgetToken(tok string) {
 	for _, sec := range s.st.Secrets {
 		if i := slices.Index(sec.AckedBy, tok); i >= 0 {
 			sec.AckedBy = slices.Delete(slices.Clone(sec.AckedBy), i, i+1)
 		}
-		if sec.Ext != nil && sec.Ext.CreatedBy == tok {
-			e := sec.ext()
-			e.CreatedBy = ""
-			sec.setExt(e)
+		if sec.Pending && sec.RequestedBy == tok {
+			sec.RequestedBy = ""
 		}
+		if sec.Ext == nil {
+			continue
+		}
+		e := sec.ext()
+		if e.CreatedBy == tok {
+			e.CreatedBy = ""
+		}
+		if e.Proposal != nil && e.Proposal.By == tok {
+			e.Proposal = nil
+		}
+		e.Notes = slices.DeleteFunc(e.Notes, func(n Note) bool { return n.Pending && n.By == tok })
+		for i := range e.Flags { // a clone
+			if e.Flags[i].By == tok {
+				e.Flags[i].TokenRevoked = true
+			}
+		}
+		sec.setExt(e)
 	}
 }
 
@@ -1204,7 +1327,7 @@ func (s *Store) RevokeUncollected(now time.Time) []string {
 	if len(gone) > 0 {
 		sort.Strings(gone)
 		for _, name := range gone {
-			s.forgetAcks(name)
+			s.forgetToken(name)
 		}
 		if err := s.commit(snap); err != nil {
 			return nil
@@ -1222,7 +1345,7 @@ func (s *Store) RevokeToken(name string) error {
 		return ErrNotFound
 	}
 	delete(s.st.Tokens, name)
-	s.forgetAcks(name)
+	s.forgetToken(name)
 	return s.commit(snap)
 }
 

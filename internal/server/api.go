@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/minituff/keydrop/internal/audit"
 	"github.com/minituff/keydrop/internal/store"
 )
 
@@ -50,6 +51,9 @@ type APISecret struct {
 type APIFlag struct {
 	By string    `json:"by"`
 	At time.Time `json:"at"`
+	// TokenRevoked: the token that raised it has since been revoked (a
+	// token with the same name now is a different one).
+	TokenRevoked bool `json:"token_revoked,omitempty"`
 }
 
 // APINote is an approved agent note.
@@ -84,7 +88,7 @@ func (s *Server) toAPI(sec store.Secret, tok string) APISecret {
 		a.CreatedBy, a.Status, a.DescriptionBy = e.CreatedBy, e.Status, e.DescriptionBy
 		a.DescriptionPending = e.Proposal != nil
 		for _, f := range e.Flags {
-			a.Flags = append(a.Flags, APIFlag{By: f.By, At: f.At})
+			a.Flags = append(a.Flags, APIFlag{By: f.By, At: f.At, TokenRevoked: f.TokenRevoked})
 		}
 		for _, n := range e.Notes {
 			if n.Pending {
@@ -200,7 +204,8 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 	if !ok {
 		return
 	}
-	val, variable, err := s.store.Reveal(sec.Namespace, sec.Name, t.Name)
+	// Reading the value is what makes it no longer new to this token.
+	val, variable, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name)
 	switch {
 	case errors.Is(err, store.ErrNoValue):
 		apiError(w, http.StatusConflict, sec.Ref()+" has no value yet")
@@ -250,6 +255,9 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	if t.Permission() == store.PermRead || !t.Allows(ns) {
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
+		return
+	}
+	if !s.writeAllowed(w, t) {
 		return
 	}
 	var b putBody
@@ -329,6 +337,9 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 		apiError(w, http.StatusForbidden, "this token isn't granted namespace "+b.Namespace)
 		return
 	}
+	if !s.writeAllowed(w, t) {
+		return
+	}
 	err := s.store.Request(b.Namespace, b.Name, strings.TrimSpace(b.Description), strings.TrimSpace(b.Usage), t.Name)
 	switch {
 	case errors.Is(err, store.ErrExists):
@@ -336,6 +347,9 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 		return
 	case errors.Is(err, store.ErrRequestedByOther):
 		apiError(w, http.StatusConflict, b.Namespace+"/"+b.Name+" was already requested by another agent; only that agent or the admin can change the request")
+		return
+	case errors.Is(err, store.ErrLimit):
+		apiError(w, http.StatusTooManyRequests, "this token has too many open requests; wait for the admin to fill some")
 		return
 	case err != nil:
 		apiError(w, http.StatusBadRequest, err.Error())
@@ -397,7 +411,10 @@ func annotationError(w http.ResponseWriter, sec store.Secret, err error) {
 		apiError(w, http.StatusNotFound, "no secret "+sec.Ref())
 	case errors.Is(err, store.ErrLimit):
 		apiError(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, store.ErrTooLong), errors.Is(err, store.ErrBadText), errors.Is(err, store.ErrBadLink), errors.Is(err, store.ErrBadStatus):
+	case errors.Is(err, store.ErrAdminStatus):
+		apiError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, store.ErrTooLong), errors.Is(err, store.ErrBadText), errors.Is(err, store.ErrBadLink), errors.Is(err, store.ErrBadStatus),
+		errors.Is(err, store.ErrNoReplacement), errors.Is(err, store.ErrEmpty):
 		apiError(w, http.StatusBadRequest, err.Error())
 	default:
 		apiError(w, http.StatusInternalServerError, err.Error())
@@ -443,7 +460,13 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 		annotationError(w, sec, err)
 		return
 	}
-	s.event(r, actor(t), "secret.flag", sec.Ref(), "")
+	// The reason and link go into the audit log too, so the record of
+	// what an agent said survives the flag being resolved.
+	text := strings.TrimSpace(b.Reason)
+	if l := strings.TrimSpace(b.Link); l != "" {
+		text += " <" + l + ">"
+	}
+	s.audit.Add(audit.Event{Actor: actor(t), Action: "secret.flag", Target: sec.Ref(), Text: text, IP: s.clientIP(r)})
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref()})
 }
 
@@ -494,6 +517,16 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 	}
 	s.event(r, actor(t), "secret.note", sec.Ref(), "proposed")
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref(), "url": s.secretURL(sec.Namespace, sec.Name)})
+}
+
+// writeAllowed applies the per-token limit on puts and requests, which
+// add to the store and its history.
+func (s *Server) writeAllowed(w http.ResponseWriter, t store.Token) bool {
+	if s.writes.allow(t.Name, s.now()) {
+		return true
+	}
+	apiError(w, http.StatusTooManyRequests, "too many puts and requests from this token; try again later")
+	return false
 }
 
 // rateLimit allows each token a number of actions per window.

@@ -49,9 +49,12 @@ replacement for Vault or Infisical in a team.
   `wedding/…`). Each agent gets its own token, granted one or more
   namespaces. An agent can't see other namespaces at all, not even the secret
   names. Each token has a permission: **read** (the default), **add** (create
-  new keys, and replace only the values of keys this same token created), or
-  **write** (create and replace anything in its namespaces). Tokens can be
-  limited to the addresses they're used from.
+  new keys, and replace only the values of keys this same token created,
+  until you save a value there yourself), or **write** (create and replace
+  anything in its namespaces). Tokens can be limited to the addresses
+  they're used from. Revoking a token drops its pending requests' link to
+  it, its pending notes and proposed descriptions; its open flags stay,
+  marked *token since revoked*.
 - **Pairing instead of pasting tokens.** `keydrop pair` on the agent's
   machine prints a link; you open it, check the code, choose what the agent
   may see, and approve. The agent collects its token directly.
@@ -68,32 +71,39 @@ replacement for Vault or Infisical in a team.
 - **Agents know what changed.** `keydrop history [NAME]` (run by a
   session-start hook) lists what happened to the keys the token can see,
   newest first: created, replaced, requested, status changes, flags, approved
-  notes, with who and when. It's read-only and needs no acknowledging. An
-  agent can also **ask** for a key: `keydrop request` creates an empty
-  placeholder and returns a link for you to fill in, and `keydrop wait`
-  blocks until you do. Only the token that asked can change a pending
-  request.
+  notes, with who and when. It's read-only and needs no acknowledging.
+  `keydrop secrets --new` lists the values this token hasn't read since
+  they changed. An agent can also **ask** for a key: `keydrop request`
+  creates an empty placeholder and returns a link for you to fill in, and
+  `keydrop wait` blocks until you do. Only the token that asked can change
+  a pending request.
 - **Agents report problems; you decide what other agents read.**
   - `keydrop status NAME leaked` (or `ok`, `expired`, `revoked`,
     `replaced-by OTHER`) marks a key for everyone who can see it, with who
     set it and when. `keydrop run` and `get` warn on stderr when they hand
     out a key that isn't ok, but still run. You can set or clear it on the
-    key's page.
+    key's page; a status you set, agents can't change. `replaced-by` must
+    name another key in the same namespace.
   - `keydrop flag NAME "reason" [--link URL]` puts the key on your
     dashboard under **Waiting for you**. The reason and link are shown to
-    you only; agents see "flagged by X on DATE". Resolving it takes it off
-    the dashboard; it stays in the key's history.
+    you only (and go into the audit log); agents see "flagged by X on
+    DATE". Resolving it takes it off the dashboard; it stays in the key's
+    history.
   - `keydrop note NAME "text"` proposes a note and prints the link to
     approve it. Until you approve it (as written or edited) other agents see
     only "1 note awaiting approval"; then `info` shows it with its author
     and the date you approved it. Descriptions an agent writes with `put`
-    or `request` wait for your approval the same way.
+    or `request` wait for your approval the same way, and stay marked as
+    the agent's until you change the text.
   - The web page marks text an agent wrote as *agent-written*, and the CLI
     quotes it as untrusted text from another agent, so it reads as a claim
     and not an instruction.
   - Limits: a reason or link up to 500 characters (links http(s) only), a
-    note up to 2000; one open flag per token per key; 60 flags, statuses and
-    notes per token an hour.
+    note up to 2000, no control or invisible formatting characters (bidi
+    overrides, zero-width spaces); one open flag per token per key and 20
+    in all; 20 open requests per token; 60 flags, statuses and notes, and
+    200 puts and requests, per token an hour. History keeps 500 events per
+    namespace, and a token flooding one evicts its own events first.
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys
   are about to expire, for health checks.
 - **An audit log** of every login, change and secret read (which agent,
@@ -279,6 +289,11 @@ need no upgrade step: they start on the previous release's data as it is.
 Going back to that release also works without a command, but when it
 saves a change it drops what it doesn't know: history, statuses, flags,
 notes and pending proposals are gone, and add tokens become read-only.
+On its first start, a release with proposals turns the text of requests
+the previous release still has pending back into proposals for you to
+approve (that release wrote it straight into the description), and marks
+filled requests' descriptions as written by the agent that asked. It
+does this again after the previous release has rewritten the file.
 
 ## Quick start (agent)
 
@@ -348,7 +363,8 @@ To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`
 `put` takes text up to 60 KiB; base64 a binary value first.
 
 `keydrop inbox` and `keydrop ack` are the old names: for one more release
-`inbox` runs `history` and `ack` does nothing, each with a note on stderr.
+`inbox` runs `history --since 72h` and `ack` does nothing (reading a value
+is what marks it as no longer new), each with a note on stderr.
 
 To migrate an existing `.env` (needs a token with add or write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
@@ -415,19 +431,21 @@ such as Tailscale or WireGuard.
 All endpoints except pairing take `Authorization: Bearer kd_…`, and an
 optional `X-Keydrop-Agent: label`. A namespace the token isn't granted
 returns 404, exactly like a missing secret. A token used from outside its
-allowed sources gets 403. Flags, statuses and notes past the hourly limit get 429.
+allowed sources gets 403. Flags, statuses and notes past their hourly limit
+get 429, as do puts and requests past theirs, and a request past a token's
+20 open ones.
 
 | | |
 |---|---|
 | `GET /api/v1/whoami` | Token name, namespaces, `permission` (`read`, `add` or `write`) and the older `write` flag |
 | `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; variables include their `value`) |
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending` |
-| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged); adds `"status"` when the key isn't ok |
-| `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000). Flag reasons aren't included |
-| `POST /api/v1/secrets/{ns}/{name}/status` | `{"status","replaced_by"}`; `ok` clears it |
-| `POST /api/v1/secrets/{ns}/{name}/flag` | `{"reason","link"}`. 409 if this token already has an open flag on the key |
+| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged); adds `"status"` when the key isn't ok. Marks the value as no longer new to this token |
+| `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000; 500 kept per namespace). Flag reasons aren't included |
+| `POST /api/v1/secrets/{ns}/{name}/status` | `{"status","replaced_by"}`; `ok` clears it. 403 if the admin set the current status; `replaced_by` must exist in the namespace |
+| `POST /api/v1/secrets/{ns}/{name}/flag` | `{"reason","link"}`. 409 if this token already has an open flag on the key. Flags in `GET` carry `token_revoked` when their token has since been revoked |
 | `POST /api/v1/secrets/{ns}/{name}/notes` | `{"text"}` → 201 `{"url"}`, the page where the admin approves it |
-| `POST /api/v1/secrets/{ns}/{name}/ack` | Deprecated (older CLIs): clears the *new* flag for this token |
+| `POST /api/v1/secrets/{ns}/{name}/ack` | Deprecated (older CLIs): clears the *new* flag for this token; reveal does this now |
 | `PUT /api/v1/secrets/{ns}/{name}` | `{"value","description","usage","expires","variable","overwrite"}` (add and write tokens; an add token can only replace keys it created; without `"variable": true` the value is stored as a secret, even over a variable). A description or usage from an agent waits for the admin's approval |
 | `POST /api/v1/requests` | `{"namespace","name","description","usage"}` → `{"ref","url"}`. 409 if it already has a value, or another token already asked for it |
 | `GET /api/v1/expiring?days=14` | Secrets expiring within N days (at most 36500) |

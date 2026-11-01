@@ -51,12 +51,17 @@ isn't worth it.
   `Secret.Ext` (or another field `legacyView` zeroes and `hasNewer` checks),
   never as a plain new field the MAC covers, and gets a case in
   `TestOlderReleaseReadsNewerFile`. The e2e suite starts the previous
-  release (`rollbackCommit`) on data this one wrote.
+  release (`rollbackCommit`) on data this one wrote. A fix-up of data the
+  previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
+  only on a file whose MAC verified, and may change only what that
+  release could also have written, or `ext`.
 - **Agent text is untrusted.** Anything an agent writes that other agents
   read (notes, descriptions) waits for the admin's approval; flag text is
   for the admin only. Escape it in HTML, mark it as agent-written, and
-  quote it in the CLI. New agent-writable fields need a size limit and go
-  through the annotation rate limit.
+  quote it in the CLI. New agent-writable fields need a size limit, the
+  `checkText` character check (no control or Cf characters), and a
+  per-token rate limit (`annotations` or `writes`); anything an agent can
+  add to the state needs a per-token cap too.
 - **Store mutations** take a snapshot (`s.st.clone()`) and finish with
   `s.commit(snap)`, so a failed save leaves memory as it was.
 - **The web UI has no JavaScript.** The CSP forbids scripts. Don't add

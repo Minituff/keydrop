@@ -131,3 +131,24 @@ func TestMainLogGenerations(t *testing.T) {
 		t.Fatal("generations out of order")
 	}
 }
+
+// Text (an agent's flag reason and link) is kept whole up to MaxText.
+func TestTextKeptToMaxText(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	whole := strings.Repeat("r", 500) + " <https://example.com/" + strings.Repeat("l", 470) + ">"
+	l.Add(Event{Actor: "token:x", Action: "secret.flag", Text: whole})
+	l.Add(Event{Actor: "token:x", Action: "secret.flag", Text: strings.Repeat("x", 1<<20)})
+	got := l.Recent(2)
+	var kept, clipped bool
+	for _, e := range got {
+		kept = kept || e.Text == whole
+		clipped = clipped || (len(e.Text) <= MaxText && strings.HasSuffix(e.Text, "…"))
+	}
+	if !kept || !clipped {
+		t.Fatalf("text kept %v, long text clipped %v", kept, clipped)
+	}
+}

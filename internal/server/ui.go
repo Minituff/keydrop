@@ -561,8 +561,11 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 		return
 	}
 	detail := ""
-	if sec.Pending {
+	switch {
+	case sec.Pending && sec.RequestedBy != "":
 		detail = "fulfilled request from " + sec.RequestedBy
+	case sec.Pending:
+		detail = "fulfilled request from a revoked token"
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, detail)
 	s.back(w, r, "saved")
@@ -877,11 +880,11 @@ func (s *Server) handleRemoveNote(w http.ResponseWriter, r *http.Request, _ stri
 }
 
 func (s *Server) handleApproveProposal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	err := s.store.ApproveProposal(r.PathValue("ns"), r.PathValue("name"), r.PostFormValue("description"), r.PostFormValue("usage"))
+	err := s.store.ApproveProposal(r.PathValue("ns"), r.PathValue("name"), r.PostFormValue("version"), r.PostFormValue("description"), r.PostFormValue("usage"))
 	s.annotated(w, r, se, err, "secret.proposal.approve", "", "approved")
 }
 
 func (s *Server) handleRejectProposal(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	err := s.store.RejectProposal(r.PathValue("ns"), r.PathValue("name"))
+	err := s.store.RejectProposal(r.PathValue("ns"), r.PathValue("name"), r.PostFormValue("version"))
 	s.annotated(w, r, se, err, "secret.proposal.reject", "", "rejected")
 }

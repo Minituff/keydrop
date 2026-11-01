@@ -549,3 +549,35 @@ func fakeSecret(t *testing.T) string {
 	}
 	return "e2e_fake_" + hex.EncodeToString(b)
 }
+
+// ---- an agent speaking the API directly, for what the CLI won't do fast ----
+
+// bearer is an HTTP client with a token, pinned to the server's
+// certificate. The token is never printed.
+type bearer struct {
+	a     *admin
+	token string
+}
+
+func newBearer(t *testing.T, in *instance, token string) *bearer {
+	return &bearer{a: newAdmin(t, in.url, in.pin(t)), token: token}
+}
+
+func (b *bearer) send(t *testing.T, method, path string, body string) int {
+	t.Helper()
+	req, _ := http.NewRequest(method, b.a.base+path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	req.Header.Set("Content-Type", "application/json")
+	code, _, _ := b.a.do(t, req)
+	return code
+}
+
+func (b *bearer) put(t *testing.T, ns, name, value string) int {
+	t.Helper()
+	return b.send(t, "PUT", "/api/v1/secrets/"+ns+"/"+name, fmt.Sprintf(`{"value":%q,"overwrite":true}`, value))
+}
+
+func (b *bearer) request(t *testing.T, ns, name string) int {
+	t.Helper()
+	return b.send(t, "POST", "/api/v1/requests", fmt.Sprintf(`{"namespace":%q,"name":%q}`, ns, name))
+}

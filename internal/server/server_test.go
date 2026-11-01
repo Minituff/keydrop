@@ -1049,9 +1049,12 @@ func TestStatus(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
 	h.st.PutValue("lab", "OLD", []byte("old-value"), nil)
+	h.st.PutValue("lab", "NEW", []byte("new-value"), nil)
 	alice, _ := h.st.CreateToken("alice", []string{"lab"}, store.PermRead, nil)
-	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/OLD/status", alice, map[string]string{"status": "replaced-by", "replaced_by": "rm -rf"}); code != http.StatusBadRequest {
-		t.Fatalf("free-text replaced-by: %d", code)
+	for _, repl := range []string{"rm -rf", "MISSING"} {
+		if code, _, _ := h.api("POST", "/api/v1/secrets/lab/OLD/status", alice, map[string]string{"status": "replaced-by", "replaced_by": repl}); code != http.StatusBadRequest {
+			t.Fatalf("replaced-by %s: %d", repl, code)
+		}
 	}
 	if code, m, _ := h.api("POST", "/api/v1/secrets/lab/OLD/status", alice, map[string]string{"status": "replaced-by", "replaced_by": "NEW"}); code != http.StatusOK {
 		t.Fatalf("status: %d %v", code, m)
@@ -1076,6 +1079,134 @@ func TestStatus(t *testing.T) {
 	json.Unmarshal(raw, &evs)
 	if code != http.StatusOK || len(evs) != 3 || evs[0].Detail != "ok" || evs[0].Actor != "admin" || evs[1].Detail != "replaced-by NEW" || evs[2].Action != "created" {
 		t.Fatalf("history: %d %+v", code, evs)
+	}
+	// A status the admin set is the admin's to change.
+	h.post("/secret/lab/OLD/status", url.Values{"csrf": {h.csrf()}, "status": {"leaked"}})
+	for _, v := range []string{"ok", "expired"} {
+		if code, _, _ := h.api("POST", "/api/v1/secrets/lab/OLD/status", alice, map[string]string{"status": v}); code != http.StatusForbidden {
+			t.Fatalf("token set %s over the admin's status: %d", v, code)
+		}
+	}
+}
+
+// Puts and requests are rate-limited per token, and open requests capped.
+func TestWriteRateLimit(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	w, _ := h.st.CreateToken("w", []string{"lab"}, store.PermWrite, nil)
+	other, _ := h.st.CreateToken("other", []string{"lab"}, store.PermWrite, nil)
+	for i := 0; i < 20; i++ {
+		if code, m, _ := h.api("POST", "/api/v1/requests", w, map[string]string{"name": fmt.Sprintf("R%d", i)}); code != http.StatusCreated {
+			t.Fatalf("request %d: %d %v", i, code, m)
+		}
+	}
+	if code, _, _ := h.api("POST", "/api/v1/requests", w, map[string]string{"name": "R_MORE"}); code != http.StatusTooManyRequests {
+		t.Fatalf("open requests over the cap: %d", code)
+	}
+	for i := 21; i < writesPerHour; i++ {
+		if code, m, _ := h.api("PUT", "/api/v1/secrets/lab/P", w, map[string]any{"value": fmt.Sprintf("v-%d", i), "overwrite": true}); code != http.StatusOK {
+			t.Fatalf("put %d: %d %v", i, code, m)
+		}
+	}
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/P", w, map[string]any{"value": "v-over", "overwrite": true}); code != http.StatusTooManyRequests {
+		t.Fatalf("put over the limit: %d", code)
+	}
+	if code, _, _ := h.api("POST", "/api/v1/requests", w, map[string]string{"name": "R0"}); code != http.StatusTooManyRequests {
+		t.Fatalf("request over the limit: %d", code)
+	}
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/Q", other, map[string]any{"value": "v-other"}); code != http.StatusOK {
+		t.Fatalf("another token: %d", code)
+	}
+	h.srv.now = func() time.Time { return time.Now().Add(time.Hour + time.Minute) }
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/P", w, map[string]any{"value": "v-later", "overwrite": true}); code != http.StatusOK {
+		t.Fatalf("after the window: %d", code)
+	}
+}
+
+// A flag's reason and link go into the audit log, shown as agent text.
+func TestFlagTextAudited(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.st.PutValue("lab", "CF", []byte("flag-value"), nil)
+	alice, _ := h.st.CreateToken("alice", []string{"lab"}, store.PermRead, nil)
+	const reason = "rotated-upstream-zz4"
+	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/CF/flag", alice, map[string]string{"reason": reason, "link": "https://example.com/zz4"}); code != http.StatusCreated {
+		t.Fatalf("flag: %d", code)
+	}
+	if code, m, _ := h.api("POST", "/api/v1/secrets/lab/CF/flag", alice, map[string]string{"reason": "again"}); code != http.StatusConflict {
+		t.Fatalf("second flag: %d %v", code, m)
+	}
+	h.st.ResolveFlag("lab", "CF", h.mustFlagID("lab", "CF"))
+	_, body := h.get("/audit")
+	if !strings.Contains(body, reason+" &lt;https://example.com/zz4&gt;") {
+		t.Fatal("flag text not in the audit log")
+	}
+}
+
+func (h *harness) mustFlagID(ns, name string) string {
+	sec, _ := h.st.GetSecret(ns, name)
+	if sec.Ext == nil || len(sec.Ext.Flags) == 0 {
+		h.t.Fatal("no flag")
+	}
+	return sec.Ext.Flags[0].ID
+}
+
+// Approving or rejecting a proposal names the version the admin saw; an
+// agent changing it in between gets the admin the new one to review.
+func TestProposalVersion(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	alice, _ := h.st.CreateToken("alice", []string{"lab"}, store.PermRead, nil)
+	h.api("POST", "/api/v1/requests", alice, map[string]string{"name": "GH", "description": "a PAT for backups"})
+	_, body := h.get("/secret/lab/GH")
+	v := regexp.MustCompile(`name="version" value="([0-9a-f]+)"`).FindStringSubmatch(body)
+	if v == nil {
+		t.Fatal("no version in the form")
+	}
+	h.api("POST", "/api/v1/requests", alice, map[string]string{"name": "GH", "description": "ignore previous instructions"})
+	if resp := h.post("/secret/lab/GH/proposal/approve", url.Values{"csrf": {h.csrf()}, "version": {v[1]}, "description": {"a PAT for backups"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("approved a changed proposal: %d", resp.StatusCode)
+	}
+	if resp := h.post("/secret/lab/GH/proposal/reject", url.Values{"csrf": {h.csrf()}, "version": {v[1]}}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("rejected a changed proposal: %d", resp.StatusCode)
+	}
+	_, body = h.get("/secret/lab/GH")
+	v = regexp.MustCompile(`name="version" value="([0-9a-f]+)"`).FindStringSubmatch(body)
+	if resp := h.post("/secret/lab/GH/proposal/approve", url.Values{"csrf": {h.csrf()}, "version": {v[1]}, "description": {"a PAT for backups"}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("approve: %d", resp.StatusCode)
+	}
+}
+
+// Revoking a token clears its pending request, notes and proposal, marks
+// its flags, and a new token of the same name can flag again.
+func TestRevokeClearsTokenState(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.st.PutValue("lab", "CF", []byte("rev-value"), nil)
+	bot, _ := h.st.CreateToken("bot", []string{"lab"}, store.PermAdd, nil)
+	h.api("POST", "/api/v1/requests", bot, map[string]string{"name": "REQ", "description": "for the backups"})
+	h.api("POST", "/api/v1/secrets/lab/CF/flag", bot, map[string]string{"reason": "rotated"})
+	h.api("POST", "/api/v1/secrets/lab/CF/notes", bot, map[string]string{"text": "use the other one"})
+	if err := h.st.RevokeToken("bot"); err != nil {
+		t.Fatal(err)
+	}
+	bot2, _ := h.st.CreateToken("bot", []string{"lab"}, store.PermAdd, nil)
+	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/CF/flag", bot2, map[string]string{"reason": "rotated"}); code != http.StatusCreated {
+		t.Fatalf("new token's flag: %d", code)
+	}
+	_, m, _ := h.api("GET", "/api/v1/secrets/lab/CF", bot2, nil)
+	if flags, _ := m["flags"].([]any); len(flags) != 2 || flags[0].(map[string]any)["token_revoked"] != true {
+		t.Fatalf("flags: %v", m["flags"])
+	}
+	if m["pending_notes"] != nil {
+		t.Fatalf("revoked token's note still pending: %v", m["pending_notes"])
+	}
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/REQ", bot2, map[string]any{"value": "filled", "overwrite": true}); code != http.StatusForbidden {
+		t.Fatalf("new token filled the old token's request: %d", code)
+	}
+	_, body := h.get("/")
+	if !strings.Contains(body, "asked by an agent since revoked") {
+		t.Fatal("dashboard doesn't say the requester was revoked")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 	"os"
 	"path/filepath"
@@ -556,7 +557,7 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	annotated(t, dir)
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
-	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`} {
+	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`} {
 		if !bytes.Contains(data, []byte(f)) {
 			t.Fatalf("no %s in the file", f)
 		}
@@ -625,6 +626,7 @@ func TestNewerFieldsIntegrity(t *testing.T) {
 func stripNewer(raw map[string]any) {
 	delete(raw, "mac2")
 	delete(raw, "history")
+	delete(raw, "fixups")
 	for _, v := range raw["secrets"].(map[string]any) {
 		delete(v.(map[string]any), "ext")
 	}
@@ -683,7 +685,16 @@ func TestProposals(t *testing.T) {
 	if sec.Description != "" || sec.Ext.Proposal == nil || sec.Ext.Proposal.By != "alice" {
 		t.Fatalf("request text not a proposal: %+v", sec)
 	}
-	must(t, s.ApproveProposal("lab", "GH", "a PAT for backups", ""))
+	v := sec.Ext.Proposal.Version()
+	s.Request("lab", "GH", "now it says something else", "", "alice")
+	if err := s.ApproveProposal("lab", "GH", v, "a PAT for backups", ""); !errors.Is(err, ErrChanged) {
+		t.Fatalf("approved a proposal the admin hadn't seen: %v", err)
+	}
+	if err := s.RejectProposal("lab", "GH", v); !errors.Is(err, ErrChanged) {
+		t.Fatalf("rejected a proposal the admin hadn't seen: %v", err)
+	}
+	sec, _ = s.GetSecret("lab", "GH")
+	must(t, s.ApproveProposal("lab", "GH", sec.Ext.Proposal.Version(), "a PAT for backups", ""))
 	sec, _ = s.GetSecret("lab", "GH")
 	if sec.Description != "a PAT for backups" || sec.Ext.DescriptionBy != "alice" || sec.Ext.Proposal != nil {
 		t.Fatalf("after approval: %+v %+v", sec, sec.Ext)
@@ -693,7 +704,8 @@ func TestProposals(t *testing.T) {
 	if sec.Usage != "" || sec.Ext.Proposal.Usage != "run it" || sec.Ext.Proposal.Description != "a PAT for backups" {
 		t.Fatalf("put text: %+v %+v", sec, sec.Ext.Proposal)
 	}
-	must(t, s.RejectProposal("lab", "GH"))
+	sec, _ = s.GetSecret("lab", "GH")
+	must(t, s.RejectProposal("lab", "GH", sec.Ext.Proposal.Version()))
 	if err := s.Request("lab", "LONG", strings.Repeat("x", MaxText+1), "", "alice"); !errors.Is(err, ErrTooLong) {
 		t.Fatalf("long request: %v", err)
 	}
@@ -702,6 +714,7 @@ func TestProposals(t *testing.T) {
 func TestStatusFlagsNotes(t *testing.T) {
 	s, _ := Open(t.TempDir(), key32())
 	s.PutValue("lab", "A", []byte("a-value"), nil)
+	s.PutValue("lab", "B", []byte("b-value"), nil)
 	if err := s.SetStatus("lab", "A", "replaced-by", "not a name", "admin"); !errors.Is(err, ErrBadStatus) {
 		t.Fatalf("free text status: %v", err)
 	}
@@ -761,19 +774,242 @@ func TestStatusFlagsNotes(t *testing.T) {
 	}
 }
 
-// The history keeps the newest maxHistory events.
+// The history keeps at most maxHistoryPerNamespace events per namespace.
+// A token filling one namespace evicts its own events first: never
+// another namespace's, the admin's, or flags.
 func TestHistoryCap(t *testing.T) {
 	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("other", "B", []byte("b-value"), nil)
 	s.PutValue("lab", "A", []byte("a-value"), nil)
-	for i := 0; i < maxHistory+5; i++ {
-		s.SetStatus("lab", "A", "leaked", "", "admin")
+	s.CreateToken("spam", []string{"lab"}, PermWrite, nil)
+	s.CreateToken("quiet", []string{"lab"}, PermWrite, nil)
+	must(t, s.AddFlag("lab", "A", "quiet", "looks rotated", ""))
+	must(t, s.SetStatus("lab", "A", "expired", "", "token:quiet"))
+	for i := 0; i < maxHistoryPerNamespace+50; i++ {
+		s.SetStatus("lab", "A", "leaked", "", "token:spam")
 	}
-	if n := len(s.History(nil, 0)); n != maxHistory {
-		t.Fatalf("%d events", n)
+	count := func(f func(Event) bool) int { return len(s.History(f, 0)) }
+	if n := count(func(ev Event) bool { return ev.Namespace == "lab" }); n != maxHistoryPerNamespace {
+		t.Fatalf("lab has %d events", n)
+	}
+	if count(func(ev Event) bool { return ev.Namespace == "other" }) != 1 {
+		t.Fatal("another namespace's history was evicted")
+	}
+	if count(func(ev Event) bool { return ev.Actor == "admin" && ev.Namespace == "lab" }) != 1 {
+		t.Fatal("the admin's event was evicted")
+	}
+	if count(func(ev Event) bool { return ev.Actor == "token:quiet" }) != 2 {
+		t.Fatal("a quiet token's events were evicted for a noisy one's")
 	}
 	if n := len(s.History(nil, 10)); n != 10 {
 		t.Fatalf("limit: %d", n)
 	}
+	// Only protected events left: the oldest go.
+	s2, _ := Open(t.TempDir(), key32())
+	s2.PutValue("lab", "A", []byte("a-value"), nil)
+	for i := 0; i < maxHistoryPerNamespace+5; i++ {
+		s2.SetStatus("lab", "A", "leaked", "", "admin")
+	}
+	if n := len(s2.History(nil, 0)); n != maxHistoryPerNamespace {
+		t.Fatalf("%d admin events", n)
+	}
 }
 
 func hmacNew(key []byte) hash.Hash { return hmac.New(sha256.New, key) }
+
+// A token can't clear or change a status the admin set, and replaced-by
+// must name another key in the same namespace.
+func TestStatusAdminLock(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("a-value"), nil)
+	s.PutValue("lab", "B", []byte("b-value"), nil)
+	s.PutValue("other", "C", []byte("c-value"), nil)
+	must(t, s.SetStatus("lab", "A", "expired", "", "token:alice"))
+	must(t, s.SetStatus("lab", "A", "ok", "", "token:bob")) // a token's status, a token may clear
+	must(t, s.SetStatus("lab", "A", "leaked", "", "admin"))
+	for _, v := range []string{"ok", "expired"} {
+		if err := s.SetStatus("lab", "A", v, "", "token:alice"); !errors.Is(err, ErrAdminStatus) {
+			t.Fatalf("token set %s over the admin's status: %v", v, err)
+		}
+	}
+	for _, repl := range []string{"C", "MISSING", "A"} {
+		if err := s.SetStatus("lab", "A", "replaced-by", repl, "admin"); !errors.Is(err, ErrNoReplacement) {
+			t.Fatalf("replaced-by %s: %v", repl, err)
+		}
+	}
+	must(t, s.SetStatus("lab", "A", "replaced-by", "B", "admin"))
+	must(t, s.SetStatus("lab", "A", "ok", "", "admin"))
+	must(t, s.SetStatus("lab", "A", "expired", "", "token:alice"))
+}
+
+// Revoking a token drops what it left pending, so a new token with the
+// same name starts clean.
+func TestRevokeForgetsToken(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("a-value"), nil)
+	s.CreateToken("bot", []string{"lab"}, PermAdd, nil)
+	must(t, s.Request("lab", "REQ", "for the backups", "", "bot"))
+	must(t, s.AddFlag("lab", "A", "bot", "looks rotated", ""))
+	must(t, s.ProposeNote("lab", "A", "bot", "use the other one"))
+	must(t, s.RevokeToken("bot"))
+	req, _ := s.GetSecret("lab", "REQ")
+	if req.RequestedBy != "" || (req.Ext != nil && req.Ext.Proposal != nil) {
+		t.Fatalf("request after revoke: %+v %+v", req, req.Ext)
+	}
+	a, _ := s.GetSecret("lab", "A")
+	if len(a.Ext.Notes) != 0 || len(a.Ext.Flags) != 1 || !a.Ext.Flags[0].TokenRevoked {
+		t.Fatalf("after revoke: %+v", a.Ext)
+	}
+	s.CreateToken("bot", []string{"lab"}, PermAdd, nil)
+	must(t, s.AddFlag("lab", "A", "bot", "still looks rotated", ""))
+	if err := s.Request("lab", "REQ", "mine now", "", "bot"); !errors.Is(err, ErrRequestedByOther) {
+		t.Fatalf("new token took over the old request: %v", err)
+	}
+	_, err := s.AgentPut("lab", "REQ", []byte("filled-value"), AgentPut{Token: *s.st.Tokens["bot"], Overwrite: true})
+	if !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("new token filled the old request: %v", err)
+	}
+}
+
+// The admin saving a value takes it from the add token that created it.
+func TestAdminValueClearsCreator(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.CreateToken("adder", []string{"lab"}, PermAdd, nil)
+	tok := *s.st.Tokens["adder"]
+	if _, err := s.AgentPut("lab", "MINE", []byte("v-adder"), AgentPut{Token: tok}); err != nil {
+		t.Fatal(err)
+	}
+	must(t, s.PutValue("lab", "MINE", []byte("v-admin"), nil))
+	if sec, _ := s.GetSecret("lab", "MINE"); sec.creator() != "" {
+		t.Fatalf("still created by %q", sec.creator())
+	}
+	if _, err := s.AgentPut("lab", "MINE", []byte("v-adder2"), AgentPut{Token: tok, Overwrite: true}); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("add token replaced the admin's value: %v", err)
+	}
+}
+
+// Reading a value makes it no longer new to that token, and no longer new
+// on the admin's page; other tokens still see it as new.
+func TestAgentRevealClearsNew(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("reveal-value"), nil)
+	s.PutValue("lab", "V", []byte("var-value"), &Meta{Variable: true})
+	for _, n := range []string{"A", "V"} {
+		if _, _, err := s.AgentReveal("lab", n, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		sec, _ := s.GetSecret("lab", n)
+		if sec.New || sec.NewFor("alice") || !sec.NewFor("bob") {
+			t.Fatalf("%s after alice read it: new %v alice %v bob %v", n, sec.New, sec.NewFor("alice"), sec.NewFor("bob"))
+		}
+	}
+	// The admin reading it changes nothing.
+	s.PutValue("lab", "A", []byte("reveal-value-2"), nil)
+	s.Reveal("lab", "A", "admin")
+	if sec, _ := s.GetSecret("lab", "A"); !sec.New || !sec.NewFor("alice") {
+		t.Fatal("the admin's read cleared new")
+	}
+}
+
+// The admin saving details only clears "written by an agent" when the
+// text changes.
+func TestUpdateMetaKeepsAgentMark(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.Request("lab", "GH", "a PAT\nfor backups", "", "alice")
+	sec, _ := s.GetSecret("lab", "GH")
+	must(t, s.ApproveProposal("lab", "GH", sec.Ext.Proposal.Version(), "a PAT\r\nfor backups", ""))
+	must(t, s.UpdateMeta("lab", "GH", Meta{Description: "a PAT\r\nfor backups"}))
+	if sec, _ := s.GetSecret("lab", "GH"); sec.Ext.DescriptionBy != "alice" {
+		t.Fatal("saving unchanged text cleared the mark")
+	}
+	must(t, s.UpdateMeta("lab", "GH", Meta{Description: "the admin's words"}))
+	if sec, _ := s.GetSecret("lab", "GH"); sec.Ext != nil && sec.Ext.DescriptionBy != "" {
+		t.Fatal("changed text still marked as the agent's")
+	}
+}
+
+// Agent text can't hide formatting characters, and requests are capped
+// per token.
+func TestAgentTextAndRequestCap(t *testing.T) {
+	s, _ := Open(t.TempDir(), key32())
+	s.PutValue("lab", "A", []byte("a-value"), nil)
+	s.CreateToken("w", []string{"lab"}, PermWrite, nil)
+	for _, bad := range []string{"safe\u202eevil", "zero\u200bwidth", "line\u2028sep", "bom\ufeff"} {
+		if err := s.Request("lab", "R", bad, "", "alice"); !errors.Is(err, ErrBadText) {
+			t.Fatalf("request %q: %v", bad, err)
+		}
+		if err := s.AddFlag("lab", "A", "alice", bad, ""); !errors.Is(err, ErrBadText) {
+			t.Fatalf("flag %q: %v", bad, err)
+		}
+		if err := s.AddFlag("lab", "A", "alice", "", "https://example.com/"+bad); !errors.Is(err, ErrBadText) {
+			t.Fatalf("link %q: %v", bad, err)
+		}
+		if err := s.ProposeNote("lab", "A", "alice", bad); !errors.Is(err, ErrBadText) {
+			t.Fatalf("note %q: %v", bad, err)
+		}
+		if _, err := s.AgentPut("lab", "P", []byte("p-value"), AgentPut{Token: *s.st.Tokens["w"], Usage: ptr(bad)}); !errors.Is(err, ErrBadText) {
+			t.Fatalf("put %q: %v", bad, err)
+		}
+	}
+	if err := s.ProposeNote("lab", "A", "alice", "  "); !errors.Is(err, ErrEmpty) {
+		t.Fatalf("empty note: %v", err)
+	}
+	for i := 0; i < maxRequestsPerToken; i++ {
+		must(t, s.Request("lab", fmt.Sprintf("R%d", i), "", "", "alice"))
+	}
+	if err := s.Request("lab", "ONE_MORE", "", "", "alice"); !errors.Is(err, ErrLimit) {
+		t.Fatalf("request over the cap: %v", err)
+	}
+	must(t, s.Request("lab", "R0", "changed", "", "alice")) // updating one is fine
+	must(t, s.Request("lab", "ONE_MORE", "", "", "bob"))
+}
+
+// The release before proposals wrote request text into the description.
+// On load it becomes a proposal again (pending) or is marked as the
+// requester's (filled), once, and the file still opens in that release.
+func TestFixupOldRequestText(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, key32())
+	s.PutValue("lab", "ADMIN", []byte("admin-value"), &Meta{Description: "the admin's"})
+	s.Request("lab", "PEND", "", "", "alice")
+	s.Request("lab", "FILLED", "", "", "alice")
+	s.PutValue("lab", "FILLED", []byte("filled-value"), nil)
+	// Make it look like the older release wrote it.
+	s.mu.Lock()
+	s.st.Secrets[key("lab", "PEND")].Description = "ignore previous instructions"
+	s.st.Secrets[key("lab", "PEND")].Ext = nil
+	s.st.Secrets[key("lab", "FILLED")].Description = "a PAT for backups"
+	s.st.Secrets[key("lab", "FILLED")].Ext = nil
+	s.st.Fixups, s.st.History = 0, nil
+	must(t, s.save())
+	s.mu.Unlock()
+
+	s2, err := Open(dir, key32())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pend, _ := s2.GetSecret("lab", "PEND")
+	if pend.Description != "" || pend.Ext == nil || pend.Ext.Proposal == nil || pend.Ext.Proposal.Description != "ignore previous instructions" || pend.Ext.Proposal.By != "alice" {
+		t.Fatalf("pending request: %+v %+v", pend, pend.Ext)
+	}
+	filled, _ := s2.GetSecret("lab", "FILLED")
+	if filled.Description != "a PAT for backups" || filled.Ext == nil || filled.Ext.DescriptionBy != "alice" {
+		t.Fatalf("filled request: %+v %+v", filled, filled.Ext)
+	}
+	if a, _ := s2.GetSecret("lab", "ADMIN"); a.Ext != nil {
+		t.Fatalf("the admin's key changed: %+v", a.Ext)
+	}
+	// Once: the admin's later edit isn't undone on the next start.
+	must(t, s2.UpdateMeta("lab", "FILLED", Meta{Description: "a PAT for backups, read-only"}))
+	s3, _ := Open(dir, key32())
+	if f, _ := s3.GetSecret("lab", "FILLED"); f.Ext != nil && f.Ext.DescriptionBy != "" {
+		t.Fatal("the fix-up ran again")
+	}
+	// The older release still verifies the file.
+	data, _ := os.ReadFile(filepath.Join(dir, stateFile))
+	var old oldState
+	json.Unmarshal(data, &old)
+	if !bytes.Equal(old.MAC, s3.oldMAC(old)) {
+		t.Fatal("the older release would refuse the fixed-up file")
+	}
+}

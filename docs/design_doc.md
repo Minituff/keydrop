@@ -73,7 +73,7 @@ One Go binary is both the server (in a container) and the agent CLI.
 | `internal/client` | API client used by the CLI, including certificate pinning. |
 | `internal/mask` | Streaming output masking for `keydrop run`. |
 | `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
-| `internal/audit` | JSONL audit log plus in-memory rings for the UI. Authenticated and unauthenticated events in separate files, each rotated at 10 MiB (five and one old files kept); fields capped at 200 bytes, and only the last 512 KiB of each read at start. |
+| `internal/audit` | JSONL audit log plus in-memory rings for the UI. Authenticated and unauthenticated events in separate files, each rotated at 10 MiB (five and one old files kept); fields capped at 200 bytes (a flag's text at 1100), and only the last 512 KiB of each read at start. |
 | `e2e` | End-to-end tests: the built binary as server and CLI, the admin through the web forms (build tag `e2e`). |
 
 ## Design decisions
@@ -113,9 +113,16 @@ permission:
 
 The token keeps `write` in the file and adds `add`; a token with neither is
 read-only, so tokens made before the add permission keep exactly what they
-had. A revoke clears `created_by` for that token's keys, so a new token
-with the same name doesn't inherit them. The admin changes a token's
-permission under **Agents**.
+had. When the admin saves a value, `created_by` is cleared: the key is the
+admin's from then on, and the add token can't replace it (the key's page
+says so). A revoke clears what the token left attached to its name, so a
+new token with the same name starts clean: its `created_by`, its acks,
+`requested_by` on its pending requests (they become the admin's, so no
+token can change or fill them under add permission), and its pending
+notes and proposals (dropped: never approved, and nobody left to stand
+behind them). Its open flags stay for the admin, marked *token since
+revoked*, and don't count against or block the new token. The admin
+changes a token's permission under **Agents**.
 
 - An agent can't see other namespaces at all. A secret in a namespace the
   token isn't granted returns 404, exactly like one that doesn't exist, so
@@ -270,22 +277,33 @@ every read logged, no way to just look). So an entry is either a
   happened to the keys a token can see, newest first: created, replaced,
   details changed, requested, deleted, rolled back, status, flagged, flag
   resolved, note approved or removed, description approved. It runs from a
-  session-start hook. It's read-only: there's no per-token "seen" state,
-  so nothing an agent does hides a change from another agent. History is
-  kept in `keydrop.json` (the newest 1000 events), filtered per token by
+  session-start hook. Reading history changes nothing, so nothing an
+  agent does hides a change from another agent. History is kept in
+  `keydrop.json`, at most 500 events per namespace, filtered per token by
   namespace on the server; a key the token can't see gives the same empty
-  answer as one that doesn't exist. Before history, each secret had a
-  *new* flag per token (`acked_by`) and `keydrop inbox`/`keydrop ack`; the
-  CLI keeps those names for one release (`inbox` runs `history`, `ack`
-  does nothing), and the server keeps `?new=1` and `POST …/ack` for older
-  CLIs.
+  answer as one that doesn't exist. Past 500, the namespace drops the
+  oldest event of the token with the most events there, so a token
+  flooding a namespace evicts its own events first, never another
+  namespace's, the admin's or flags; only when nothing else is left do the
+  oldest of those go.
+- **New:** a value is *new* to a token until that token reads it (`run`,
+  `get --to-file`, `get --raw`, or `get NAME` for a variable); replacing
+  the value makes it new to everyone again. `keydrop secrets --new` lists
+  what the token hasn't read since it changed, and the admin's page shows
+  *new — no agent has picked it up yet* until any agent reads it. The
+  admin reading it changes nothing. Before history, agents cleared this
+  with `keydrop ack` and read changes with `keydrop inbox`; the CLI keeps
+  those names for one release (`inbox` runs `history --since 72h`, `ack`
+  does nothing, since reading the value is the ack), and the server keeps
+  `POST …/ack` for older CLIs.
 - **Pull (the agent needs a key):** `keydrop request NAME --desc …` creates
   an empty placeholder and returns a link to it. The agent sends the link
   to the human, who opens it on their phone and pastes the value.
   `keydrop wait NAME` returns once it has one. In practice most keys start
   as "I need a token for X", so this is probably the most-used flow.
   Read-only tokens may request. Only the token that made a pending request
-  can change it (another gets 409).
+  can change it (another gets 409), and a token has at most 20 open
+  requests (429).
 - There are no webhooks or chat notifications: telling a person about
   anything is the job of whatever runs the agents, not of keydrop.
 
@@ -301,13 +319,19 @@ limited to what it needs:
   sees it with who and when (`secrets`, `info`, `history`, the UI).
   `run` and `get` warn on stderr when handing out a key that isn't ok, and
   still run: refusing would break the agent's work over a claim another
-  agent made. The admin sets or clears it on the key's page.
+  agent made. The admin sets or clears it on the key's page; a status the
+  admin set, no token can clear or change (403) until the admin clears
+  it. `replaced-by NAME` must name another key in the same namespace (a
+  token sees those, so refusing a missing one says nothing about other
+  namespaces).
 - **Flags** are a message to the admin: a reason (≤500 characters) and an
   optional http(s) link (≤500). The text is shown to the admin only, on the
   dashboard under **Waiting for you** until resolved, then in the key's
-  history. Agents see "flagged by X on DATE", in `info` and `history`
-  without the text. One open flag per token per key (409), 20 open per
-  token and 200 in all.
+  history, and is written into the audit log with the flag, so it
+  survives the flag being resolved. Agents see "flagged by X on DATE", in
+  `info` and `history` without the text. One open flag per token per key
+  (409) and 20 open per token; there's no overall cap, so one token can't
+  use up flags for the others.
 - **Notes** (≤2000 characters) are proposed by an agent and shown to
   other agents only after the admin approves them, as written or edited;
   while pending, other agents see "N notes awaiting approval". Approved
@@ -317,11 +341,25 @@ limited to what it needs:
 - **Descriptions** an agent writes (`put --desc/--usage`, `request
   --desc`) go into a *proposal* beside the description, not into it, and
   follow the same approval as notes; the admin can approve (edited or
-  not) or reject it. Descriptions on requests made before this release
-  were written straight into the description and stay as they are.
-- Flags, statuses and notes share a per-token rate limit, 60 an hour (in
-  memory, so a restart resets it), then 429. All text is checked for
-  control characters, escaped in HTML (the UI marks agent-written text
+  not) or reject it. The form carries the proposal's version, so if the
+  agent changes it while the admin is reviewing, approve and reject are
+  refused and the admin sees the new one. Once approved, the description
+  stays marked as written by that agent until the admin changes its text
+  (saving it unchanged keeps the mark). The release before this one wrote
+  request text straight into the description; on load, a still-pending
+  request's text becomes the requester's proposal again, and a filled
+  request's description is marked as written by the requester (once,
+  recorded in `fixups`; see the two-MAC note below). A description a
+  write token set with `put --desc` in that release left no record of who
+  wrote it, so it can't be told apart from the admin's and stays as it
+  is.
+- Flags, statuses and notes share a per-token rate limit, 60 an hour, and
+  puts and requests another, 200 an hour (both in memory, so a restart
+  resets them), then 429. All agent text (descriptions, usage, flag
+  reasons and links, notes) is refused if it has control characters or
+  invisible formatting characters (Unicode Cf, such as bidi overrides and
+  zero-width spaces, and line/paragraph separators), and is escaped in
+  HTML (the UI marks agent-written text
   with an *agent-written* badge, and links get `rel="noopener noreferrer
   nofollow"`), and the CLI quotes it under "untrusted text from another
   agent" with no terminal escapes.
@@ -336,7 +374,9 @@ limited to what it needs:
   action, 60 a minute in all, and the next recorded one carries the count
   of those left out. So a flood shows up in the log without filling the
   disk. Events that need a token or a session are all logged.
-- Every field is cut at 200 bytes (an agent's `?purpose=` included), and
+- Every field is cut at 200 bytes (an agent's `?purpose=` included),
+  except a flag's reason and link, kept whole (up to 1100 bytes) in their
+  own field and shown on the audit page as agent-written text; and
   each file rotates at 10 MiB.
 - The unauthenticated events go to `audit-unauth.jsonl` (one old copy
   kept) and have their own in-memory list; everything that needs a token
@@ -386,8 +426,9 @@ limited to what it needs:
   (and unseals `tls.key`) for going back to an older release; this
   release then refuses the data until `upgrade-data` is run again.
 - **Two MACs, so the previous release can still read the file.** The
-  fields added since then (`history`, per-secret `ext` with status, flags,
-  notes, proposals and `created_by`, and the token's `add`) are optional.
+  fields added since then (`history`, `fixups`, per-secret `ext` with
+  status, flags, notes, proposals and `created_by`, and the token's `add`)
+  are optional.
   `mac` is computed over the state with those fields zeroed, which
   marshals byte for byte as the previous release writes it, so that
   release verifies it and starts. `mac2` (keyed with `HKDF(master key,
@@ -400,7 +441,11 @@ limited to what it needs:
   of them (history, statuses, flags, notes, proposals), and add tokens
   become read-only. Every new optional field has to go in `ext` or be
   zeroed in `legacyView`, or the previous release stops verifying the
-  file.
+  file. A load-time fix-up of data the previous release wrote (`fixups`
+  counts the ones done) changes only fields that release also has, or
+  `ext`, so the file stays one it can read; when that release rewrites
+  the file it drops `fixups`, and the fix-ups run again on what it wrote,
+  which only touches what it could have written.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
@@ -548,10 +593,14 @@ v0.1 (MVP), not yet released:
   base64, Basic auth), exit codes, environment and argv, write and
   read-only tokens, requests, revoke, a wrong pin, `get --to-file`, a
   restart, `upgrade-data`/`downgrade-data` against the previous format,
-  `rotate-tls` with re-pinning, add-token limits, flag text hidden from
-  agents, statuses and the `run` warning, note approval, the `inbox` alias,
-  and the previous release starting on (and rewriting) data this one
-  wrote.
+  `rotate-tls` with re-pinning, add-token limits (including another
+  token's request), *new* clearing when an agent reads a value, flag text
+  hidden from agents, statuses (set by a read-only token, and the admin's
+  not clearable by tokens) and the `run` warning, note approval, the
+  `inbox` alias, revoke clearing a token's requests, notes and proposals,
+  the put/request rate limit and per-namespace history, and the previous
+  release starting on (and rewriting) data this one wrote, including its
+  request text coming back as a proposal.
 - **Not yet checked:** the UI in a real browser (phone especially), the
   Docker image build, and the CI and release workflows.
 

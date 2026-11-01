@@ -72,7 +72,7 @@ In `.claude/settings.json`:
   start of the session: the keys created, replaced or marked in the last
   three days, with who and when. `--quiet` prints nothing when there's
   nothing. (`keydrop inbox --quiet`, the old hook, still works for one
-  release and prints a deprecation note.)
+  release: it runs `history --since 72h` and prints a deprecation note.)
 - **PreToolUse guard:** a small script that blocks commands that would print
   a value. For example, `keydrop-guard`:
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net/url"
@@ -23,11 +24,19 @@ var (
 	ErrNotOwner      = errors.New("this token has add permission: it can only replace values it created")
 	ErrBadPermission = errors.New("permission must be read, add or write")
 	ErrTooLong       = errors.New("text is too long")
-	ErrBadText       = errors.New("text has control characters")
+	ErrBadText       = errors.New("text has control or invisible formatting characters (such as bidi overrides or zero-width spaces)")
+	ErrEmpty         = errors.New("the text is empty")
 	ErrBadLink       = errors.New("the link must be an http or https URL")
 	ErrBadStatus     = errors.New("status must be ok, expired, revoked, leaked or replaced-by NAME")
-	// ErrLimit: too many open flags or pending notes.
-	ErrLimit = errors.New("too many open flags or pending notes; wait for the admin to deal with them")
+	// ErrNoReplacement: replaced-by names a key that isn't in the same
+	// namespace (or doesn't exist; the two look the same).
+	ErrNoReplacement = errors.New("replaced-by must name another key that exists in the same namespace")
+	// ErrAdminStatus: the admin set the status, so only the admin changes it.
+	ErrAdminStatus = errors.New("the admin set this key's status; only the admin can change it")
+	// ErrChanged: what the admin reviewed was replaced in the meantime.
+	ErrChanged = errors.New("the agent changed its proposal while you were reviewing it; review the new one")
+	// ErrLimit: too many open flags, pending notes or open requests.
+	ErrLimit = errors.New("too many open flags, pending notes or open requests from this token; wait for the admin to deal with them")
 )
 
 const (
@@ -37,11 +46,18 @@ const (
 	MaxReason = 500
 	MaxLink   = 500
 
-	maxHistory        = 1000
-	maxFlagsPerToken  = 20
-	maxFlagsTotal     = 200
-	maxNotesPerToken  = 20 // pending
-	maxNotesPerSecret = 50
+	// maxHistoryPerNamespace bounds each namespace's history separately,
+	// so a token can only ever push out events in namespaces it's granted
+	// (see record for which events go first).
+	maxHistoryPerNamespace = 500
+	// maxFlagsPerToken bounds open flags per live token. There's no
+	// overall cap: tokens are made only by the admin, so this bounds the
+	// total, and a cap shared by everyone would let a few tokens (or
+	// revoked ones) stop all the others from flagging.
+	maxFlagsPerToken    = 20
+	maxNotesPerToken    = 20 // pending
+	maxNotesPerSecret   = 50
+	maxRequestsPerToken = 20 // pending
 )
 
 // Permission is what a token may do besides read.
@@ -152,6 +168,10 @@ type Flag struct {
 	At     time.Time `json:"at"`
 	Reason string    `json:"reason,omitempty"`
 	Link   string    `json:"link,omitempty"`
+	// TokenRevoked: the token that raised it was revoked. The flag stays
+	// for the admin, but no longer counts as that name's, so a new token
+	// given the name isn't blocked or credited with it.
+	TokenRevoked bool `json:"token_revoked,omitempty"`
 }
 
 // Note is agent-written text about a key. Pending notes are seen only by
@@ -174,6 +194,14 @@ type Proposal struct {
 	At          time.Time `json:"at"`
 }
 
+// Version identifies this exact proposal. The approve form carries it, so
+// an approval applies only to the text the admin saw, not to whatever the
+// agent sent in the meantime.
+func (p Proposal) Version() string {
+	h := sha256.Sum256([]byte(p.By + "\x00" + p.At.UTC().Format(time.RFC3339Nano) + "\x00" + p.Description + "\x00" + p.Usage))
+	return hex.EncodeToString(h[:12])
+}
+
 // Event is one entry in the change history. Values are never in it.
 type Event struct {
 	At        time.Time `json:"at"`
@@ -190,10 +218,47 @@ type Event struct {
 func (s *Store) record(ev Event) {
 	ev.At = s.now().UTC()
 	h := append(slices.Clip(s.st.History), ev) // never writes into the snapshot's array
-	if len(h) > maxHistory {
-		h = h[len(h)-maxHistory:]
+	s.st.History = trimHistory(h, ev.Namespace)
+}
+
+// protectedEvent reports whether an event is kept ahead of agents' own
+// events: the admin's, and flags (the only record of a flag's reason
+// once it's resolved, besides the audit log).
+func protectedEvent(ev Event) bool {
+	return !strings.HasPrefix(ev.Actor, "token:") || ev.Action == "flagged"
+}
+
+// trimHistory brings namespace ns back under maxHistoryPerNamespace. It
+// drops the oldest agent event of the token with the most agent events
+// in ns, so a token spamming changes only pushes out its own events, and
+// never the admin's or flags while any agent event is left. h must not
+// share its array with a snapshot.
+func trimHistory(h []Event, ns string) []Event {
+	for {
+		n := 0
+		counts := map[string]int{}
+		for _, ev := range h {
+			if ev.Namespace == ns {
+				n++
+				if !protectedEvent(ev) {
+					counts[ev.Actor]++
+				}
+			}
+		}
+		if n <= maxHistoryPerNamespace {
+			return h
+		}
+		heaviest, most := "", 0
+		for a, c := range counts {
+			if c > most || (c == most && a < heaviest) {
+				heaviest, most = a, c
+			}
+		}
+		i := slices.IndexFunc(h, func(ev Event) bool {
+			return ev.Namespace == ns && (most == 0 || (!protectedEvent(ev) && ev.Actor == heaviest))
+		})
+		h = slices.Delete(h, i, i+1)
 	}
-	s.st.History = h
 }
 
 // History returns events newest first, those keep accepts, at most limit
@@ -221,8 +286,12 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// checkText rejects control characters (newlines and tabs are allowed
-// when multiline) and invalid UTF-8, and bounds the length.
+// checkText bounds the length and rejects invalid UTF-8, control
+// characters (newlines and tabs are allowed when multiline), and the
+// invisible ones that make text read differently from what it is:
+// formatting characters (Cf: bidi overrides and isolates, zero-width
+// spaces and joiners, the BOM, soft hyphens, tag characters) and the
+// Unicode line and paragraph separators.
 func checkText(t string, max int, multiline bool) error {
 	if len(t) > max {
 		return ErrTooLong
@@ -231,11 +300,23 @@ func checkText(t string, max int, multiline bool) error {
 		return ErrBadText
 	}
 	for _, r := range t {
-		if unicode.IsControl(r) && !(multiline && (r == '\n' || r == '\t')) {
+		if multiline && (r == '\n' || r == '\t') {
+			continue
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Zl, unicode.Zp) {
 			return ErrBadText
 		}
 	}
 	return nil
+}
+
+// CheckAgentText checks a description (multiline) and usage (one line)
+// an agent sends.
+func CheckAgentText(description, usage string) error {
+	if err := checkText(description, MaxText, true); err != nil {
+		return err
+	}
+	return checkText(usage, MaxText, false)
 }
 
 // CheckLink accepts an empty link, or an absolute http(s) URL.
@@ -295,13 +376,24 @@ func (s *Store) annotate(ns, name string, f func(sec *Secret, e *SecretExt, now 
 }
 
 // SetStatus sets a key's status (value "ok" clears it). actor is "admin"
-// or "token:NAME".
+// or "token:NAME". A token can't change or clear a status the admin set,
+// and its replaced-by must name a key in the same namespace.
 func (s *Store) SetStatus(ns, name, value, replacedBy, actor string) error {
 	st, err := ParseStatus(value, replacedBy)
 	if err != nil {
 		return err
 	}
 	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
+		if actor != "admin" && e.Status != nil && e.Status.By == "admin" {
+			return ErrAdminStatus
+		}
+		// Same namespace, so a token sees it if it exists: refusing a
+		// missing name says nothing about other namespaces.
+		if st != nil && st.ReplacedBy != "" {
+			if _, ok := s.st.Secrets[key(ns, st.ReplacedBy)]; !ok || st.ReplacedBy == name {
+				return ErrNoReplacement
+			}
+		}
 		detail := "ok"
 		if st != nil {
 			st.By, st.At = actor, now
@@ -314,7 +406,8 @@ func (s *Store) SetStatus(ns, name, value, replacedBy, actor string) error {
 }
 
 // AddFlag raises a flag for the admin. A token has at most one open flag
-// per key, and there are caps per token and overall.
+// per key, and maxFlagsPerToken in all. Flags left by a revoked token of
+// the same name don't count.
 func (s *Store) AddFlag(ns, name, by, reason, link string) error {
 	reason = strings.TrimSpace(reason)
 	link = strings.TrimSpace(link)
@@ -325,14 +418,13 @@ func (s *Store) AddFlag(ns, name, by, reason, link string) error {
 		return err
 	}
 	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
-		mine, total := 0, 0
+		mine := 0
 		for _, other := range s.st.Secrets {
 			if other.Ext == nil {
 				continue
 			}
 			for _, f := range other.Ext.Flags {
-				total++
-				if f.By == by {
+				if f.By == by && !f.TokenRevoked {
 					mine++
 					if other == sec {
 						return ErrExists
@@ -340,7 +432,7 @@ func (s *Store) AddFlag(ns, name, by, reason, link string) error {
 				}
 			}
 		}
-		if mine >= maxFlagsPerToken || total >= maxFlagsTotal {
+		if mine >= maxFlagsPerToken {
 			return ErrLimit
 		}
 		e.Flags = append(e.Flags, Flag{ID: newID(), By: by, At: now, Reason: reason, Link: link})
@@ -372,7 +464,7 @@ func (s *Store) ResolveFlag(ns, name, id string) error {
 func (s *Store) ProposeNote(ns, name, by, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ErrBadText
+		return ErrEmpty
 	}
 	if err := checkText(text, MaxText, true); err != nil {
 		return err
@@ -400,10 +492,14 @@ func (s *Store) ProposeNote(ns, name, by, text string) error {
 	})
 }
 
-// ApproveNote approves a pending note, with text replacing it if text
-// isn't empty (edit, then approve).
+// ApproveNote approves a pending note with text, the note as the admin
+// left it (edited or not). Empty text is refused: approving should never
+// fall back to text the admin cleared.
 func (s *Store) ApproveNote(ns, name, id, text string) error {
-	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n")
+	if text == "" {
+		return ErrEmpty
+	}
 	if err := checkText(text, MaxText, true); err != nil {
 		return err
 	}
@@ -413,7 +509,7 @@ func (s *Store) ApproveNote(ns, name, id, text string) error {
 			return ErrNotFound
 		}
 		n := &e.Notes[i] // e.Notes is a clone
-		if text != "" && text != n.Text {
+		if text != n.Text {
 			n.Text, n.Edited = text, true
 		}
 		n.Pending, n.ApprovedAt = false, &now
@@ -439,12 +535,17 @@ func (s *Store) RemoveNote(ns, name, id string) error {
 }
 
 // ApproveProposal makes an agent's proposed description and usage the
-// key's own, with the admin's edits.
-func (s *Store) ApproveProposal(ns, name, description, usage string) error {
+// key's own, with the admin's edits. version is the Version of the
+// proposal the admin reviewed; if the agent has replaced it since, it's
+// ErrChanged and nothing changes.
+func (s *Store) ApproveProposal(ns, name, version, description, usage string) error {
 	description, usage = strings.TrimSpace(description), strings.TrimSpace(usage)
 	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
 		if e.Proposal == nil {
 			return ErrNotFound
+		}
+		if e.Proposal.Version() != version {
+			return ErrChanged
 		}
 		sec.Description, sec.Usage = description, usage
 		e.DescriptionBy, e.Proposal = e.Proposal.By, nil
@@ -453,11 +554,15 @@ func (s *Store) ApproveProposal(ns, name, description, usage string) error {
 	})
 }
 
-// RejectProposal drops an agent's proposed description and usage.
-func (s *Store) RejectProposal(ns, name string) error {
+// RejectProposal drops an agent's proposed description and usage, if
+// it's still the version the admin saw.
+func (s *Store) RejectProposal(ns, name, version string) error {
 	return s.annotate(ns, name, func(sec *Secret, e *SecretExt, now time.Time) error {
 		if e.Proposal == nil {
 			return ErrNotFound
+		}
+		if e.Proposal.Version() != version {
+			return ErrChanged
 		}
 		e.Proposal = nil
 		return nil

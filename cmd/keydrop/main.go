@@ -17,7 +17,8 @@ const usage = `keydrop — a secret drop for homelab agents.
 Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
                                          secrets masked (-e NAME sets $NAME; VAR=REF renames)
-  secrets [--new] [--pending]           list secrets this token can see (no values)
+  secrets [--new] [--pending]           list secrets this token can see (no values;
+                                         --new: changed since this token last read it)
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
   history [NAME] [--since 72h]          recent changes to what this token can see: who
@@ -43,7 +44,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          to keep waiting)
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
   whoami                                show the token's name, namespaces and permission
-  inbox, ack                            deprecated: inbox runs history, ack does nothing
+  inbox, ack                            deprecated: inbox runs history --since 72h,
+                                         ack does nothing (reading a value marks it read)
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)

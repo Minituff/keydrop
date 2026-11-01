@@ -20,7 +20,10 @@ type Event struct {
 	Action string    `json:"action"`
 	Target string    `json:"target,omitempty"`
 	Detail string    `json:"detail,omitempty"`
-	IP     string    `json:"ip,omitempty"`
+	// Text is longer free text an agent wrote (a flag's reason and link),
+	// kept so the record shows what was said. Capped at MaxText.
+	Text string `json:"text,omitempty"`
+	IP   string `json:"ip,omitempty"`
 	// Unauthenticated marks an event a request without a credential caused
 	// (a bad token, a pairing request). Those go to their own file.
 	Unauthenticated bool `json:"unauthenticated,omitempty"`
@@ -30,6 +33,8 @@ const (
 	// MaxField caps each text field, so a request can't write a megabyte
 	// into the log (a long ?purpose=, say).
 	MaxField = 200
+	// MaxText caps Text: enough for a flag's reason and link in full.
+	MaxText = 1100
 	// DefaultMaxBytes is the size at which each file is rotated.
 	DefaultMaxBytes = 10 << 20
 	// MainGenerations is how many rotated copies of the main log are kept
@@ -178,11 +183,13 @@ func (lf *file) write(e Event, maxBytes int64) {
 }
 
 // clip shortens s to at most MaxField bytes, on a rune boundary.
-func clip(s string) string {
-	if len(s) <= MaxField {
+func clip(s string) string { return clipTo(s, MaxField) }
+
+func clipTo(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	cut := MaxField - len("…")
+	cut := n - len("…")
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
@@ -197,6 +204,7 @@ func (l *Log) Add(e Event) {
 		e.Time = time.Now().UTC()
 	}
 	e.Actor, e.Action, e.Target, e.Detail, e.IP = clip(e.Actor), clip(e.Action), clip(e.Target), clip(e.Detail), clip(e.IP)
+	e.Text = clipTo(e.Text, MaxText)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	lf := l.main

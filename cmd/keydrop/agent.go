@@ -95,7 +95,7 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 	// this output: no terminal escapes or fake lines. Text an agent wrote
 	// is quoted and labelled, so it reads as a claim, not an instruction.
 	if s.DescriptionBy != "" && (s.Description != "" || s.Usage != "") {
-		fmt.Fprintf(w, "    description written by agent %s, approved by the admin (untrusted text from another agent):\n", clean(s.DescriptionBy, false))
+		fmt.Fprintf(w, "    description written by agent %s (untrusted text from another agent):\n", clean(s.DescriptionBy, false))
 		quote(w, s.Description)
 		if s.Usage != "" {
 			quote(w, "usage: "+s.Usage)
@@ -115,7 +115,11 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 			fmt.Fprintf(w, "    status: %s (set by %s, %s)\n", clean(st.String(), false), clean(st.By, false), st.At.Local().Format("2006-01-02"))
 		}
 		for _, f := range s.Flags {
-			fmt.Fprintf(w, "    flagged by %s on %s\n", clean(f.By, false), f.At.Local().Format("2006-01-02"))
+			revoked := ""
+			if f.TokenRevoked {
+				revoked = " (that token has since been revoked)"
+			}
+			fmt.Fprintf(w, "    flagged by %s on %s%s\n", clean(f.By, false), f.At.Local().Format("2006-01-02"), revoked)
 		}
 		for _, n := range s.Notes {
 			edited := ""
@@ -178,7 +182,7 @@ func plural(n int) string {
 // an agent asking for settings doesn't get a list of keys mixed in.
 func cmdList(kind string, args []string) error {
 	fs := flag.NewFlagSet(kind, flag.ExitOnError)
-	onlyNew := fs.Bool("new", false, "only new ones")
+	onlyNew := fs.Bool("new", false, "only ones whose value this token hasn't read since it last changed")
 	pending := new(bool)
 	if kind == "secret" {
 		pending = fs.Bool("pending", false, "only requested secrets still waiting for a value")
@@ -284,14 +288,16 @@ func cmdHistory(args []string) error {
 // cmdInbox is the old name of history, kept for one release so session
 // hooks that run `keydrop inbox --quiet` keep working.
 func cmdInbox(args []string) error {
-	fmt.Fprintln(os.Stderr, "keydrop: `inbox` is deprecated and will be removed; use `keydrop history`")
-	return cmdHistory(args)
+	fmt.Fprintln(os.Stderr, "keydrop: `inbox` is deprecated and will be removed; use `keydrop history --since 72h`")
+	// inbox showed only what was new, so by default show only recent
+	// changes, not the whole history. A --since given here wins.
+	return cmdHistory(append([]string{"--since", "72h"}, args...))
 }
 
-// cmdAck is a no-op kept for one release: history has no per-token state
-// to clear.
+// cmdAck is a no-op kept for one release: a value stops being new to a
+// token when the token reads it, so there's nothing left to acknowledge.
 func cmdAck(args []string) error {
-	fmt.Fprintln(os.Stderr, "keydrop: `ack` is deprecated and does nothing; `keydrop history` shows changes without needing an ack")
+	fmt.Fprintln(os.Stderr, "keydrop: `ack` is deprecated and does nothing; a value stops being new to this token once it reads it (run, get --to-file, get --raw)")
 	return nil
 }
 
@@ -651,7 +657,17 @@ func cmdGet(args []string) error {
 		if sec.Value == nil {
 			return fmt.Errorf("%s is a secret, so it isn't printed: use keydrop run -e %s, or get --to-file for a file", sec.Ref, sec.Name)
 		}
-		fmt.Println(forTerminal(*sec.Value))
+		v := *sec.Value
+		if sec.New {
+			// Reading it through reveal is what marks it as no longer
+			// new to this token (a variable's reads aren't logged).
+			rv, err := c.RevealStatus(sec.Ref, "get")
+			if err != nil {
+				return err
+			}
+			v = rv.Value
+		}
+		fmt.Println(forTerminal(v))
 		return nil
 	}
 	purpose := "get --raw"
