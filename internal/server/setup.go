@@ -11,7 +11,7 @@ import (
 // The agent setup guide is one template (web/agent-setup.md.tmpl) with two
 // renderings: a server's own copy, served at /setup.md and shown on the
 // "Set up an agent" page with its address and pins filled in, and the
-// generic copy checked into docs/agents.md (TestAgentsDoc keeps it in
+// generic copy checked into docs/agent-setup.md (TestAgentSetupDoc keeps it in
 // step). Everything in it is public: no token, no setup code.
 
 var setupTmpl = template.Must(template.New("agent-setup.md.tmpl").Funcs(template.FuncMap{

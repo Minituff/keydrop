@@ -3,7 +3,7 @@
 The quickest way to set up keydrop is to let your agent (Claude Code,
 Codex, …) do it. Paste this into it:
 
-> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agents.md and help me set up keydrop.
+> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agent-setup.md and help me set up keydrop.
 
 **If you're an agent reading this:** follow the section
 [Set up keydrop: steps for the agent](#set-up-keydrop-steps-for-the-agent)
@@ -23,7 +23,7 @@ same steps with your server's address and certificate pins filled in, and
 a short version to paste: one `curl` command that fetches them from your
 server's `/setup.md`.
 
-<!-- BEGIN agent setup: generated from internal/server/web/agent-setup.md.tmpl; edit that file, then run go test ./internal/server -run TestAgentsDoc -update -->
+<!-- BEGIN agent setup: generated from internal/server/web/agent-setup.md.tmpl; edit that file, then run go test ./internal/server -run TestAgentSetupDoc -update -->
 ## Set up keydrop: steps for the agent
 
 These are the steps an AI agent follows to set up keydrop with a person.

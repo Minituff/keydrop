@@ -24,14 +24,14 @@ dependencies**, so the whole thing can be audited in an afternoon.
 
 Paste this into your agent (Claude Code, Codex, …):
 
-> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agents.md and help me set up keydrop.
+> Read https://raw.githubusercontent.com/Minituff/keydrop/main/docs/agent-setup.md and help me set up keydrop.
 
 That sentence is the whole setup. The agent installs the server (or uses
 the one you have), installs the CLI and pairs its machine, and stops when
 it needs you: to save the master key in your password manager, to create
 the admin login in your browser, and to approve the pairing. You can read
 everything it will be told first: the steps are in full in
-[docs/agents.md](docs/agents.md) (the same text, as a [normal GitHub page](https://github.com/Minituff/keydrop/blob/main/docs/agents.md)).
+[docs/agent-setup.md](docs/agent-setup.md) (the same text, as a [normal GitHub page](https://github.com/Minituff/keydrop/blob/main/docs/agent-setup.md)).
 
 Already running keydrop? **Agents → Set up an agent** gives a shorter
 prompt with your server's address and certificate pins filled in.
@@ -517,7 +517,7 @@ paste it into `keydrop login --url URL`.
 
 The rules to give the agent (for its `CLAUDE.md` or `AGENTS.md`), a
 session-start history hook and a guard against `--raw` are in
-[docs/agents.md](docs/agents.md).
+[docs/agent-setup.md](docs/agent-setup.md).
 [docs/design_doc.md](docs/design_doc.md) explains how keydrop is built and
 why.
 

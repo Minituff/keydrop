@@ -15,21 +15,21 @@ import (
 	"testing"
 )
 
-var update = flag.Bool("update", false, "rewrite the generated section of docs/agents.md")
+var update = flag.Bool("update", false, "rewrite the generated section of docs/agent-setup.md")
 
 const (
-	docBegin = "<!-- BEGIN agent setup: generated from internal/server/web/agent-setup.md.tmpl; edit that file, then run go test ./internal/server -run TestAgentsDoc -update -->\n"
+	docBegin = "<!-- BEGIN agent setup: generated from internal/server/web/agent-setup.md.tmpl; edit that file, then run go test ./internal/server -run TestAgentSetupDoc -update -->\n"
 	docEnd   = "<!-- END agent setup -->\n"
 )
 
-// docs/agents.md carries the generic rendering of the setup guide, so the
+// docs/agent-setup.md carries the generic rendering of the setup guide, so the
 // docs can't drift from what servers hand out.
-func TestAgentsDoc(t *testing.T) {
+func TestAgentSetupDoc(t *testing.T) {
 	want, err := genericGuide.render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join("..", "..", "docs", "agents.md")
+	path := filepath.Join("..", "..", "docs", "agent-setup.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +49,7 @@ func TestAgentsDoc(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("docs/agents.md doesn't match web/agent-setup.md.tmpl; run: go test ./internal/server -run TestAgentsDoc -update")
+	t.Fatalf("docs/agent-setup.md doesn't match web/agent-setup.md.tmpl; run: go test ./internal/server -run TestAgentSetupDoc -update")
 }
 
 func TestSetupGuideRender(t *testing.T) {

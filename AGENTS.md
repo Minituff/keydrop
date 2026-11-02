@@ -14,7 +14,7 @@ isn't worth it.
 |---|---|---|
 | [docs/design_doc.md](docs/design_doc.md) | Any behaviour: `internal/store`, `internal/auth`, `internal/server` (API, pairing, TLS), `cmd/keydrop`, the data format | The design, the reasons behind it, and what's planned |
 | [docs/ui.md](docs/ui.md) | Anything in `internal/server/web/` (`style.css`, templates) or UI handlers in `ui.go` | Light/dark palette, components, phone layout, how to check a page |
-| [docs/agents.md](docs/agents.md) | The agent setup flow, `setup.go`, `agent-setup.md.tmpl`, CLI commands agents use | Setting up keydrop with an AI agent (part of it is generated; see Conventions) |
+| [docs/agent-setup.md](docs/agent-setup.md) | The agent setup flow, `setup.go`, `agent-setup.md.tmpl`, CLI commands agents use | Setting up keydrop with an AI agent (part of it is generated; see Conventions) |
 
 Keep them current: a change that makes a page wrong updates that page in the
 same commit. New areas that need more than a README line get their own page
@@ -182,10 +182,10 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - **The agent setup guide has one source:**
   `internal/server/web/agent-setup.md.tmpl`. The server renders it for
   `/setup.md` and the "Set up an agent" page; the section of
-  `docs/agents.md` between the `BEGIN agent setup` / `END agent setup`
+  `docs/agent-setup.md` between the `BEGIN agent setup` / `END agent setup`
   markers is its generic rendering. Edit the template, never that
-  section, then run `go test ./internal/server -run TestAgentsDoc -update`
-  and commit both; `TestAgentsDoc` fails while they differ. It's served
+  section, then run `go test ./internal/server -run TestAgentSetupDoc -update`
+  and commit both; `TestAgentSetupDoc` fails while they differ. It's served
   without auth, so it must only ever hold public values (address, pins).
 - New config is an env var named `KEYDROP_*`, documented in the README's
   configuration table, with a safe default.

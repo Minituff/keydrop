@@ -786,9 +786,9 @@ binary, `internal/server/web/agent-setup.md.tmpl`, rendered two ways:
   system already trusts (`KEYDROP_TLS=files`, or a proxy) it has no pins
   and says so. It holds nothing secret: no token and no setup code, so
   it's fine for anyone on the network to read.
-- **The generic copy** in `docs/agents.md`, with placeholders
+- **The generic copy** in `docs/agent-setup.md`, with placeholders
   (`<server-url>`, `<cert-pin>`, `<key-pin>`) and the steps to install a
-  server first. A test (`TestAgentsDoc`) fails when the checked-in section
+  server first. A test (`TestAgentSetupDoc`) fails when the checked-in section
   differs from the rendering; `-update` rewrites it. So the docs can't
   drift from what servers hand out.
 
@@ -864,7 +864,7 @@ v0.1 (MVP), not yet released:
 1. **Before v0.1.0:** check the UI on a phone, confirm the Docker build and
    CI, choose a license.
 2. **Agent integrations:** ship the example hook scripts from
-   [agents.md](agents.md) (session-start history, the `--raw` guard) as
+   [agent-setup.md](agent-setup.md) (session-start history, the `--raw` guard) as
    files rather than docs.
 3. **Later:**
    - Passkeys (WebAuthn) for admin login.

@@ -1,9 +1,9 @@
 {{/*
   The agent setup guide: the single source for /setup.md, the "Set up an
-  agent" page and the agent section of docs/agents.md. Rendered with
+  agent" page and the agent section of docs/agent-setup.md. Rendered with
   text/template. Generic is the docs copy (placeholders, plus installing a
   server); otherwise it's one server's copy, with its address and pins.
-  After editing, run: go test ./internal/server -run TestAgentsDoc -update
+  After editing, run: go test ./internal/server -run TestAgentSetupDoc -update
 */ -}}
 {{.H}} Set up keydrop: steps for the agent
 {{if .Generic}}
