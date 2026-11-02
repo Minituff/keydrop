@@ -1,10 +1,14 @@
 /* keydrop UI. No scripts and no third-party assets: the CSP allows only this file. */
-:root{color-scheme:light dark;--bg:#f7f6fb;--card:#fff;--fg:#1c1a29;--muted:#6c6880;--line:#e4e1ee;--line-soft:#efedf5;--hover:#faf9fd;
---side:#1f1a3d;--side-fg:#b9b3dc;--side-strong:#fff;--side-on:rgba(255,255,255,.09);
---accent:#6d4aff;--accent-fg:#5b39e8;--accent-soft:#ece7ff;--on-accent:#fff;--warn:#a35a00;--warn-soft:#fff1dd;--bad:#c02626;--bad-soft:#fde4e4;--ok:#1d7a4f;--ok-soft:#e1f5ea;--attn-bg:#fff5e6;--attn-fg:#6b4300;--c:#8d889f}
-@media (prefers-color-scheme:dark){:root{--bg:#0f0e17;--card:#17151f;--fg:#ebe9f5;--muted:#948fac;--line:#2a2638;--line-soft:#221f2e;--hover:#1c1a27;
---side:#13111d;--side-fg:#9d97bd;--side-on:rgba(139,112,255,.14);
---accent:#6a48f0;--accent-fg:#a993ff;--accent-soft:rgba(124,92,255,.18);--warn:#f5b454;--warn-soft:rgba(245,180,84,.13);--bad:#f87171;--bad-soft:rgba(248,113,113,.14);--ok:#5fd0a0;--ok-soft:rgba(95,208,160,.13);--attn-bg:rgba(245,180,84,.10);--attn-fg:#f5c77e}}
+/* One palette: light-dark() picks a colour by color-scheme, which follows
+   the device (System) unless the Appearance setting pins it with
+   data-theme on <html>. */
+:root{color-scheme:light dark;
+--bg:light-dark(#f7f6fb,#16141f);--card:light-dark(#fff,#211e2c);--fg:light-dark(#1c1a29,#ebe9f5);--muted:light-dark(#6c6880,#a49fbb);--line:light-dark(#e4e1ee,#3a3549);--line-soft:light-dark(#efedf5,#2d2a3a);
+--hover:light-dark(#faf9fd,#2a2737);--side:light-dark(#1f1a3d,#1d1a2e);--side-fg:light-dark(#b9b3dc,#9d97bd);--side-strong:#fff;--side-on:light-dark(rgba(255,255,255,.09),rgba(139,112,255,.18));--accent:light-dark(#6d4aff,#6a48f0);
+--accent-fg:light-dark(#5b39e8,#a993ff);--accent-soft:light-dark(#ece7ff,rgba(124,92,255,.18));--on-accent:#fff;--warn:light-dark(#a35a00,#f5b454);--warn-soft:light-dark(#fff1dd,rgba(245,180,84,.13));--bad:light-dark(#c02626,#f87171);
+--bad-soft:light-dark(#fde4e4,rgba(248,113,113,.14));--ok:light-dark(#1d7a4f,#5fd0a0);--ok-soft:light-dark(#e1f5ea,rgba(95,208,160,.13));--attn-bg:light-dark(#fff5e6,rgba(245,180,84,.10));--attn-fg:light-dark(#6b4300,#f5c77e);--c:#8d889f}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark}
 .color-red{--c:#dc2f4a}.color-orange{--c:#e8830c}.color-yellow{--c:#c9a400}.color-green{--c:#17a673}
 .color-teal{--c:#0f9fb0}.color-blue{--c:#2f72e0}.color-purple{--c:#7b5cff}.color-pink{--c:#d6409f}
 
@@ -60,8 +64,7 @@ button,.button{display:inline-flex;align-items:center;justify-content:center;gap
 button:hover,.button:hover{opacity:.92;text-decoration:none}
 button.secondary,.button.secondary{background:transparent;color:var(--fg);border-color:var(--line)}
 button.secondary:hover,.button.secondary:hover{background:var(--hover);opacity:1}
-button.danger{background:var(--bad);color:#fff}
-@media (prefers-color-scheme:dark){button.danger{background:#b83a3a}}
+button.danger{background:light-dark(var(--bad),#b83a3a);color:#fff}
 button.small,.button.small{padding:5px 11px;font-size:13px}
 button.link{background:none;color:var(--accent-fg);padding:0;font-weight:400;border:0}
 .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px}
@@ -146,6 +149,8 @@ dt{color:var(--muted)}dd{margin:0}
 .searchbox{display:flex;align-items:center;gap:8px;width:240px;padding:0 11px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--muted);margin:0}
 .searchbox input{border:0;background:none;margin:0;padding:8px 0;outline:0;min-width:0}
 .searchbox:focus-within{border-color:var(--accent-fg);outline:2px solid var(--accent-soft)}
+/* Settings: a row of buttons, the current one filled. */
+.seg{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 4px}
 /* Log: filters and pages, plain GET forms and links. */
 .filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px}
 .filters input,.filters select{width:auto;margin:0}

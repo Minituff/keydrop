@@ -435,7 +435,8 @@ does this again after the previous release has rewritten the file.
    download the `.exe` from Agents → Add. Tagged releases also attach
    every build to the GitHub release. `keydrop --version` shows the build;
    the CLI warns once if it doesn't match the server's. Settings shows the
-   server's build, its commit time and when it started; images built by
+   server's build, its commit time and when it started, and the
+   Appearance choice (System, Light or Dark; a cookie per browser); images built by
    CI link the version to its commit (build args `COMMIT`, `COMMIT_TIME`,
    `REPO_URL`).
 1. On the agent's machine, as the agent's user (or let the agent run it):

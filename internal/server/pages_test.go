@@ -105,3 +105,30 @@ func TestAuditFilters(t *testing.T) {
 		t.Fatal("pager or form lost the filter")
 	}
 }
+
+// Appearance: System by default; Light or Dark is a cookie for this
+// browser, and every page (the login page too) carries it.
+func TestTheme(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	_, body := h.get("/settings")
+	if strings.Contains(body, "data-theme") || !strings.Contains(body, `content="light dark"`) || !strings.Contains(body, `value="system" class="on small" aria-pressed="true"`) {
+		t.Fatal("default: want system")
+	}
+	if code, body := h.form("/settings/theme", url.Values{"theme": {"dark"}}); code != http.StatusSeeOther || !strings.Contains(body, `<html lang="en" data-theme="dark">`) ||
+		!strings.Contains(body, `<meta name="color-scheme" content="dark">`) || !strings.Contains(body, `value="dark" class="on small"`) || !strings.Contains(body, "Appearance saved") {
+		t.Fatalf("dark: %d", code)
+	}
+	if _, body = h.get("/login"); !strings.Contains(body, `data-theme="dark"`) {
+		t.Fatal("login page ignores the theme")
+	}
+	if code, _ := h.form("/settings/theme", url.Values{"theme": {"neon"}}); code != http.StatusBadRequest {
+		t.Fatalf("bad theme: %d", code)
+	}
+	if resp := h.post("/settings/theme", url.Values{"theme": {"light"}}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("no csrf: %d", resp.StatusCode)
+	}
+	if _, body = h.form("/settings/theme", url.Values{"theme": {"system"}}); strings.Contains(body, "data-theme") {
+		t.Fatal("system: cookie not cleared")
+	}
+}

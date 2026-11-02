@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -275,6 +276,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/totp/off", s.admin(s.handleTOTPOff))
 	m.HandleFunc("POST /settings/password", s.admin(s.handlePassword))
 	m.HandleFunc("POST /settings/autogroups", s.admin(s.handleAutoGroups))
+	m.HandleFunc("POST /settings/theme", s.admin(s.handleTheme))
 	m.HandleFunc("GET /groups", s.admin(s.handleGroups))
 	m.HandleFunc("POST /groups", s.admin(s.handleCreateGroup))
 	m.HandleFunc("POST /groups/promote", s.admin(s.handlePromoteGroup))
@@ -466,6 +468,42 @@ func (s *Server) endSession(w http.ResponseWriter, id string) {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode})
+}
+
+// ---- appearance ----
+
+// themes are the Appearance choices; "system" follows the device and is
+// the default. The choice is a cookie, so it's per browser.
+var themes = []string{"system", "light", "dark"}
+
+func (s *Server) themeCookieName() string {
+	if s.cfg.CookieSecure {
+		return "__Host-keydrop-theme"
+	}
+	return "keydrop-theme"
+}
+
+// theme is this browser's choice: "light", "dark" or "" for system.
+func (s *Server) theme(r *http.Request) string {
+	if c, err := r.Cookie(s.themeCookieName()); err == nil && (c.Value == "light" || c.Value == "dark") {
+		return c.Value
+	}
+	return ""
+}
+
+func (s *Server) handleTheme(w http.ResponseWriter, r *http.Request, _ string, _ *session) {
+	t := r.PostFormValue("theme")
+	if !slices.Contains(themes, t) {
+		http.Error(w, "theme: system, light or dark", http.StatusBadRequest)
+		return
+	}
+	c := &http.Cookie{Name: s.themeCookieName(), Value: t, Path: "/", HttpOnly: true,
+		Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: int(deviceTTL / time.Second)}
+	if t == "system" {
+		c.Value, c.MaxAge = "", -1
+	}
+	http.SetCookie(w, c)
+	http.Redirect(w, r, "/settings?msg=theme#appearance", http.StatusSeeOther)
 }
 
 // ---- device cookies ----

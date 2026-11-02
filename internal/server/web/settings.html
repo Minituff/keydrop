@@ -1,5 +1,12 @@
 {{define "content"}}
 <h1>Settings</h1>
+<h2 id="appearance">Appearance</h2>
+<form method="post" action="/settings/theme" class="seg" aria-label="Appearance">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{$cur := or .Theme "system"}}{{range .Themes}}<button name="theme" value="{{.}}" class="{{if eq . $cur}}on{{else}}secondary{{end}} small" aria-pressed="{{eq . $cur}}">{{if eq . "system"}}System{{else if eq . "light"}}Light{{else}}Dark{{end}}</button>{{end}}
+</form>
+<p><small class="muted">System follows this device's light or dark mode. Saved in this browser only.</small></p>
+
 <h2>Authenticator code</h2>
 {{if .TOTP}}
 <p><span class="badge new">on</span> Logging in needs your password and a 6-digit code from your authenticator app.</p>

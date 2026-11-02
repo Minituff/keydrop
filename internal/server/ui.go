@@ -103,6 +103,7 @@ var flashes = map[string]string{
 	"rolledback":     "Rolled back to the previous value.",
 	"deleted":        "Deleted.",
 	"revoked":        "Token revoked.",
+	"theme":          "Appearance saved for this browser.",
 	"paired":         "Approved. The agent collects its token within a few seconds.",
 	"denied":         "Pairing request denied.",
 	"sources":        "Allowed sources saved.",
@@ -146,6 +147,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		data["Dups"] = s.takeDups(se)
 		data["Refresh"] = s.sessionRefresh(r, se)
 	}
+	data["Theme"] = s.theme(r)
 	if f, ok := flashes[r.URL.Query().Get("msg")]; ok {
 		data["Flash"] = f
 	} else if f := filledFlash(r); f != "" {
@@ -1066,6 +1068,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	}
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
 	data["AutoGroups"] = s.store.AutoGroups()
+	data["Themes"] = themes
 	data["Version"] = s.cfg.Version
 	data["Build"] = s.buildInfo()
 	data["AlertsConfigured"] = s.alerts.configured()
