@@ -154,7 +154,7 @@ replacement for Vault or Infisical in a team.
 - **Renewal is a new token.** `keydrop renew` asks you to renew the token
   (also up to 30 days after it expired); the request shows in the
   **Inbox**, where you approve it (picking the next rotation) or decline
-  it. Approving, or pressing **Rotate now** on the Agents page, replaces the token at once:
+  it. Approving, or pressing **Rotate now** on the agent's page under Agents, replaces the token at once:
   the old one can then only *collect* the new one, once (repeatable until
   the new one is first used, in case an answer was lost), only from the
   address that asked, within 7 days. `keydrop renew --wait` waits and
@@ -432,9 +432,12 @@ does this again after the previous release has rewritten the file.
    `curl -fsS https://secrets.example.com/install.sh | sh`. The script
    picks the build with `uname`, checks it against `SHA256SUMS`, and
    installs to `~/.local/bin` (`KEYDROP_INSTALL_DIR` to change). Windows:
-   download the `.exe` from the Agents page. Tagged releases also attach
+   download the `.exe` from Agents → Add. Tagged releases also attach
    every build to the GitHub release. `keydrop --version` shows the build;
-   the CLI warns once if it doesn't match the server's.
+   the CLI warns once if it doesn't match the server's. Settings shows the
+   server's build, its commit time and when it started; images built by
+   CI link the version to its commit (build args `COMMIT`, `COMMIT_TIME`,
+   `REPO_URL`).
 1. On the agent's machine, as the agent's user (or let the agent run it):
    ```sh
    keydrop pair --url https://192.168.1.50:8443 --pin sha256:…

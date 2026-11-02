@@ -88,7 +88,7 @@ func TestTokenLifetimeForms(t *testing.T) {
 			}
 		}
 	}
-	_, body := h.get("/tokens")
+	body := h.agentPages()
 	for _, s := range []string{"same token, never rotated", "new token due in 30 days", "new token due in 90 days", "Rotate now"} {
 		if !strings.Contains(body, s) {
 			t.Fatalf("Agents page lacks %q", s)
@@ -206,7 +206,7 @@ func TestRenewalFlow(t *testing.T) {
 	if !h.auditHas("token.renewal.approve", "90 days") {
 		t.Fatal("approval not audited")
 	}
-	if _, body := h.get("/tokens"); !strings.Contains(body, "renewed, waiting for the agent to collect") {
+	if body := h.agentPages(); !strings.Contains(body, "renewed, waiting for the agent to collect") {
 		t.Fatal("Agents page doesn't say it's waiting")
 	}
 	// The old token can only collect now.

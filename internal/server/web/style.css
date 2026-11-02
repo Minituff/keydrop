@@ -146,6 +146,13 @@ dt{color:var(--muted)}dd{margin:0}
 .searchbox{display:flex;align-items:center;gap:8px;width:240px;padding:0 11px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--muted);margin:0}
 .searchbox input{border:0;background:none;margin:0;padding:8px 0;outline:0;min-width:0}
 .searchbox:focus-within{border-color:var(--accent-fg);outline:2px solid var(--accent-soft)}
+/* Log: filters and pages, plain GET forms and links. */
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px}
+.filters input,.filters select{width:auto;margin:0}
+.filters input[type=search]{flex:1 1 180px;min-width:0}
+.pager{display:flex;justify-content:space-between;gap:8px;margin:12px 0}
+.pager .next{margin-left:auto}
+th a{color:inherit}
 .empty{text-align:center;padding:44px 20px;color:var(--muted)}
 .empty .t{display:block;color:var(--fg);font-size:15px;font-weight:650;margin-bottom:4px}
 .empty .actions{justify-content:center;margin-top:18px}
@@ -176,7 +183,7 @@ details.req[open] .req-chev{transform:rotate(90deg)}
 details.more{margin:6px 0 0}
 details.more>summary{cursor:pointer;color:var(--muted);font-size:13px;padding:4px 0;width:max-content}
 details.more[open]>summary{margin-bottom:6px}
-ul.agents li>div>small{display:block}
+ul.agents li>a>small{display:block;margin-top:2px}
 details.more[open]{margin-bottom:12px}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .field label{display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px;flex-wrap:wrap;margin:0}
@@ -237,15 +244,17 @@ pre.prompt{white-space:pre-wrap;overflow-wrap:anywhere;max-height:70vh;overflow-
      (inset:0) runs past the bottom of the screen by about the address
      bar's height, while bottom:0 sticks to what's visible; so main is
      padded by the tab bar plus that much, or the end of a page hides
-     behind the bar. Elsewhere it's just extra room at the end. */
+     behind the bar. Elsewhere it's just extra room at the end. No
+     safe-area padding at the bottom: without viewport-fit=cover iOS
+     reports 0 there anyway, and Firefox's non-zero value was a chin. */
   .shell .tabs{position:fixed;left:0;right:0;bottom:0;z-index:2}
-  .shell main{padding-bottom:calc(160px + env(safe-area-inset-bottom))}
+  .shell main{padding-bottom:160px}
   .side{display:none}
   .mtop{display:flex;flex:none;align-items:center;gap:10px;padding:10px 14px;background:var(--side);color:#fff}
   .mtop .brand{padding:0;color:#fff}
   .mtop .pill{margin-left:auto;display:flex;align-items:center;gap:4px;font-size:13px;padding:6px 10px;border-radius:99px;background:var(--side-on);color:#fff;white-space:nowrap}
   .mtop :focus-visible{outline-color:#fff}
-  .tabs{display:flex;flex:none;flex-direction:row;background:var(--card);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+  .tabs{display:flex;flex:none;flex-direction:row;background:var(--card);border-top:1px solid var(--line);padding:6px 4px}
   .tabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--muted);position:relative;padding:4px 0;white-space:nowrap}
   .tabs a:hover{text-decoration:none}
   .tabs a .ic{width:22px;height:22px}

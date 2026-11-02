@@ -44,7 +44,7 @@
 </aside>
 <header class="mtop">
   <a class="brand" href="/"><span class="mark">{{template "icon" "key"}}</span>keydrop</a>
-  <a class="pill" href="/groups">Groups {{template "icon" "chev"}}</a>
+  {{if or (eq .Nav "secrets") (eq .Nav "groups")}}<a class="pill" href="/groups">Groups {{template "icon" "chev"}}</a>{{end}}
 </header>
 <main>
 {{if .Flash}}<p class="flash" role="status">{{.Flash}}</p>{{end}}

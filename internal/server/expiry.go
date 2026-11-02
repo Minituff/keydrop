@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -229,7 +230,7 @@ func (s *Server) apiCollect(w http.ResponseWriter, r *http.Request, t store.Toke
 // agent to collect.
 func (s *Server) handleRenewToken(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	name := r.PathValue("name")
-	back := "/tokens"
+	back := "/token/" + url.PathEscape(name)
 	if r.PostFormValue("back") == "inbox" {
 		back = "/inbox"
 	}

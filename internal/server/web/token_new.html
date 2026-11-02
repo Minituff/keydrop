@@ -1,0 +1,31 @@
+{{define "content"}}
+<p><a href="/tokens">← Agents</a></p>
+<h1>Add an agent</h1>
+<p><a class="button" href="/tokens/setup">Set up an agent</a> The easy way: a prompt for your AI agent that installs the CLI and pairs it, with this server's address and pins filled in.</p>
+<p>Or by hand:</p>
+{{if .CLI}}
+<p>1. Install the CLI on the agent's machine (Linux or macOS, amd64 or arm64). It's keydrop {{.Version}}, the same build as this server.</p>
+{{if .InstallPublic}}<pre><code>{{.InstallPublic}}</code></pre>{{end}}
+{{if .InstallDirect}}<p>{{if .InstallPublic}}Or straight to keydrop, checking its key instead of a public certificate:{{else}}This checks keydrop's own key, so it's safe without a public certificate:{{end}}</p>
+<pre><code>{{.InstallDirect}}</code></pre>{{end}}
+<p><small>Other systems: download a build and check it against <a href="/cli/SHA256SUMS">SHA256SUMS</a>:
+{{range $i, $b := .CLI}}{{if $i}} · {{end}}<a href="/cli/{{$b.Name}}">{{$b.OS}} {{$b.Arch}}</a>{{end}}</small></p>
+<p>2. Pair it: run <code>keydrop pair --url URL{{if .CertPin}} --pin {{.CertPin}}{{end}}</code> and open the link it prints. It shows up on the Agents page for you to approve.</p>
+{{else}}
+<p>The easy way: on the agent's machine, run <code>keydrop pair --url URL</code> and open the link it prints. It shows up on the Agents page for you to approve.</p>
+{{end}}
+<p>Or make a token by hand and paste it into <code>keydrop login</code>:</p>
+<form method="post" action="/tokens" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Name
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="homelab-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <p class="label">Namespaces it can read</p>
+  {{template "nschecks" (nsOpts .Namespaces nil)}}
+  <label>Permission {{template "permission" "read"}}</label>
+  <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
+    <input name="sources" placeholder="10.0.0.5, 10.0.1.0/24" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label>New token every {{template "lifetime" .DefaultLifetime}}
+    <small class="muted">Near the end the agent asks for a fresh token by itself. Approving it is one tap in the Inbox, and the agent swaps it in; nothing else changes.</small></label>
+  <button>Create token</button>
+</form>
+{{end}}

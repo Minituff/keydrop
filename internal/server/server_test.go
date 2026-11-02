@@ -67,6 +67,18 @@ func (h *harness) get(path string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+// agentPages is the Agents list, every agent's own page and the Add an
+// agent page, one after the other.
+func (h *harness) agentPages() string {
+	_, body := h.get("/tokens")
+	for _, t := range h.st.ListTokens() {
+		_, b := h.get("/token/" + t.Name)
+		body += b
+	}
+	_, b := h.get("/tokens/new")
+	return body + b
+}
+
 var csrfRE = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
 
 func (h *harness) csrf() string {

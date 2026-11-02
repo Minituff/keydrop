@@ -217,7 +217,7 @@ func TestAgentSetupPage(t *testing.T) {
 
 	// Linked from the Agents page, and from the dashboard while there are
 	// no agents.
-	if _, body := h.get("/tokens"); !strings.Contains(body, `href="/tokens/setup"`) {
+	if _, body := h.get("/tokens/new"); !strings.Contains(body, `href="/tokens/setup"`) {
 		t.Error("Agents page doesn't link to the setup page")
 	}
 	if _, body := h.get("/"); !strings.Contains(body, `href="/tokens/setup"`) {

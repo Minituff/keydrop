@@ -39,6 +39,7 @@ jobs:
           else
             echo "version=ci-test" >> "$GITHUB_OUTPUT"
           fi
+          echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -46,7 +47,12 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: keydrop:ci
-          build-args: VERSION=${{ steps.ver.outputs.version }}
+          # dev-image must pass the same build args, or it misses this cache.
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            COMMIT=${{ github.sha }}
+            COMMIT_TIME=${{ steps.ver.outputs.time }}
+            REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -111,7 +117,9 @@ jobs:
             type=raw,value=dev
             type=sha,prefix=dev-
       - id: short
-        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -120,7 +128,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=dev-${{ steps.short.outputs.sha }} # matches the dev-<sha> tag
+          build-args: | # the image job's, so the build comes from its cache
+            VERSION=dev-${{ steps.short.outputs.sha }}
+            COMMIT=${{ github.sha }}
+            COMMIT_TIME=${{ steps.short.outputs.time }}
+            REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: false
           cache-from: type=gha
       - name: Digest

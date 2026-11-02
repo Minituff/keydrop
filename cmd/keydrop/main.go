@@ -9,8 +9,15 @@ import (
 	"github.com/minituff/keydrop/internal/client"
 )
 
-// Set at build time with -ldflags "-X main.version=…".
-var version = "dev"
+// Set at build time with -ldflags "-X main.version=…". The others say
+// where the build came from (Settings shows them) and may be empty:
+// the full commit hash, its time in RFC 3339 and the repository's URL.
+var (
+	version    = "dev"
+	commit     string
+	commitTime string
+	repoURL    string
+)
 
 const usage = `keydrop — a secret drop for homelab agents.
 

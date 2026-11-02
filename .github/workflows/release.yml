@@ -40,7 +40,7 @@ jobs:
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os=${target%/*}; arch=${target#*/}; ext=""; [ "$os" = windows ] && ext=.exe
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA} -X main.commitTime=$(git log -1 --format=%cI) -X main.repoURL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
               -o "dist/keydrop-${os}-${arch}${ext}" ./cmd/keydrop
           done
           cd dist && sha256sum * > SHA256SUMS
@@ -62,6 +62,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      - id: ctime
+        run: echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -77,6 +79,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            COMMIT_TIME=${{ steps.ctime.outputs.time }}
+            REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: true
           sbom: true

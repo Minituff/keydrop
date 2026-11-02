@@ -72,7 +72,7 @@ func TestTokenNamespacesForm(t *testing.T) {
 	if got := tokenNamespaces(t, h.st, "box"); !slices.Equal(got, []string{"lab", "media"}) {
 		t.Fatalf("created with %v", got)
 	}
-	_, body := h.get("/tokens")
+	body := h.agentPages()
 	if !strings.Contains(body, `action="/tokens/box/namespaces"`) {
 		t.Fatal("Agents page: no namespaces form")
 	}

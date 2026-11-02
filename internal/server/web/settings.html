@@ -84,5 +84,6 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <button class="secondary">{{template "icon" "out"}}Log out</button>
 </form>
-<p class="muted version">keydrop {{.Version}}</p>
+<p class="muted version">keydrop {{with .Build.CommitURL}}<a href="{{.}}" rel="noreferrer">{{$.Version}}</a>{{else}}{{.Version}}{{end}}
+{{- with .Build.Committed}}<br>committed {{.}}{{end}}<br>running since {{.Build.Started}}</p>
 {{end}}

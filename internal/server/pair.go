@@ -434,7 +434,7 @@ func (s *Server) handleTokenPermission(w http.ResponseWriter, r *http.Request, _
 		return
 	}
 	s.event(r, "admin", "token.permission", name, string(perm))
-	http.Redirect(w, r, "/tokens?msg=permission", http.StatusSeeOther)
+	http.Redirect(w, r, "/token/"+url.PathEscape(name)+"?msg=permission", http.StatusSeeOther)
 }
 
 func sourcesText(src []string) string {
@@ -456,7 +456,7 @@ func (s *Server) handleTokenNamespaces(w http.ResponseWriter, r *http.Request, _
 		return
 	}
 	s.event(r, "admin", "token.namespaces", name, strings.Join(nss, ","))
-	http.Redirect(w, r, "/tokens?msg=namespaces", http.StatusSeeOther)
+	http.Redirect(w, r, "/token/"+url.PathEscape(name)+"?msg=namespaces", http.StatusSeeOther)
 }
 
 func (s *Server) handleTokenSources(w http.ResponseWriter, r *http.Request, _ string, se *session) {
@@ -474,5 +474,5 @@ func (s *Server) handleTokenSources(w http.ResponseWriter, r *http.Request, _ st
 		return
 	}
 	s.event(r, "admin", "token.sources", name, sourcesText(sources))
-	http.Redirect(w, r, "/tokens?msg=sources", http.StatusSeeOther)
+	http.Redirect(w, r, "/token/"+url.PathEscape(name)+"?msg=sources", http.StatusSeeOther)
 }

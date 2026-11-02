@@ -5,6 +5,9 @@
 # a multi-arch build runs it once and every image gets the same files.
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
 ARG VERSION=dev
+# Where the build came from, for the version line in Settings: the full
+# commit hash, its commit time (RFC 3339) and the repository URL. Empty is fine.
+ARG COMMIT= COMMIT_TIME= REPO_URL=
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
@@ -16,7 +19,7 @@ RUN set -e; mkdir -p /out/bin /out/cli /out/data; pids=; \
     for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
       os=${t%/*}; arch=${t#*/}; ext=; [ "$os" = windows ] && ext=.exe; \
       CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-        -ldflags "-s -w -X main.version=$VERSION" -o /out/bin/keydrop-$os-$arch$ext ./cmd/keydrop & \
+        -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT -X main.commitTime=$COMMIT_TIME -X main.repoURL=$REPO_URL" -o /out/bin/keydrop-$os-$arch$ext ./cmd/keydrop & \
       pids="$pids $!"; \
     done; \
     for p in $pids; do wait "$p"; done; \

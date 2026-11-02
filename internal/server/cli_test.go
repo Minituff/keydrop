@@ -148,7 +148,7 @@ func TestCLIDownloads(t *testing.T) {
 	// The Agents page shows the install commands and download links.
 	h.srv.cfg.DirectURL = "https://10.0.0.5:8443"
 	h.setup()
-	if _, body := h.get("/tokens"); !strings.Contains(body, "--pinnedpubkey &#39;sha256//KEYPIN=&#39; https://10.0.0.5:8443/install.sh") ||
+	if body := h.agentPages(); !strings.Contains(body, "--pinnedpubkey &#39;sha256//KEYPIN=&#39; https://10.0.0.5:8443/install.sh") ||
 		!strings.Contains(body, `href="/cli/keydrop-linux-arm64"`) || !strings.Contains(body, "--pin sha256:certpin") || !strings.Contains(body, "keydrop v9.9.9") {
 		t.Fatalf("Agents page:\n%s", body)
 	}

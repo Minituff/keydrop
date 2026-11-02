@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,7 +91,7 @@ func humanAgo(d time.Duration) string {
 var pages = map[string]*template.Template{}
 
 func init() {
-	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "audit", "message", "settings", "pair", "agent_setup", "groups", "new", "inbox"} {
+	for _, p := range []string{"setup", "login", "dashboard", "secret", "tokens", "token_created", "token", "token_new", "audit", "message", "settings", "pair", "agent_setup", "groups", "new", "inbox"} {
 		pages[p] = template.Must(template.New("").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/"+p+".html"))
 	}
 }
@@ -437,7 +439,7 @@ func navFor(path string) string {
 		return "inbox"
 	case strings.HasPrefix(path, "/groups"):
 		return "groups"
-	case strings.HasPrefix(path, "/tokens"), strings.HasPrefix(path, "/pair"):
+	case strings.HasPrefix(path, "/tokens"), strings.HasPrefix(path, "/token/"), strings.HasPrefix(path, "/pair"):
 		return "agents"
 	case path == "/audit":
 		return "log"
@@ -843,10 +845,49 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request, _ string, 
 	s.renderTokens(w, r, se, http.StatusOK, "")
 }
 
+// renderTokens shows an error where the form that caused it lives: the
+// agent's own page for its forms, the Add an agent page for a new token,
+// the list otherwise.
 func (s *Server) renderTokens(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
-	public, direct := s.cfg.InstallCommands()
 	s.sweepRotations(s.now())
-	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.tokenViews(), "Namespaces": s.store.Namespaces(), "DefaultLifetime": store.DefaultTokenLifetime, "Pairings": s.pendingPairings(), "Error": errMsg,
+	if r.Method == http.MethodPost && r.URL.Path == "/tokens" {
+		s.renderNewAgent(w, r, se, status, errMsg)
+		return
+	}
+	if name := r.PathValue("name"); name != "" {
+		if v, ok := s.tokenView(name); ok {
+			s.render(w, r, "token", status, se, page{"Title": name, "T": &v, "Namespaces": s.store.Namespaces(), "Error": errMsg})
+			return
+		}
+	}
+	s.render(w, r, "tokens", status, se, page{"Title": "Agents", "Tokens": s.tokenViews(), "Pairings": s.pendingPairings(), "Error": errMsg})
+}
+
+func (s *Server) tokenView(name string) (tokenView, bool) {
+	for _, v := range s.tokenViews() {
+		if v.Name == name {
+			return v, true
+		}
+	}
+	return tokenView{}, false
+}
+
+// handleToken is one agent's page, where its settings are changed.
+func (s *Server) handleToken(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	if _, ok := s.tokenView(r.PathValue("name")); !ok {
+		s.renderTokens(w, r, se, http.StatusNotFound, "There's no agent called "+r.PathValue("name")+".")
+		return
+	}
+	s.renderTokens(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) handleNewAgent(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.renderNewAgent(w, r, se, http.StatusOK, "")
+}
+
+func (s *Server) renderNewAgent(w http.ResponseWriter, r *http.Request, se *session, status int, errMsg string) {
+	public, direct := s.cfg.InstallCommands()
+	s.render(w, r, "token_new", status, se, page{"Title": "Add an agent", "Namespaces": s.store.Namespaces(), "DefaultLifetime": store.DefaultTokenLifetime, "Error": errMsg,
 		"InstallPublic": public, "InstallDirect": direct, "CLI": s.cfg.CLI, "CertPin": s.cfg.CertPin, "Version": s.cfg.Version})
 }
 
@@ -909,8 +950,103 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request, _ str
 	http.Redirect(w, r, "/tokens?msg=revoked", http.StatusSeeOther)
 }
 
+// auditPage is how many events the Log shows at a time.
+const auditPage = 50
+
+// handleAudit is the Log: the events kept in memory, filtered, sorted and
+// split into pages by query parameters, so it works without scripts.
+//
+//	q     text in any field (case-insensitive)
+//	who   an actor, or "-" for requests without a credential
+//	what  an action's first part ("secret", "token", ...)
+//	sort  "old" for oldest first
+//	page  1, 2, ...
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request, _ string, se *session) {
-	s.render(w, r, "audit", http.StatusOK, se, page{"Title": "Log", "Events": s.audit.Recent(300)})
+	qv := r.URL.Query()
+	q, who, what := strings.TrimSpace(qv.Get("q")), qv.Get("who"), qv.Get("what")
+	old := qv.Get("sort") == "old"
+	all := s.audit.Recent(2 * auditKept)
+	whos, whats := map[string]bool{}, map[string]bool{}
+	var events []audit.Event
+	for _, e := range all {
+		whos[e.Actor] = true
+		whats[actionKind(e.Action)] = true
+		switch {
+		case who == "-" && !e.Unauthenticated,
+			who != "" && who != "-" && e.Actor != who,
+			what != "" && actionKind(e.Action) != what,
+			q != "" && !eventHas(e, q):
+			continue
+		}
+		events = append(events, e)
+	}
+	if old {
+		slices.Reverse(events)
+	}
+	pages := max(1, (len(events)+auditPage-1)/auditPage)
+	n, _ := strconv.Atoi(qv.Get("page"))
+	n = min(max(n, 1), pages)
+	shown := events[(n-1)*auditPage : min(n*auditPage, len(events))]
+
+	// link is this view with some parameters changed; empty ones are dropped.
+	link := func(kv ...string) string {
+		v := url.Values{}
+		for k, x := range map[string]string{"q": q, "who": who, "what": what, "sort": qv.Get("sort")} {
+			if x != "" {
+				v.Set(k, x)
+			}
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			if kv[i+1] == "" {
+				v.Del(kv[i])
+			} else {
+				v.Set(kv[i], kv[i+1])
+			}
+		}
+		if len(v) == 0 {
+			return "/audit"
+		}
+		return "/audit?" + v.Encode()
+	}
+	data := page{"Title": "Log", "Events": shown, "Q": q, "Who": who, "What": what, "Old": old,
+		"Whos": setKeys(whos), "Whats": setKeys(whats), "Total": len(all), "Matched": len(events),
+		"Filtered": q != "" || who != "" || what != "", "Page": n, "Pages": pages,
+		"SortLink": link("sort", map[bool]string{false: "old", true: ""}[old], "page", "")}
+	if n > 1 {
+		data["Prev"] = link("page", strconv.Itoa(n-1))
+	}
+	if n < pages {
+		data["Next"] = link("page", strconv.Itoa(n+1))
+	}
+	s.render(w, r, "audit", http.StatusOK, se, data)
+}
+
+// auditKept matches what the audit log keeps in memory of each kind.
+const auditKept = 500
+
+// actionKind is an action's first part: "secret" for "secret.read".
+func actionKind(a string) string {
+	k, _, _ := strings.Cut(a, ".")
+	return k
+}
+
+func eventHas(e audit.Event, q string) bool {
+	q = strings.ToLower(q)
+	for _, f := range []string{e.Actor, e.Action, e.Target, e.Detail, e.Text, e.IP} {
+		if strings.Contains(strings.ToLower(f), q) {
+			return true
+		}
+	}
+	return false
+}
+
+func setKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // ---- settings ----
@@ -931,12 +1067,35 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["Title"], data["TOTP"], data["Error"] = "Settings", on, errMsg
 	data["AutoGroups"] = s.store.AutoGroups()
 	data["Version"] = s.cfg.Version
+	data["Build"] = s.buildInfo()
 	data["AlertsConfigured"] = s.alerts.configured()
 	data["AlertDest"] = s.alerts.destination(false)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
 	data["AlertEnv"] = s.cfg.AlertWebhook != ""
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
+}
+
+// buildInfo is the version line's detail: a link to the commit, when it was
+// committed and when this server started. Fields are empty when unknown.
+func (s *Server) buildInfo() map[string]string {
+	b := map[string]string{"Started": fmtAgo(s.started, s.now())}
+	if t, err := time.Parse(time.RFC3339, s.cfg.CommitTime); err == nil {
+		b["Committed"] = fmtAgo(t, s.now())
+	}
+	if commitHash.MatchString(s.cfg.Commit) {
+		if u, err := url.Parse(s.cfg.RepoURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
+			b["CommitURL"] = strings.TrimRight(s.cfg.RepoURL, "/") + "/commit/" + s.cfg.Commit
+		}
+	}
+	return b
+}
+
+var commitHash = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// fmtAgo is a local date and time with how long ago it was.
+func fmtAgo(t, now time.Time) string {
+	return t.Local().Format("2006-01-02 15:04") + " (" + humanAgo(now.Sub(t)) + ")"
 }
 
 // handleTOTPStart makes a new seed for this session and shows it. Nothing

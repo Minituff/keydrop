@@ -20,9 +20,23 @@ func TestSessionRefreshAndVersion(t *testing.T) {
 	h.setup()
 
 	_, body := h.get("/settings?msg=alerttest")
-	if !strings.Contains(body, "keydrop dev-test123") {
+	if !strings.Contains(body, "keydrop dev-test123") || !strings.Contains(body, "running since") || strings.Contains(body, "committed") {
 		t.Fatal("version not on Settings")
 	}
+	// With the build's commit: a link to it and its time.
+	h.srv.cfg.Commit = "0123456789abcdef0123456789abcdef01234567"
+	h.srv.cfg.CommitTime = now.Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	h.srv.cfg.RepoURL = "https://git.example.com/me/keydrop/"
+	_, body = h.get("/settings")
+	if !strings.Contains(body, `<a href="https://git.example.com/me/keydrop/commit/0123456789abcdef0123456789abcdef01234567" rel="noreferrer">dev-test123</a>`) || !strings.Contains(body, "(3h ago)") {
+		t.Fatal("commit link or time missing")
+	}
+	// Anything that isn't a hash and an http(s) URL gets no link.
+	h.srv.cfg.RepoURL = "javascript:alert(1)"
+	if _, body = h.get("/settings"); strings.Contains(body, "/commit/") {
+		t.Fatal("linked a bad repo URL")
+	}
+	h.srv.cfg.Commit, h.srv.cfg.CommitTime, h.srv.cfg.RepoURL = "", "", ""
 	m := refreshMeta.FindStringSubmatch(body)
 	if m == nil || m[2] != "/settings" {
 		t.Fatalf("refresh: %q", m)

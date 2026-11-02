@@ -41,6 +41,9 @@ type Config struct {
 	// Version is the server's build version. Agents get it in the
 	// X-Keydrop-Version header so the CLI can warn about a mismatch.
 	Version string
+	// Commit (full hash), CommitTime (RFC 3339) and RepoURL say where the
+	// build came from. Settings shows them; any may be empty.
+	Commit, CommitTime, RepoURL string
 	// CLI are the CLI builds the server hands out (LoadCLI).
 	CLI []CLIBuild
 	// CertPin and KeyPin identify keydrop's own self-signed certificate:
@@ -86,6 +89,7 @@ type Server struct {
 	mux          *http.ServeMux
 	now          func() time.Time
 	deviceKey    []byte // signs device cookies (see deviceID)
+	started      time.Time
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -156,6 +160,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	if cfg.Now != nil {
 		s.now = cfg.Now
 	}
+	s.started = s.now()
 	// A webhook set in Settings wins over KEYDROP_ALERT_WEBHOOK.
 	switch u, _, err := st.AlertWebhook(); {
 	case err != nil:
@@ -244,6 +249,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /secret/{ns}/{name}/proposal/reject", s.admin(s.handleRejectProposal))
 	m.HandleFunc("GET /tokens", s.admin(s.handleTokens))
 	m.HandleFunc("GET /tokens/setup", s.admin(s.handleAgentSetup))
+	m.HandleFunc("GET /tokens/new", s.admin(s.handleNewAgent))
+	m.HandleFunc("GET /token/{name}", s.admin(s.handleToken))
 	m.HandleFunc("POST /tokens", s.admin(s.handleCreateToken))
 	m.HandleFunc("POST /tokens/{name}/revoke", s.admin(s.handleRevokeToken))
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
