@@ -258,7 +258,7 @@ In this order; the maintainer does steps 8 to 10:
    The repo and its history were reviewed for leaks on 2026-11-01:
    no real secrets; the only history-only problems (a personal author
    email on some commits, private addresses in an old test) go away with
-   the squash in step 5.
+   step 6. Private addresses alone are acceptable; the email is not.
 2. Check the web UI in a real browser, on a phone and a desktop.
 3. Make the e2e tests survive the squash: `e2e/e2e_test.go` and
    `e2e/compat_test.go` build old releases by commit hash, and those
@@ -267,9 +267,15 @@ In this order; the maintainer does steps 8 to 10:
 4. Merge `dev` into `main`; CI green on `main`.
 5. Run the `leak-history` workflow (it only appears once on the default
    branch) and clean up anything it finds.
-6. Squash the history into one commit, in place (the repo has no forks
-   or open PRs to break), authored with the noreply address, and
-   force-push both `dev` and `main`.
+6. Squash the history into one commit, authored **and committed** with
+   the noreply address, and push it to a **new private repository**.
+   Don't force-push this one: GitHub keeps force-pushed-away commits
+   fetchable by hash, and each old Actions run still shows its commit's
+   author email. Then rename this repo (e.g. `keydrop-old`, kept private)
+   and give the new one its name, and link the ghcr.io package to it in
+   the package settings. A hard gate for every later step:
+   `git log --all --format='%ae%n%ce' | sort -u` on a fresh clone of the
+   new repo prints only the noreply address.
 7. `git grep PRIVATE:` is empty: each such line removed or made generic.
 8. Make the repository and its container package public.
 9. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
