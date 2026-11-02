@@ -1,12 +1,24 @@
 # AGENTS.md — working on keydrop
 
 Instructions for AI coding agents (Claude Code, Codex, others) and humans
-working on this repo. Read [docs/design_doc.md](docs/design_doc.md) for the
-design and the reasons behind it before changing behaviour.
+working on this repo. Before changing code, read the page in
+[`docs/`](docs/) that covers it (table below).
 
 keydrop holds other people's API keys. Treat every change as
 security-sensitive: a small convenience that weakens one of the rules below
 isn't worth it.
+
+## Docs — read before touching the code they cover
+
+| Page | Read it before changing | Covers |
+|---|---|---|
+| [docs/design_doc.md](docs/design_doc.md) | Any behaviour: `internal/store`, `internal/auth`, `internal/server` (API, pairing, TLS), `cmd/keydrop`, the data format | The design, the reasons behind it, and what's planned |
+| [docs/ui.md](docs/ui.md) | Anything in `internal/server/web/` (`style.css`, templates) or UI handlers in `ui.go` | Light/dark palette, components, phone layout, how to check a page |
+| [docs/agents.md](docs/agents.md) | The agent setup flow, `setup.go`, `agent-setup.md.tmpl`, CLI commands agents use | Setting up keydrop with an AI agent (part of it is generated; see Conventions) |
+
+Keep them current: a change that makes a page wrong updates that page in the
+same commit. New areas that need more than a README line get their own page
+here and a row in this table.
 
 ## Security invariants — don't break these
 
@@ -178,9 +190,8 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - New config is an env var named `KEYDROP_*`, documented in the README's
   configuration table, with a safe default.
 - Error messages and UI text: plain English, say what to do next.
-- UI styling (light/dark palette, components, phone layout): read
-  [docs/ui.md](docs/ui.md) before adding or restyling a page, and update it
-  when you add a palette variable or component.
+- UI: follow [docs/ui.md](docs/ui.md), and update it when you add a palette
+  variable or component.
 
 ## Git
 
