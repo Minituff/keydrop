@@ -257,6 +257,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /tokens/{name}/sources", s.admin(s.handleTokenSources))
 	m.HandleFunc("POST /tokens/{name}/namespaces", s.admin(s.handleTokenNamespaces))
 	m.HandleFunc("POST /tokens/{name}/permission", s.admin(s.handleTokenPermission))
+	m.HandleFunc("POST /tokens/{name}/selfupgrade", s.admin(s.handleTokenSelfUpgrade))
 	m.HandleFunc("POST /tokens/{name}/renew", s.admin(s.handleRenewToken))
 	m.HandleFunc("POST /tokens/{name}/renewal/decline", s.admin(s.handleDeclineRenewal))
 	m.HandleFunc("POST /secret/{ns}/{name}/canary", s.admin(s.handleSetCanary))
@@ -288,6 +289,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/pair", s.apiPairStart) // no token yet: the admin approves
 	m.HandleFunc("POST /api/v1/pair/poll", s.apiPairPoll)
 	m.HandleFunc("GET /api/v1/whoami", s.agent(s.apiWhoami))
+	m.HandleFunc("POST "+upgradePath, s.agent(s.apiCLIUpgrade))
 	// The only endpoints an expired token may use, within RenewalGrace.
 	m.HandleFunc("POST /api/v1/token/renew", s.agentRenewal(s.apiRenew))
 	m.HandleFunc("GET /api/v1/token/renew", s.agentRenewal(s.apiRenewStatus))

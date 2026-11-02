@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -59,10 +60,11 @@ func TestOldCLI(t *testing.T) {
 	}
 }
 
-// TestCLIUpgrade: `keydrop upgrade` replaces the binary with the server's
-// build, keeps the old one, then says nothing more to do; the notice for a
-// different build shows once; a build that doesn't match SHA256SUMS is
-// refused and nothing changes.
+// TestCLIUpgrade: with self-upgrade off, `keydrop upgrade` refuses and the
+// notice says to leave it to the user; with it on, upgrade replaces the
+// binary with the server's build, keeps the old one, then says nothing more
+// to do; the notice for a different build shows once; a build that doesn't
+// match SHA256SUMS is refused and nothing changes.
 func TestCLIUpgrade(t *testing.T) {
 	name := "keydrop-" + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {
@@ -110,7 +112,20 @@ func TestCLIUpgrade(t *testing.T) {
 		t.Fatalf("a notice with the same build: %q", r.stderr)
 	}
 
-	r := g.ok(t, "", "upgrade")
+	// Off (the default): refused, nothing replaced, and the ask is logged.
+	r := g.run(t, "", "upgrade")
+	if r.code == 0 || !strings.Contains(r.stderr, "self-upgrade is off for this agent") {
+		t.Fatalf("upgrade with self-upgrade off: exit %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if got, _ := os.ReadFile(bin); string(got) == string(nextBytes) {
+		t.Fatal("upgraded with self-upgrade off")
+	}
+	if _, body := web.get(t, "/audit"); !strings.Contains(body, "refused, self-upgrade is off") {
+		t.Fatal("the refused upgrade isn't in the log")
+	}
+	web.mustPost(t, "/tokens/upgrader/selfupgrade", url.Values{"selfupgrade": {"yes"}})
+
+	r = g.ok(t, "", "upgrade")
 	if !strings.Contains(r.stdout, "Upgraded keydrop e2e → e2e-next") {
 		t.Fatalf("upgrade: %q %q", r.stdout, r.stderr)
 	}
@@ -127,12 +142,19 @@ func TestCLIUpgrade(t *testing.T) {
 	// Now the CLI is a different (compatible) build from the server: one
 	// notice naming the command, then quiet for the day.
 	r = g.ok(t, "", "whoami")
-	if !strings.Contains(r.stderr, "Nothing breaks") || !strings.Contains(r.stderr, "keydrop upgrade") {
+	if !strings.Contains(r.stderr, "Nothing breaks") || !strings.Contains(r.stderr, "run `keydrop upgrade`") {
 		t.Fatalf("no compatible-build notice: %q", r.stderr)
 	}
 	if r := g.ok(t, "", "whoami"); r.stderr != "" {
 		t.Fatalf("noticed twice in a day: %q", r.stderr)
 	}
+	// Turned off, the notice comes again, telling the agent to leave it.
+	web.mustPost(t, "/tokens/upgrader/selfupgrade", url.Values{})
+	r = g.ok(t, "", "whoami")
+	if !strings.Contains(r.stderr, "don't update the CLI yourself") || strings.Contains(r.stderr, "run `keydrop upgrade`") {
+		t.Fatalf("notice with self-upgrade off: %q", r.stderr)
+	}
+	web.mustPost(t, "/tokens/upgrader/selfupgrade", url.Values{"selfupgrade": {"yes"}})
 
 	// A build that doesn't match SHA256SUMS replaces nothing.
 	os.WriteFile(sums, []byte(strings.Repeat("0", 64)+"  "+name+"\n"), 0o644)
@@ -166,4 +188,50 @@ func copyFile(t *testing.T, from, to string) {
 	if err := dst.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestRollbackV5 turns self-upgrade on for an agent, with the alert webhook
+// set too. The release before starts on the data as it is, keeps the
+// webhook, drops the setting when it rewrites the file; this one then
+// starts on what it wrote, with self-upgrade off.
+func TestRollbackV5(t *testing.T) {
+	old := buildOld(t, v5RollbackCommit)
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	secret := fakeSecret(t)
+	web.addEntry(t, "rb5", "KEPT", secret, "secret", "")
+	web.mustPost(t, "/settings/alert-webhook", url.Values{"webhook": {"https://hooks.example.com/fake-e2e-webhook-path"}})
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.postToken(t, url.Values{"name": {"rb5-agent"}, "namespaces": {"rb5"}, "selfupgrade": {"yes"}}))
+	if _, page := web.get(t, "/token/rb5-agent"); !strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("self-upgrade not shown as on")
+	}
+	in.stop(t)
+
+	in.start(t, old)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("the previous release returns a different value")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, "hooks.example.com") {
+		t.Fatal("the previous release lost the webhook")
+	}
+	web.addEntry(t, "rb5", "AFTER", "plain-setting", "variable", "") // it rewrites the file
+	in.stop(t)
+
+	in.start(t, binary)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("this release returns a different value after the previous one rewrote the file")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/token/rb5-agent"); strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("self-upgrade survived the previous release's rewrite")
+	}
+	web.mustPost(t, "/tokens/rb5-agent/selfupgrade", url.Values{"selfupgrade": {"yes"}})
+	in.stop(t)
+	in.start(t, binary) // and it opens with it on again
+	in.stop(t)
 }

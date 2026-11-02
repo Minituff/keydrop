@@ -667,6 +667,12 @@ limited to what it needs:
   when either is present. The webhook doesn't restrict access, so it
   doesn't need the key check: stripping `alerts` and `mac5` gives a file
   7b184c1 could have written, and only loses the webhook.
+- **A sixth MAC for self-upgrade.** cf00c92 checks `mac5` over all it
+  parses, so `mac5` now covers `v5View()` (each token's `self_upgrade`
+  zeroed) and `mac6` (`HKDF(master key, "state mac v6")`) covers
+  everything; `mac6` is written whenever any token has it on and must
+  verify when either is present. Stripping both turns self-upgrade off,
+  the cautious default, so it needs no key check either.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
@@ -783,10 +789,21 @@ so breaking it without raising the minimum fails CI.
 **Self-upgrade.** `keydrop upgrade` is install.sh in Go: the same
 download from the paired server, over the configured pin, checked against
 `SHA256SUMS`, run once before it replaces anything, the old binary kept
-as `.bak`. It needs no token, so an expired one doesn't block it, and it
-refuses plain http, since what it downloads gets run. The checksum file
-comes from the same server, so it catches a broken download, not a
-hostile server; the pin is what vouches for the server.
+as `.bak`. It refuses plain http, since what it downloads gets run. The
+checksum file comes from the same server, so it catches a broken download,
+not a hostile server; the pin is what vouches for the server.
+
+Whether an agent should upgrade itself is the admin's call, per agent:
+**Allow self-upgrade** (a token field, off by default, under MAC6 so the
+release before it opens the data and drops it). The server sends it as
+`X-Keydrop-Self-Upgrade` and words the 426 by it, and the CLI words its
+daily notice by it: on, run `keydrop upgrade`; off, leave it to the user.
+`keydrop upgrade` asks `POST /api/v1/cli/upgrade` first (exempt from the
+minimum-level refusal, logged either way) and stops on a no. It's
+advisory, not a control: the agent runs on a machine that can replace its
+own files, so the setting decides what the agent is told and what the
+supported path does, not what's possible. Turning it on or off makes the
+notice show again the same day, so the agent hears about the change.
 
 ### Setting up an agent from one prompt
 The setup is written for an agent to follow: the person pastes one

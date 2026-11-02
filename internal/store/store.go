@@ -200,6 +200,11 @@ type Token struct {
 	// Rotation is an approved renewal the agent hasn't collected yet (see
 	// RotateToken). Outside v3View too.
 	Rotation *Rotation `json:"rotation,omitempty"`
+	// SelfUpgrade is the admin's say-so for the agent to run `keydrop
+	// upgrade` itself. Advisory: the server tells the CLI, which words its
+	// notices to match and refuses to upgrade without it, but nothing stops
+	// a machine replacing its own binary. Outside v5View, under MAC6.
+	SelfUpgrade bool `json:"self_upgrade,omitempty"`
 	// Label is the optional agent label a request carried (Claude, Codex
 	// sharing one token). Never stored; it only goes into the audit log.
 	Label string `json:"-"`
@@ -313,6 +318,9 @@ type state struct {
 	// MAC4, and MAC5 covers it; see v4View and alerts.go.
 	Alerts *AlertSettings `json:"alerts,omitempty"`
 	MAC5   []byte         `json:"mac5,omitempty"`
+	// Each token's SelfUpgrade came in the release after MAC5, and MAC6
+	// covers it; see v5View.
+	MAC6 []byte `json:"mac6,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -359,8 +367,9 @@ func (st *state) v3View() state {
 		cp.Canary = false
 		c.Secrets[k] = &cp
 	}
-	c.Tokens = make(map[string]*Token, len(st.Tokens))
-	for k, v := range st.Tokens {
+	tokens := c.Tokens // v5View's copies, without SelfUpgrade
+	c.Tokens = make(map[string]*Token, len(tokens))
+	for k, v := range tokens {
 		cp := *v
 		cp.ExpiresAt, cp.Lifetime, cp.Renewal, cp.Rotation = nil, 0, nil, nil
 		c.Tokens[k] = &cp
@@ -371,11 +380,38 @@ func (st *state) v3View() state {
 // v4View is the state as the release with MAC4 (and without the alert
 // webhook in Settings) sees it: the alerts field and MAC5 dropped, the MACs
 // empty. Marshalled, it's byte-for-byte what that release marshals for its
-// MAC4. A shallow copy: don't write through it.
+// MAC4. Don't write through it.
 func (st *state) v4View() state {
-	c := *st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.Alerts = nil, nil, nil, nil, nil, nil
+	c := st.v5View()
+	c.MAC5, c.Alerts = nil, nil
 	return c
+}
+
+// v5View is the state as the release with MAC5 (and without self-upgrade)
+// sees it: each token's SelfUpgrade and MAC6 dropped, the MACs empty.
+// Marshalled, it's byte-for-byte what that release marshals for its MAC5.
+// The token map is a copy; everything else is shared with st: don't write
+// through it.
+func (st *state) v5View() state {
+	c := *st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+	c.Tokens = make(map[string]*Token, len(st.Tokens))
+	for k, v := range st.Tokens {
+		cp := *v
+		cp.SelfUpgrade = false
+		c.Tokens[k] = &cp
+	}
+	return c
+}
+
+// hasNewer6 reports whether any field outside v5View is set.
+func (st *state) hasNewer6() bool {
+	for _, v := range st.Tokens {
+		if v.SelfUpgrade {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNewer4 reports whether any field outside v3View is set.
@@ -468,6 +504,7 @@ type Store struct {
 	mac3Key []byte
 	mac4Key []byte
 	mac5Key []byte
+	mac6Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -616,6 +653,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s.mac3Key = s.DeriveKey("state mac v3")
 	s.mac4Key = s.DeriveKey("state mac v4")
 	s.mac5Key = s.DeriveKey("state mac v5")
+	s.mac6Key = s.DeriveKey("state mac v6")
 	return s, nil
 }
 
@@ -650,6 +688,10 @@ func (s *Store) load(data []byte) error {
 		}
 		// And for the alert webhook, under MAC5.
 		if (s.st.Alerts != nil || s.st.MAC5 != nil) && !hmac.Equal(s.st.MAC5, s.mac5()) {
+			return ErrIntegrity
+		}
+		// And for self-upgrade, under MAC6.
+		if (s.st.hasNewer6() || s.st.MAC6 != nil) && !hmac.Equal(s.st.MAC6, s.mac6()) {
 			return ErrIntegrity
 		}
 	}
@@ -714,11 +756,17 @@ func (s *Store) mac4() []byte {
 	return macOf(s.mac4Key, &c)
 }
 
-// mac5 is the HMAC of the whole state with the MAC fields empty.
+// mac5 is the HMAC of v5View: everything the release with MAC5 knows.
 func (s *Store) mac5() []byte {
-	c := s.st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5 = nil, nil, nil, nil, nil
+	c := s.st.v5View()
 	return macOf(s.mac5Key, &c)
+}
+
+// mac6 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac6() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+	return macOf(s.mac6Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -817,7 +865,7 @@ func (s *Store) save() error {
 }
 
 func (s *Store) write(v4 bool) error {
-	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5 = s.mac(), nil, nil, nil, nil
+	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6 = s.mac(), nil, nil, nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
 	}
@@ -829,6 +877,9 @@ func (s *Store) write(v4 bool) error {
 	}
 	if s.st.Alerts != nil {
 		s.st.MAC5 = s.mac5()
+	}
+	if s.st.hasNewer6() {
+		s.st.MAC6 = s.mac6()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
@@ -1707,6 +1758,22 @@ func (s *Store) SetTokenSources(name string, sources []string) error {
 		return ErrNotFound
 	}
 	t.Sources = sources
+	return s.commit(snap)
+}
+
+// SetTokenSelfUpgrade says whether the agent may upgrade its own CLI.
+func (s *Store) SetTokenSelfUpgrade(name string, on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.st.clone()
+	t, ok := s.st.Tokens[name]
+	if !ok {
+		return ErrNotFound
+	}
+	if t.SelfUpgrade == on {
+		return nil
+	}
+	t.SelfUpgrade = on
 	return s.commit(snap)
 }
 

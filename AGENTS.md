@@ -77,15 +77,16 @@ here and a row in this table.
   format), `mac2` covers `v2View()` (the 733cf9f format, which checks
   `mac2` over everything it parses), `mac3` covers
   `v3View()` (the b0b9efe format), `mac4` covers `v4View()` (the 7b184c1
-  format) and `mac5` covers everything. A new optional field goes outside
-  every older view. This release checks `mac5` over all it parses, so
-  once it has shipped, the next new field needs a `v5View` that zeroes it
-  and a sixth MAC, the same way `v4View`/`mac5` were added. Never add a plain new field an existing
+  format), `mac5` covers `v5View()` (the cf00c92 format) and `mac6` covers
+  everything. A new optional field goes outside every older view. This
+  release checks `mac6` over all it parses, so once it has shipped, the
+  next new field needs a `v6View` that zeroes it and a seventh MAC, the
+  same way `v5View`/`mac6` were added. Never add a plain new field an existing
   MAC covers. A field that restricts access (like expiry, rotations,
   canaries) must not be strippable: tie it to a sealed key check the way
   `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in
   `TestOlderReleaseReadsNewerFile`. The e2e suite starts the older
-  releases (`rollbackCommit` through `v4RollbackCommit`) on data this one wrote. A fix-up of data the
+  releases (`rollbackCommit` through `v5RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
   only on a file whose MAC verified, and may change only what that
   release could also have written, or `ext`.

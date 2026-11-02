@@ -20,10 +20,14 @@ import (
 )
 
 // cmdUpgrade replaces this binary with the build the paired server hands
-// out, the same one install.sh fetches: over the configured URL and pin
-// (no token needed, so an expired one doesn't stand in the way), checked
-// against the server's SHA256SUMS, and run once (`version`) before it
-// replaces anything. The old binary stays next to it as .<version>.bak.
+// out, the same one install.sh fetches: over the configured URL and pin,
+// checked against the server's SHA256SUMS, and run once (`version`) before
+// it replaces anything. The old binary stays next to it as .<version>.bak.
+//
+// It asks the server first, with the token, and stops unless the admin
+// allows this agent to upgrade itself. That's advisory (a machine can
+// always replace its own files), but it's what tells an agent to leave
+// it to the user.
 //
 // SHA256SUMS comes over the same connection as the build, so it catches a
 // cut-off or corrupted download, not a malicious server: the pin is what
@@ -34,9 +38,16 @@ func cmdUpgrade(args []string) error {
 	if len(parse(fs, args)) > 0 {
 		return errors.New("usage: keydrop upgrade [--force]")
 	}
-	c, err := client.ServerFromEnv()
+	c, err := client.FromEnv()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w (keydrop upgrade checks with the server that this agent may upgrade itself; without a token, reinstall from the server's /install.sh instead)", err)
+	}
+	allowed, err := c.AskUpgrade(version)
+	if err != nil {
+		return fmt.Errorf("asking the server whether this agent may upgrade itself: %w", err)
+	}
+	if !allowed {
+		return errors.New("self-upgrade is off for this agent, so don't update the CLI yourself: tell the user, who can upgrade it or turn self-upgrade on for this agent under Agents")
 	}
 	name := "keydrop-" + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {

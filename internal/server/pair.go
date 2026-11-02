@@ -328,7 +328,7 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 		return
 	}
 	form := url.Values{}
-	for _, k := range []string{"name", "permission", "write", "sources", "replace", "lifetime"} {
+	for _, k := range []string{"name", "permission", "write", "sources", "replace", "lifetime", "selfupgrade"} {
 		form.Set(k, strings.TrimSpace(r.PostFormValue(k)))
 	}
 	form.Set("namespaces", strings.Join(formNamespaces(r), ","))
@@ -383,10 +383,18 @@ func (s *Server) handlePairApprove(w http.ResponseWriter, r *http.Request, _ str
 		s.renderPair(w, r, se, http.StatusBadRequest, p, form, err.Error())
 		return
 	}
+	selfUpgrade := form.Get("selfupgrade") == "yes"
+	if selfUpgrade {
+		if err := s.store.SetTokenSelfUpgrade(name, true); err != nil {
+			s.store.RevokeToken(name) // not collected yet: nothing uses it
+			s.renderPair(w, r, se, http.StatusInternalServerError, p, form, "Saving self-upgrade failed: "+err.Error())
+			return
+		}
+	}
 	cur.approved, cur.tokenName, cur.token, cur.namespace = true, name, tok, nss
 	cur.Created = now
 	detail := "code " + displayCode(cur.Code) + " from " + cur.IP + ", namespaces " + strings.Join(nss, ",") + ", " + string(perm)
-	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days)
+	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days) + ", self-upgrade " + onOff(selfUpgrade)
 	s.event(r, "admin", "pair.approve", name, detail)
 	http.Redirect(w, r, "/tokens?msg=paired", http.StatusSeeOther)
 }
@@ -435,6 +443,17 @@ func (s *Server) handleTokenPermission(w http.ResponseWriter, r *http.Request, _
 	}
 	s.event(r, "admin", "token.permission", name, string(perm))
 	http.Redirect(w, r, "/token/"+url.PathEscape(name)+"?msg=permission", http.StatusSeeOther)
+}
+
+func (s *Server) handleTokenSelfUpgrade(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	name := r.PathValue("name")
+	on := r.PostFormValue("selfupgrade") == "yes"
+	if err := s.store.SetTokenSelfUpgrade(name, on); err != nil {
+		s.renderTokens(w, r, se, http.StatusNotFound, "There's no agent called "+name+".")
+		return
+	}
+	s.event(r, "admin", "token.selfupgrade", name, onOff(on))
+	http.Redirect(w, r, "/token/"+url.PathEscape(name)+"?msg=selfupgrade", http.StatusSeeOther)
 }
 
 func sourcesText(src []string) string {

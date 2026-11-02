@@ -193,8 +193,9 @@ keydrop --version
 ```
 
 Later, `keydrop upgrade` replaces it with the server's current build the
-same way (checked against `SHA256SUMS`, the old binary kept as `.bak`).
-keydrop says when to run it.
+same way (checked against `SHA256SUMS`, the old binary kept as `.bak`),
+if the user allows this agent to upgrade itself. keydrop says when, and
+whether, to run it.
 
 ### 6. Pair this machine
 
@@ -312,10 +313,12 @@ never need to see them.
 - If keydrop says the token expires soon or has expired, run `keydrop
   renew` and ask the user to approve it in keydrop's Inbox. Never try to
   get a token any other way.
-- If keydrop says the server is a different build, run `keydrop upgrade`
-  when convenient: nothing breaks meanwhile. If it says this CLI is too old
-  for the server, run `keydrop upgrade` now, then retry. It only replaces
-  keydrop's own binary, from the paired server; tell the user it ran.
+- If keydrop says the server is a different build, or that this CLI is
+  too old, do what the message says. With self-upgrade allowed it says to
+  run `keydrop upgrade` (when convenient, or now if the CLI is too old,
+  then retry); that only replaces keydrop's own binary, from the paired
+  server, so tell the user it ran. With self-upgrade off it says not to
+  update it yourself: don't, by any route, and tell the user instead.
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.

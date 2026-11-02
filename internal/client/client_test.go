@@ -73,6 +73,30 @@ func TestCheckVersion(t *testing.T) {
 	if got := run("dev-1111111", hdr("dev-0000000", server.APILevel-1)); !strings.Contains(got, "older than this CLI") {
 		t.Fatalf("older server: %q", got)
 	}
+
+	// Self-upgrade off: tell the user instead of naming the command, and
+	// turning it on (or off) is news, so it shows again the same day.
+	noticeEvery = old
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	off := hdr("dev-2222222", server.APILevel)
+	off.Set(server.HdrSelfUpgrade, "off")
+	got := run("dev-1111111", off)
+	if !strings.Contains(got, "don't update the CLI yourself") || strings.Contains(got, "run `keydrop upgrade`") {
+		t.Fatalf("self-upgrade off: %q", got)
+	}
+	if got := run("dev-1111111", off); got != "" {
+		t.Fatalf("self-upgrade off, noticed twice: %q", got)
+	}
+	on := hdr("dev-2222222", server.APILevel)
+	on.Set(server.HdrSelfUpgrade, "on")
+	if got := run("dev-1111111", on); !strings.Contains(got, "run `keydrop upgrade`") {
+		t.Fatalf("turned on: %q", got)
+	}
+	off.Set(server.HdrAPILevel, strconv.Itoa(server.APILevel-1))
+	off.Set("X-Keydrop-Version", "dev-0000000")
+	if got := run("dev-1111111", off); !strings.Contains(got, "older than this CLI") || strings.Contains(got, "keydrop upgrade") {
+		t.Fatalf("older server, self-upgrade off: %q", got)
+	}
 }
 
 // A pin with an http:// URL fails instead of going unverified.

@@ -25,6 +25,12 @@
     <input name="sources" value="{{join .Sources ", "}}" placeholder="anywhere" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <button class="small">Save</button>
 </form>
+<form method="post" action="/tokens/{{.Name}}/selfupgrade" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label class="check"><input type="checkbox" name="selfupgrade" value="yes"{{if .SelfUpgrade}} checked{{end}}> Allow self-upgrade</label>
+  <button class="small">Save</button>
+</form>
+<p><small class="muted">When this agent's CLI is behind the server, keydrop tells it to run <code>keydrop upgrade</code>. Off: it's told to leave that to you, and <code>keydrop upgrade</code> refuses. Advisory: it guides the agent, it can't stop a machine replacing its own files.</small></p>
 
 <h2>Token</h2>
 <form method="post" action="/tokens/{{.Name}}/renew" class="inline">

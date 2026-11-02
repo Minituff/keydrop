@@ -77,20 +77,37 @@ func checkVersion(h http.Header) {
 		return
 	}
 	warnedVersion = true
+	// Servers before the setting send no header: they expect `keydrop
+	// upgrade` to be used. The setting is part of what's remembered, so
+	// turning it on or off shows the (reworded) notice again.
+	off := h.Get(server.HdrSelfUpgrade) == "off"
+	seen := srv
+	if off {
+		seen += " self-upgrade off"
+	}
 	stamp := filepath.Join(ConfigDir(), "version-notice")
 	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
-		if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == srv {
+		if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == seen {
 			return
 		}
 	}
+	older := false
 	if lvl, err := strconv.Atoi(h.Get(server.HdrAPILevel)); err == nil && lvl < server.APILevel {
+		older = true
+	}
+	switch {
+	case older && off:
+		fmt.Fprintf(warnTo, "keydrop: the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server.\n", srv, Version)
+	case older:
 		fmt.Fprintf(warnTo, "keydrop: the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server, or run `keydrop upgrade` to match it.\n", srv, Version)
-	} else {
-		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it.\n", srv, Version)
+	case off:
+		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes). Self-upgrade is off for this agent, so don't update the CLI yourself: mention it to the user, who can upgrade it or turn self-upgrade on for this agent under Agents.\n", srv, Version)
+	default:
+		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it: it fetches the server's build, checks it, and keeps the old binary as a .bak.\n", srv, Version)
 	}
 	// Best effort: without the stamp the line just shows again next run.
 	if os.MkdirAll(ConfigDir(), 0o700) == nil {
-		os.WriteFile(stamp, []byte(srv+"\n"), 0o600)
+		os.WriteFile(stamp, []byte(seen+"\n"), 0o600)
 	}
 }
 
@@ -166,16 +183,6 @@ func FromEnv() (*Client, error) {
 	return c, nil
 }
 
-// ServerFromEnv is FromEnv without a token: the configured server and pin,
-// for what doesn't need one (`keydrop upgrade` works with an expired token).
-func ServerFromEnv() (*Client, error) {
-	u, err := serverURL()
-	if err != nil {
-		return nil, err
-	}
-	return New(u, "", serverPin()), nil
-}
-
 func serverURL() (string, error) {
 	u := os.Getenv("KEYDROP_URL")
 	if u == "" {
@@ -192,6 +199,22 @@ func serverPin() string {
 		return pin
 	}
 	return readConfigFile("pin")
+}
+
+// AskUpgrade asks the server whether this agent may upgrade its own CLI
+// (the admin's self-upgrade setting), from version from. The server logs
+// the ask. A server from before the setting (404) has nothing to say
+// against it.
+func (c *Client) AskUpgrade(from string) (bool, error) {
+	warnedVersion = true // no "run keydrop upgrade" notice while upgrading
+	var resp struct {
+		Allowed bool `json:"allowed"`
+	}
+	err := c.do("POST", "/api/v1/cli/upgrade", map[string]string{"from": from}, &resp)
+	if IsNotFound(err) {
+		return true, nil
+	}
+	return resp.Allowed, err
 }
 
 // Download copies a file the server hands out without a token (a CLI build,

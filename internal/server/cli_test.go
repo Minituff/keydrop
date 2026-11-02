@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -423,9 +425,17 @@ func TestCLILevel(t *testing.T) {
 			t.Fatalf("level headers %q %q", resp.Header.Get(HdrAPILevel), resp.Header.Get(HdrMinCLI))
 		}
 	}
+	// Too old: the message follows the agent's self-upgrade setting.
 	resp, body := call(strconv.Itoa(MinCLILevel - 1))
-	if resp.StatusCode != http.StatusUpgradeRequired || !strings.Contains(body, "keydrop upgrade") {
-		t.Fatalf("too-old CLI: %d %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusUpgradeRequired || !strings.Contains(body, "don't update it yourself") || resp.Header.Get(HdrSelfUpgrade) != "off" {
+		t.Fatalf("too-old CLI, self-upgrade off: %d %s", resp.StatusCode, body)
+	}
+	if err := h.st.SetTokenSelfUpgrade("box", true); err != nil {
+		t.Fatal(err)
+	}
+	resp, body = call(strconv.Itoa(MinCLILevel - 1))
+	if resp.StatusCode != http.StatusUpgradeRequired || !strings.Contains(body, "run `keydrop upgrade`") || resp.Header.Get(HdrSelfUpgrade) != "on" {
+		t.Fatalf("too-old CLI, self-upgrade on: %d %s", resp.StatusCode, body)
 	}
 	r2, err := http.Get(h.ts.URL + "/api/v1/whoami")
 	if err != nil {
@@ -475,5 +485,74 @@ func TestExpiringDaysBounded(t *testing.T) {
 	_, _, body := h.api("GET", "/api/v1/expiring?days=9999999999999", tok, nil)
 	if !strings.Contains(string(body), "lab/SOON") {
 		t.Fatalf("huge days lost the secret: %s", body)
+	}
+}
+
+// The self-upgrade toggle: set from the agent page and the new-agent form,
+// logged, sent as a header, and what POST /api/v1/cli/upgrade answers.
+func TestSelfUpgrade(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	tok := h.createToken("bot", "lab")
+	if b, _ := tokenNamed(h.st.ListTokens(), "bot"); b.SelfUpgrade {
+		t.Fatal("self-upgrade on by default")
+	}
+	ask := func(level string) (int, map[string]any, http.Header) {
+		req, _ := http.NewRequest("POST", h.ts.URL+upgradePath, strings.NewReader(`{"from":"dev-old<script>"}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		if level != "" {
+			req.Header.Set(HdrCLILevel, level)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m, resp.Header
+	}
+	code, m, hdr := ask("")
+	if code != http.StatusOK || m["allowed"] != false || hdr.Get(HdrSelfUpgrade) != "off" {
+		t.Fatalf("off: %d %v %q", code, m, hdr.Get(HdrSelfUpgrade))
+	}
+	if !h.auditHas("cli.upgrade", "from ? to") || !h.auditHas("cli.upgrade", "refused") {
+		t.Fatal("refused ask not logged, or the agent's text logged as is")
+	}
+
+	code, body := h.form("/tokens/bot/selfupgrade", url.Values{"selfupgrade": {"yes"}})
+	if code != http.StatusSeeOther || !strings.Contains(body, "Self-upgrade setting saved") || !strings.Contains(body, `name="selfupgrade" value="yes" checked`) {
+		t.Fatalf("turn on: %d", code)
+	}
+	if !h.auditHas("token.selfupgrade", "on") {
+		t.Fatal("toggle not logged")
+	}
+	// Even a CLI below MinCLILevel may ask.
+	code, m, hdr = ask(strconv.Itoa(MinCLILevel - 1))
+	if code != http.StatusOK || m["allowed"] != true || hdr.Get(HdrSelfUpgrade) != "on" {
+		t.Fatalf("on: %d %v", code, m)
+	}
+	if !h.auditHas("cli.upgrade", "allowed") {
+		t.Fatal("allowed ask not logged")
+	}
+	// An unticked checkbox sends nothing: off.
+	if code, _ := h.form("/tokens/bot/selfupgrade", url.Values{}); code != http.StatusSeeOther {
+		t.Fatalf("turn off: %d", code)
+	}
+	if b, _ := tokenNamed(h.st.ListTokens(), "bot"); b.SelfUpgrade {
+		t.Fatal("still on")
+	}
+	if code, _ := h.form("/tokens/nobody/selfupgrade", url.Values{"selfupgrade": {"yes"}}); code != http.StatusNotFound {
+		t.Fatalf("unknown agent: %d", code)
+	}
+	if code, _, _ := h.api("POST", upgradePath, "", map[string]string{}); code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", code)
+	}
+
+	// Ticked on the new-agent form.
+	resp := h.post("/tokens", url.Values{"csrf": {h.csrf()}, "name": {"bot2"}, "namespaces": {"lab"}, "selfupgrade": {"yes"}})
+	resp.Body.Close()
+	if b, _ := tokenNamed(h.st.ListTokens(), "bot2"); resp.StatusCode != http.StatusOK || !b.SelfUpgrade || !h.auditHas("token.create", "self-upgrade on") {
+		t.Fatalf("new agent with self-upgrade: %d %v", resp.StatusCode, b.SelfUpgrade)
 	}
 }

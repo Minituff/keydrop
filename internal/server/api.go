@@ -195,8 +195,9 @@ func (s *Server) agentAuth(h agentHandler, renewal bool) http.HandlerFunc {
 		}
 		w.Header().Set(HdrAPILevel, strconv.Itoa(APILevel))
 		w.Header().Set(HdrMinCLI, strconv.Itoa(MinCLILevel))
-		if cliLevel(r) < MinCLILevel {
-			apiError(w, http.StatusUpgradeRequired, tooOldCLI)
+		w.Header().Set(HdrSelfUpgrade, onOff(t.SelfUpgrade))
+		if cliLevel(r) < MinCLILevel && r.URL.Path != upgradePath {
+			apiError(w, http.StatusUpgradeRequired, tooOldCLI(t.SelfUpgrade))
 			return
 		}
 		// So the CLI can warn before the token stops working.
@@ -233,6 +234,32 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, t store.Token) (
 
 func (s *Server) apiWhoami(w http.ResponseWriter, r *http.Request, t store.Token) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": t.Name, "namespaces": t.Namespaces, "write": t.Write, "permission": t.Permission(), "expires_at": t.ExpiresAt})
+}
+
+// apiCLIUpgrade is `keydrop upgrade` asking first. It answers by the
+// agent's self-upgrade setting and logs the ask either way; the CLI
+// refuses to replace itself on a no.
+func (s *Server) apiCLIUpgrade(w http.ResponseWriter, r *http.Request, t store.Token) {
+	var req struct {
+		From string `json:"from"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		apiError(w, http.StatusBadRequest, "bad JSON")
+		return
+	}
+	// Agent-supplied, so only a version-shaped string goes into the log.
+	from := "?"
+	if v := req.From; v != "" && len(v) <= 64 && strings.Trim(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+") == "" {
+		from = v
+	}
+	detail := "from " + from + " to " + s.cfg.Version + ": "
+	if t.SelfUpgrade {
+		detail += "allowed"
+	} else {
+		detail += "refused, self-upgrade is off"
+	}
+	s.event(r, actor(t), "cli.upgrade", "", detail)
+	writeJSON(w, http.StatusOK, map[string]any{"allowed": t.SelfUpgrade, "version": s.cfg.Version})
 }
 
 func (s *Server) apiList(w http.ResponseWriter, r *http.Request, t store.Token) {

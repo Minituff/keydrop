@@ -749,8 +749,11 @@ func TestPairing(t *testing.T) {
 	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "sources": {"10.0.0.300"}}); c != http.StatusBadRequest {
 		t.Fatalf("bad source accepted: %d", c)
 	}
-	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "sources": {"10.0.0.5"}}); c != http.StatusSeeOther {
+	if c := approve(url.Values{"name": {"box"}, "namespaces": {"lab"}, "sources": {"10.0.0.5"}, "selfupgrade": {"yes"}}); c != http.StatusSeeOther {
 		t.Fatalf("approve: %d", c)
+	}
+	if tok, _ := tokenNamed(h.st.ListTokens(), "box"); !tok.SelfUpgrade || !h.auditHas("pair.approve", "self-upgrade on") {
+		t.Fatal("self-upgrade ticked when approving wasn't saved or logged")
 	}
 	if c, _ := h.get(path); c != http.StatusNotFound {
 		t.Fatal("approved request can still be opened")

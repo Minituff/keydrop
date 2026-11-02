@@ -108,6 +108,7 @@ var flashes = map[string]string{
 	"denied":         "Pairing request denied.",
 	"sources":        "Allowed sources saved.",
 	"permission":     "Permission saved.",
+	"selfupgrade":    "Self-upgrade setting saved.",
 	"status":         "Status saved.",
 	"resolved":       "Flag resolved.",
 	"approved":       "Approved.",
@@ -928,8 +929,15 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request, _ str
 		s.renderTokens(w, r, se, http.StatusBadRequest, msg)
 		return
 	}
+	selfUpgrade := r.PostFormValue("selfupgrade") == "yes"
+	if selfUpgrade {
+		if err := s.store.SetTokenSelfUpgrade(name, true); err != nil {
+			s.renderTokens(w, r, se, http.StatusInternalServerError, "The token was made, but saving self-upgrade failed: "+err.Error())
+			return
+		}
+	}
 	detail := "namespaces " + strings.Join(nss, ",") + ", " + string(perm)
-	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days)
+	detail += ", allowed from " + sourcesText(sources) + ", " + lifetimeLabel(days) + ", self-upgrade " + onOff(selfUpgrade)
 	s.event(r, "admin", "token.create", name, detail)
 	u := s.cfg.PublicURL
 	if u == "" {
