@@ -391,6 +391,52 @@ func TestVersionHeader(t *testing.T) {
 	}
 }
 
+// Authenticated responses carry the levels; a CLI below MinCLILevel is
+// refused with 426 naming the upgrade command, and one that sends no level
+// (or nonsense) counts as level 1.
+func TestCLILevel(t *testing.T) {
+	h := newHarness(t)
+	tok, err := h.st.CreateToken("box", []string{"lab"}, store.PermRead, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(level string) (*http.Response, string) {
+		req, _ := http.NewRequest("GET", h.ts.URL+"/api/v1/whoami", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		if level != "" {
+			req.Header.Set(HdrCLILevel, level)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	for _, level := range []string{"", "x", strconv.Itoa(MinCLILevel), strconv.Itoa(APILevel + 5)} {
+		resp, body := call(level)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("level %q: %d %s", level, resp.StatusCode, body)
+		}
+		if resp.Header.Get(HdrAPILevel) != strconv.Itoa(APILevel) || resp.Header.Get(HdrMinCLI) != strconv.Itoa(MinCLILevel) {
+			t.Fatalf("level headers %q %q", resp.Header.Get(HdrAPILevel), resp.Header.Get(HdrMinCLI))
+		}
+	}
+	resp, body := call(strconv.Itoa(MinCLILevel - 1))
+	if resp.StatusCode != http.StatusUpgradeRequired || !strings.Contains(body, "keydrop upgrade") {
+		t.Fatalf("too-old CLI: %d %s", resp.StatusCode, body)
+	}
+	r2, err := http.Get(h.ts.URL + "/api/v1/whoami")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.Header.Get(HdrAPILevel) != "" || r2.Header.Get(HdrMinCLI) != "" {
+		t.Error("levels shown without a token")
+	}
+}
+
 // One address can't take every download slot.
 func TestDownloadSlotsPerAddress(t *testing.T) {
 	h := newHarness(t)

@@ -765,9 +765,28 @@ so a redirect can't downgrade it.
 
 The downloads are unauthenticated (they hold nothing secret) and capped at
 8 at a time, 2 per address (IPv6: /64); a reader that stalls for 30
-seconds is cut off, and none runs past 10 minutes. Authenticated API responses carry `X-Keydrop-Version`; the
-CLI warns once if it differs. The header isn't sent to anyone without a
-token, so the server doesn't announce its version.
+seconds is cut off, and none runs past 10 minutes. Authenticated API responses carry `X-Keydrop-Version` and the
+compatibility levels below. They aren't sent to anyone without a token, so
+the server doesn't announce its version.
+
+**CLI compatibility.** Every dev push changes the version, so a version
+mismatch alone said nothing about whether an older CLI still works, and
+warning on every one taught agents to ignore it. So there are two numbers
+in `internal/server/compat.go`: `APILevel`, raised when the agent API
+changes in a way the CLI depends on, and `MinCLILevel`, raised only when
+older CLIs would break. The CLI sends its level; the server refuses one
+below the minimum with 426 naming `keydrop upgrade`, and otherwise the CLI
+mentions a different build at most once a day. `e2e/compat_test.go` runs
+the oldest accepted CLI (a commit per level) against the current server,
+so breaking it without raising the minimum fails CI.
+
+**Self-upgrade.** `keydrop upgrade` is install.sh in Go: the same
+download from the paired server, over the configured pin, checked against
+`SHA256SUMS`, run once before it replaces anything, the old binary kept
+as `.bak`. It needs no token, so an expired one doesn't block it, and it
+refuses plain http, since what it downloads gets run. The checksum file
+comes from the same server, so it catches a broken download, not a
+hostile server; the pin is what vouches for the server.
 
 ### Setting up an agent from one prompt
 The setup is written for an agent to follow: the person pastes one

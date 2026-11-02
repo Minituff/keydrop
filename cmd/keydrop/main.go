@@ -60,6 +60,10 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          30 days after) it expires; --wait waits for the
                                          approval and saves the new token over the token file.
                                          Any command run after the approval does that too
+  upgrade [--force]                     replace this CLI with the paired server's build
+                                         (checked against its SHA256SUMS; the old binary is
+                                         kept as .<version>.bak). Run it when keydrop says
+                                         the server is a different build
   inbox, ack                            deprecated: inbox runs history --since 72h,
                                          ack does nothing (reading a value marks it read)
 
@@ -150,6 +154,8 @@ func main() {
 		err = cmdWhoami(args)
 	case "renew":
 		err = cmdRenew(args)
+	case "upgrade":
+		err = cmdUpgrade(args)
 	case "version", "--version", "-v":
 		fmt.Println("keydrop", version)
 	case "help", "--help", "-h":

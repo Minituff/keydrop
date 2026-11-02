@@ -193,6 +193,12 @@ func (s *Server) agentAuth(h agentHandler, renewal bool) http.HandlerFunc {
 		if s.cfg.Version != "" {
 			w.Header().Set("X-Keydrop-Version", s.cfg.Version)
 		}
+		w.Header().Set(HdrAPILevel, strconv.Itoa(APILevel))
+		w.Header().Set(HdrMinCLI, strconv.Itoa(MinCLILevel))
+		if cliLevel(r) < MinCLILevel {
+			apiError(w, http.StatusUpgradeRequired, tooOldCLI)
+			return
+		}
 		// So the CLI can warn before the token stops working.
 		w.Header().Set("X-Keydrop-Token-Expires", expiresHeader(t.ExpiresAt))
 		h(w, r, t)

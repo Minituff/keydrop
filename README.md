@@ -593,7 +593,18 @@ get 429, as do puts and requests past theirs, and a request past a token's
 | `GET /cli/keydrop-<os>-<arch>[.exe]`, `GET /cli/SHA256SUMS` | No auth. The CLI builds, same version as the server; 8 downloads at a time, 2 per address |
 
 Authenticated responses carry `X-Keydrop-Version`, the server's build,
-and `X-Keydrop-Token-Expires` (RFC 3339, or `never`). An expired or
+`X-Keydrop-Api-Level` and `X-Keydrop-Min-Cli-Level` (see below), and
+`X-Keydrop-Token-Expires` (RFC 3339, or `never`).
+
+**Keeping the CLI current.** The CLI sends `X-Keydrop-Cli-Level`; a request
+without it counts as level 1. A CLI below the server's minimum level gets
+426 with a message naming `keydrop upgrade`. A different build that still
+works gets one line on stderr, at most once a day per server build, saying
+nothing breaks and to run `keydrop upgrade` when convenient. `keydrop
+upgrade` downloads the server's build for this system from `/cli/` over the
+configured URL and pin (no token needed), checks it against `SHA256SUMS`,
+runs it once, and swaps it in, keeping the old binary as
+`keydrop.<version>.bak`. An expired or
 replaced token gets 401 `invalid token`, like an unknown one, except on the
 renewal endpoints.
 

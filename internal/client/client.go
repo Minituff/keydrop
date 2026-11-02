@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,23 +52,46 @@ func (w Whoami) Perm() string {
 	return "read"
 }
 
-// Version is this CLI's build version, set by main. When it differs from
-// the server's, the client warns once on stderr.
+// Version is this CLI's build version, set by main. When the server is a
+// different build, the client says so (see checkVersion).
 var Version string
 
 var (
 	warnedVersion bool
 	warnTo        io.Writer = os.Stderr
+	// noticeEvery is how often a compatible-but-different build is
+	// mentioned. Agents run the CLI many times an hour; once a day is
+	// enough to get it upgraded without burying their output.
+	noticeEvery = 24 * time.Hour
 )
 
-// checkVersion warns when the server is a different build. Unversioned
-// local builds ("dev") are skipped.
-func checkVersion(server string) {
-	if warnedVersion || server == "" || Version == "" || Version == "dev" || server == "dev" || server == Version {
+// checkVersion compares this CLI with the server from an authenticated
+// response's headers. A CLI below the server's minimum level is refused
+// by the server itself (426, naming `keydrop upgrade`), so here it's only
+// about builds that still work: at most one line a day per server build,
+// remembered in the config directory. Unversioned local builds ("dev") are
+// skipped.
+func checkVersion(h http.Header) {
+	srv := h.Get("X-Keydrop-Version")
+	if warnedVersion || srv == "" || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
 		return
 	}
 	warnedVersion = true
-	fmt.Fprintf(warnTo, "keydrop: this CLI is %s but the server is %s; reinstall it from the server's Agents page\n", Version, server)
+	stamp := filepath.Join(ConfigDir(), "version-notice")
+	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
+		if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == srv {
+			return
+		}
+	}
+	if lvl, err := strconv.Atoi(h.Get(server.HdrAPILevel)); err == nil && lvl < server.APILevel {
+		fmt.Fprintf(warnTo, "keydrop: the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server, or run `keydrop upgrade` to match it.\n", srv, Version)
+	} else {
+		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it.\n", srv, Version)
+	}
+	// Best effort: without the stamp the line just shows again next run.
+	if os.MkdirAll(ConfigDir(), 0o700) == nil {
+		os.WriteFile(stamp, []byte(srv+"\n"), 0o600)
+	}
 }
 
 // Client is a configured API client.
@@ -112,12 +136,9 @@ func readConfigFile(name string) string {
 // FromEnv builds a client from KEYDROP_URL, KEYDROP_TOKEN(_FILE) and
 // KEYDROP_TLS_PIN, falling back to files written by `keydrop login`.
 func FromEnv() (*Client, error) {
-	u := os.Getenv("KEYDROP_URL")
-	if u == "" {
-		u = readConfigFile("url")
-	}
-	if u == "" {
-		return nil, errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
+	u, err := serverURL()
+	if err != nil {
+		return nil, err
 	}
 	tok, tokenPath := os.Getenv("KEYDROP_TOKEN"), ""
 	if tok == "" {
@@ -139,14 +160,69 @@ func FromEnv() (*Client, error) {
 		tok = strings.TrimSpace(string(b))
 		tokenPath = path
 	}
-	pin := os.Getenv("KEYDROP_TLS_PIN")
-	if pin == "" {
-		pin = readConfigFile("pin")
-	}
-	c := New(u, tok, pin)
+	c := New(u, tok, serverPin())
 	c.TokenPath = tokenPath
 	c.Label = os.Getenv("KEYDROP_AGENT")
 	return c, nil
+}
+
+// ServerFromEnv is FromEnv without a token: the configured server and pin,
+// for what doesn't need one (`keydrop upgrade` works with an expired token).
+func ServerFromEnv() (*Client, error) {
+	u, err := serverURL()
+	if err != nil {
+		return nil, err
+	}
+	return New(u, "", serverPin()), nil
+}
+
+func serverURL() (string, error) {
+	u := os.Getenv("KEYDROP_URL")
+	if u == "" {
+		u = readConfigFile("url")
+	}
+	if u == "" {
+		return "", errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
+	}
+	return u, nil
+}
+
+func serverPin() string {
+	if pin := os.Getenv("KEYDROP_TLS_PIN"); pin != "" {
+		return pin
+	}
+	return readConfigFile("pin")
+}
+
+// Download copies a file the server hands out without a token (a CLI build,
+// its SHA256SUMS) to w, over the same pinned connection as the API, and
+// refuses plain http: what it fetches gets run. At most limit bytes.
+func (c *Client) Download(path string, w io.Writer, limit int64) error {
+	if !strings.HasPrefix(strings.ToLower(c.URL), "https://") {
+		return errors.New("refusing to download over plain http: set the server's https:// URL")
+	}
+	hc := *c.HTTP
+	hc.Timeout = 10 * time.Minute // a build is several megabytes
+	resp, err := hc.Get(c.URL + path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if n > limit {
+		return fmt.Errorf("%s is larger than %d bytes", path, limit)
+	}
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return fmt.Errorf("%s was cut off (%d of %d bytes)", path, n, resp.ContentLength)
+	}
+	return nil
 }
 
 // New builds a client. If pin is set ("sha256:<hex>"), the server's
@@ -244,6 +320,7 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 	if c.Label != "" {
 		req.Header.Set("X-Keydrop-Agent", c.Label)
 	}
+	req.Header.Set(server.HdrCLILevel, strconv.Itoa(server.APILevel))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -252,7 +329,7 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	checkVersion(resp.Header.Get("X-Keydrop-Version"))
+	checkVersion(resp.Header)
 	c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
