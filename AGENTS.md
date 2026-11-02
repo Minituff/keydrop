@@ -20,6 +20,16 @@ Keep them current: a change that makes a page wrong updates that page in the
 same commit. New areas that need more than a README line get their own page
 here and a row in this table.
 
+The other pages in `docs/` are for **people** deciding whether to run keydrop
+and setting it up: `features.md`, `security.md`, `install.md` (including the
+configuration table), `pairing.md`, `upgrading.md`, `api.md` and
+`development.md`. They're also the MkDocs site (`mkdocs.yml`, built by the
+`docs` workflow, published only by hand). Write them in plain words for a
+human; keep the README short and link to them. `docs/index.md` is generated
+from `README.md`: after editing the README run `sh scripts/docs-index.sh`
+(CI fails while they differ). Screenshots in `docs/images/` show only
+made-up data.
+
 ## Security invariants — don't break these
 
 - **Secret values are only shown on purpose, and every view is logged.** In
@@ -188,8 +198,8 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
   section, then run `go test ./internal/server -run TestAgentSetupDoc -update`
   and commit both; `TestAgentSetupDoc` fails while they differ. It's served
   without auth, so it must only ever hold public values (address, pins).
-- New config is an env var named `KEYDROP_*`, documented in the README's
-  configuration table, with a safe default.
+- New config is an env var named `KEYDROP_*`, documented in the configuration
+  table in `docs/install.md`, with a safe default.
 - Error messages and UI text: plain English, say what to do next.
 - **CLI compatibility:** when you change the agent API, decide whether the
   CLI depends on it and raise `APILevel` / `MinCLILevel` in
@@ -242,15 +252,26 @@ with a GitHub noreply address.
 
 ### Before going public
 
-In this order; the maintainer does the last two steps:
+In this order; the maintainer does steps 8 to 10:
 
 1. A thorough security review of the whole codebase, with findings fixed.
+   The repo and its history were reviewed for leaks on 2026-11-01:
+   no real secrets; the only history-only problems (a personal author
+   email on some commits, private addresses in an old test) go away with
+   the squash in step 5.
 2. Check the web UI in a real browser, on a phone and a desktop.
-3. Merge `dev` into `main`; CI green on `main`.
-4. Run the `leak-history` workflow (it only appears once on the default
+3. Make the e2e tests survive the squash: `e2e/e2e_test.go` and
+   `e2e/compat_test.go` build old releases by commit hash, and those
+   commits won't exist afterwards. Build them from tags or archived
+   release binaries instead, or drop them.
+4. Merge `dev` into `main`; CI green on `main`.
+5. Run the `leak-history` workflow (it only appears once on the default
    branch) and clean up anything it finds.
-5. Squash the history into one commit, in place (the repo has no forks
-   or open PRs to break), and force-push.
-6. `git grep PRIVATE:` is empty: each such line removed or made generic.
-7. Make the repository and its container package public.
-8. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
+6. Squash the history into one commit, in place (the repo has no forks
+   or open PRs to break), authored with the noreply address, and
+   force-push both `dev` and `main`.
+7. `git grep PRIVATE:` is empty: each such line removed or made generic.
+8. Make the repository and its container package public.
+9. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
+10. Optionally publish the docs site: Actions → docs → Run workflow on
+    `main`, then Settings → Pages → the `gh-pages` branch.

@@ -354,9 +354,9 @@ instructions and the session hook.
 
 ## Doing it by hand
 
-Everything the agent does, you can do yourself. The README has the steps:
-[installing the server](../README.md#installing-the-server-by-hand) and
-[pairing an agent](../README.md#pairing-an-agent-by-hand). To give the
+Everything the agent does, you can do yourself. The steps:
+[installing the server](install.md) and
+[pairing an agent](pairing.md). To give the
 agent the rules afterwards, paste the **Secrets (keydrop)** block from
 step 9 above into its `CLAUDE.md` or `AGENTS.md`.
 
@@ -400,7 +400,7 @@ worth adding as well. In `.claude/settings.json`:
   ```
 
 The guard is a guard-rail for honest mistakes, not a security boundary (see
-the threat model in the README).
+the [threat model](security.md)).
 
 ## Health checks
 

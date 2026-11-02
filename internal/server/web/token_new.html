@@ -18,7 +18,7 @@
 <form method="post" action="/tokens" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Name
-    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="homelab-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" placeholder="laptop-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   <p class="label">Namespaces it can read</p>
   {{template "nschecks" (nsOpts .Namespaces nil)}}
   <label>Permission {{template "permission" "read"}}</label>

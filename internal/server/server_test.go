@@ -298,14 +298,14 @@ func TestNamespaceIsolation(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
 	lab, _ := h.st.CreateToken("lab-agent", []string{"lab"}, store.PermRead, nil)
-	wed, _ := h.st.CreateToken("wedding-agent", []string{"wedding"}, store.PermWrite, nil)
+	wed, _ := h.st.CreateToken("blog-agent", []string{"blog"}, store.PermWrite, nil)
 	h.st.PutValue("lab", "CF", []byte("lab-secret-value"), &store.Meta{Description: "lab only"})
-	h.st.PutValue("wedding", "CONVEX", []byte("wedding-secret-value"), nil)
+	h.st.PutValue("blog", "CONVEX", []byte("blog-secret-value"), nil)
 
 	// Each agent lists only its own namespace.
 	_, _, raw := h.api("GET", "/api/v1/secrets", wed, nil)
-	if strings.Contains(string(raw), "lab") || !strings.Contains(string(raw), "wedding/CONVEX") {
-		t.Fatalf("wedding list: %s", raw)
+	if strings.Contains(string(raw), "lab") || !strings.Contains(string(raw), "blog/CONVEX") {
+		t.Fatalf("blog list: %s", raw)
 	}
 	// Other namespaces look missing, not forbidden.
 	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/CF/reveal", wed, nil); code != http.StatusNotFound {
@@ -331,10 +331,10 @@ func TestNamespaceIsolation(t *testing.T) {
 	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/NEW", wed, map[string]any{"value": "x-123456"}); code != http.StatusForbidden {
 		t.Fatalf("wrote outside namespace: %d", code)
 	}
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/GEN", wed, map[string]any{"value": "x-123456"}); code != 200 {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/blog/GEN", wed, map[string]any{"value": "x-123456"}); code != 200 {
 		t.Fatalf("write: %d", code)
 	}
-	if code, _, _ := h.api("PUT", "/api/v1/secrets/wedding/GEN", wed, map[string]any{"value": "y-123456"}); code != http.StatusConflict {
+	if code, _, _ := h.api("PUT", "/api/v1/secrets/blog/GEN", wed, map[string]any{"value": "y-123456"}); code != http.StatusConflict {
 		t.Fatalf("silent overwrite: %d", code)
 	}
 	// Bad and missing tokens.
@@ -354,7 +354,7 @@ func TestRequestFlow(t *testing.T) {
 	if code != http.StatusCreated || m["ref"] != "lab/GH_PAT" {
 		t.Fatalf("request: %d %v", code, m)
 	}
-	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "wedding", "name": "x"}); code != http.StatusForbidden {
+	if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "blog", "name": "x"}); code != http.StatusForbidden {
 		t.Fatalf("request outside namespace: %d", code)
 	}
 	if _, body := h.get("/inbox"); !strings.Contains(body, "Requests") || !strings.Contains(body, "lab/GH_PAT") {
@@ -711,7 +711,7 @@ func TestPairing(t *testing.T) {
 	h.setup()
 	h.st.PutValue("lab", "FAKE_KEY", []byte("fake-pair-value-1"), nil)
 
-	code, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "Homelab-Agent.lan", "user": "agent<script>"})
+	code, m := h.apiFrom("10.0.0.5", "POST", "/api/v1/pair", "", "", map[string]string{"host": "Agent-Box.lan", "user": "agent<script>"})
 	if code != http.StatusCreated {
 		t.Fatalf("pair start: %d %v", code, m)
 	}
@@ -732,7 +732,7 @@ func TestPairing(t *testing.T) {
 		t.Fatal("pending pairing not listed on the Agents page")
 	}
 	_, body := h.get(path)
-	for _, want := range []string{shown, "10.0.0.5", `value="homelab-agent.lan"`, `value="10.0.0.5"`} {
+	for _, want := range []string{shown, "10.0.0.5", `value="agent-box.lan"`, `value="10.0.0.5"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("approval page lacks %q", want)
 		}
@@ -968,7 +968,7 @@ func TestNoisyEventsThrottled(t *testing.T) {
 func TestAnnotationsHideInvisibleKeys(t *testing.T) {
 	h := newHarness(t)
 	h.setup()
-	h.st.PutValue("wedding", "HIDDEN", []byte("hidden-value"), nil)
+	h.st.PutValue("blog", "HIDDEN", []byte("hidden-value"), nil)
 	lab, _ := h.st.CreateToken("lab", []string{"lab"}, store.PermRead, nil)
 	for _, c := range []struct {
 		path string
@@ -978,13 +978,13 @@ func TestAnnotationsHideInvisibleKeys(t *testing.T) {
 		{"/status", map[string]string{"status": "leaked"}},
 		{"/notes", map[string]string{"text": "x"}},
 	} {
-		_, _, hidden := h.api("POST", "/api/v1/secrets/wedding/HIDDEN"+c.path, lab, c.body)
-		code, _, missing := h.api("POST", "/api/v1/secrets/wedding/MISSING"+c.path, lab, c.body)
+		_, _, hidden := h.api("POST", "/api/v1/secrets/blog/HIDDEN"+c.path, lab, c.body)
+		code, _, missing := h.api("POST", "/api/v1/secrets/blog/MISSING"+c.path, lab, c.body)
 		if code != http.StatusNotFound || strings.ReplaceAll(string(hidden), "HIDDEN", "MISSING") != string(missing) {
 			t.Fatalf("%s: %d %s vs %s", c.path, code, hidden, missing)
 		}
 	}
-	if sec, _ := h.st.GetSecret("wedding", "HIDDEN"); sec.Ext != nil {
+	if sec, _ := h.st.GetSecret("blog", "HIDDEN"); sec.Ext != nil {
 		t.Fatal("annotated a key the token can't see")
 	}
 }

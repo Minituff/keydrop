@@ -47,7 +47,7 @@ var (
 	// the integrity check, which the server doesn't upgrade on its own.
 	ErrNeedsUpgrade = errors.New("keydrop.json is in the format of an older release, without the integrity check, and keydrop no longer upgrades it on start. " +
 		"Stop keydrop, back up the data directory, and run `keydrop upgrade-data` once with the same data directory and master key " +
-		"(see Upgrading and rolling back in the README), then start it again")
+		"(see docs/upgrading.md), then start it again")
 	ErrIntegrity = errors.New("keydrop.json failed its integrity check (HMAC): it was changed outside keydrop, or by something without the master key; refusing to start. Restore it from a backup")
 )
 

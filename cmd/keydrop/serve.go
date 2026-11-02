@@ -166,7 +166,7 @@ func cmdUpgradeData(args []string) error {
 	}
 	fmt.Printf("Done. Start keydrop with this release. To go back to the older one, run `keydrop downgrade-data` first.\n")
 	if sealed {
-		fmt.Printf("Backups of %s made before now still hold tls.key in plaintext: if one may have been exposed, run `keydrop rotate-tls` and re-pin the agents (see the README).\n", dataDir)
+		fmt.Printf("Backups of %s made before now still hold tls.key in plaintext: if one may have been exposed, run `keydrop rotate-tls` and re-pin the agents (see docs/upgrading.md).\n", dataDir)
 	}
 	return nil
 }

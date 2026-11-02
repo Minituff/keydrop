@@ -101,7 +101,7 @@ func TestTokens(t *testing.T) {
 		t.Fatal("token stored in plaintext")
 	}
 	got, err := s.LookupToken(tok, "10.0.0.5")
-	if err != nil || got.Name != "claude" || !got.Allows("lab") || got.Allows("wedding") {
+	if err != nil || got.Name != "claude" || !got.Allows("lab") || got.Allows("blog") {
 		t.Fatalf("lookup: %+v %v", got, err)
 	}
 	if _, err := s.LookupToken(tok+"x", "10.0.0.5"); err != ErrNotFound {

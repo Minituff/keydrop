@@ -1,7 +1,8 @@
 # keydrop: design
 
 Why keydrop exists, how it's built and why, and what comes next. The
-[README](../README.md) covers using it. This page is for working on it.
+[README](index.md) and the pages beside this one cover using it. This page
+is for working on it.
 
 ## The problem
 
@@ -27,8 +28,8 @@ plaintext at rest.
 
 **Doesn't protect against a compromised or malicious agent.** Anything that
 can use a secret can exfiltrate it. The goal is that agents never see
-values during normal work, not that they can't. The README says this
-plainly, and it shouldn't be watered down.
+values during normal work, not that they can't. The README and
+[Security](security.md) say this plainly, and it shouldn't be watered down.
 
 Also out of scope: multi-user teams, HA, cloud KMS, compliance features.
 For those, use Vault/OpenBao or Infisical.
@@ -98,7 +99,7 @@ main way the human tells the agent what to do.
 
 ### Namespaces and agent tokens
 Secrets live in namespaces (`homelab/CLOUDFLARE_API_TOKEN`,
-`wedding/CONVEX_DEPLOY_KEY`).
+`blog/DEPLOY_KEY`).
 Each agent has its own token, granted one or more namespaces, with one
 permission:
 
@@ -842,7 +843,7 @@ and update deliberately: a bad image of this app exposes every key.
 
 ### Configuration
 Everything is configured by env vars, with no lab-specific values in the
-code. The full list is in the README.
+code. The full list is in [Configuration](install.md#configuration).
 
 ## Build and release
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a

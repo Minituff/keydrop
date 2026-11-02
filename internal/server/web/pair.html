@@ -11,7 +11,7 @@
 <form method="post" action="/pair/{{.P.ID}}/approve" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Name
-    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" value="{{.Form.Get "name"}}" placeholder="homelab-agent" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" value="{{.Form.Get "name"}}" placeholder="laptop-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
   {{if .Exists}}<label class="check"><input type="checkbox" name="replace" value="yes"{{if eq (.Form.Get "replace") "yes"}} checked{{end}}> Replace it: revoke the existing agent with this name</label>{{end}}
   <p class="label">Namespaces it can read</p>
   {{template "nschecks" .NSOpts}}

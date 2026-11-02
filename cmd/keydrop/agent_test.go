@@ -50,11 +50,11 @@ func TestParseInterspersed(t *testing.T) {
 
 func TestParseEnvFlag(t *testing.T) {
 	for in, want := range map[string]binding{
-		"CF_TOKEN":              {"CF_TOKEN", "CF_TOKEN"},
-		"homelab/CF_TOKEN":      {"CF_TOKEN", "homelab/CF_TOKEN"},
-		"TOKEN=CF_TOKEN":        {"TOKEN", "CF_TOKEN"},
-		"TOKEN=lab/CF_TOKEN":    {"TOKEN", "lab/CF_TOKEN"},
-		"GH_PAT=wedding/GH_PAT": {"GH_PAT", "wedding/GH_PAT"},
+		"CF_TOKEN":           {"CF_TOKEN", "CF_TOKEN"},
+		"homelab/CF_TOKEN":   {"CF_TOKEN", "homelab/CF_TOKEN"},
+		"TOKEN=CF_TOKEN":     {"TOKEN", "CF_TOKEN"},
+		"TOKEN=lab/CF_TOKEN": {"TOKEN", "lab/CF_TOKEN"},
+		"GH_PAT=blog/GH_PAT": {"GH_PAT", "blog/GH_PAT"},
 	} {
 		got, err := parseEnvFlag(in)
 		if err != nil || got != want {

@@ -1,0 +1,33 @@
+name: docs
+# Builds the MkDocs site on every change to the docs, so a broken link or page
+# fails CI. Publishing to GitHub Pages only happens when run by hand
+# (Actions → docs → Run workflow); nothing deploys on push.
+on:
+  push:
+    branches: [main, dev]
+    paths: ["docs/**", "mkdocs.yml", "README.md", "scripts/docs-index.sh", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["docs/**", "mkdocs.yml", "README.md", "scripts/docs-index.sh", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Home page matches the README
+        run: sh scripts/docs-index.sh --check
+      - run: pip install mkdocs-material==9.8.0
+      - run: mkdocs build --strict
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: pip install mkdocs-material==9.8.0
+      - run: mkdocs gh-deploy --force
