@@ -178,6 +178,9 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - New config is an env var named `KEYDROP_*`, documented in the README's
   configuration table, with a safe default.
 - Error messages and UI text: plain English, say what to do next.
+- UI styling (light/dark palette, components, phone layout): read
+  [docs/ui.md](docs/ui.md) before adding or restyling a page, and update it
+  when you add a palette variable or component.
 
 ## Git
 
