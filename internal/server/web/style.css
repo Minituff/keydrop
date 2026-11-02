@@ -3,10 +3,11 @@
    the device (System) unless the Appearance setting pins it with
    data-theme on <html>. */
 :root{color-scheme:light dark;
---bg:light-dark(#f7f6fb,#16141f);--card:light-dark(#fff,#211e2c);--fg:light-dark(#1c1a29,#ebe9f5);--muted:light-dark(#6c6880,#a49fbb);--line:light-dark(#e4e1ee,#3a3549);--line-soft:light-dark(#efedf5,#2d2a3a);
---hover:light-dark(#faf9fd,#2a2737);--side:light-dark(#1f1a3d,#1d1a2e);--side-fg:light-dark(#b9b3dc,#9d97bd);--side-strong:#fff;--side-on:light-dark(rgba(255,255,255,.09),rgba(139,112,255,.18));--accent:light-dark(#6d4aff,#6a48f0);
---accent-fg:light-dark(#5b39e8,#a993ff);--accent-soft:light-dark(#ece7ff,rgba(124,92,255,.18));--on-accent:#fff;--warn:light-dark(#a35a00,#f5b454);--warn-soft:light-dark(#fff1dd,rgba(245,180,84,.13));--bad:light-dark(#c02626,#f87171);
---bad-soft:light-dark(#fde4e4,rgba(248,113,113,.14));--ok:light-dark(#1d7a4f,#5fd0a0);--ok-soft:light-dark(#e1f5ea,rgba(95,208,160,.13));--attn-bg:light-dark(#fff5e6,rgba(245,180,84,.10));--attn-fg:light-dark(#6b4300,#f5c77e);--c:#8d889f}
+--bg:light-dark(#f7f6fb,#1f1d2b);--card:light-dark(#fff,#2b2839);--fg:light-dark(#1c1a29,#ebe9f5);--muted:light-dark(#6c6880,#aca7c4);--line:light-dark(#e4e1ee,#45405a);--line-soft:light-dark(#efedf5,#37334a);
+--hover:light-dark(#faf9fd,#34304a);--side:light-dark(#1f1a3d,#29244a);--side-fg:light-dark(#b9b3dc,#b3acd8);--side-strong:#fff;--side-on:light-dark(rgba(255,255,255,.09),rgba(139,112,255,.22));--accent:light-dark(#6d4aff,#6a48f0);
+--accent-fg:light-dark(#5b39e8,#a993ff);--accent-soft:light-dark(#ece7ff,rgba(124,92,255,.22));--on-accent:#fff;--warn:light-dark(#a35a00,#f5b454);--warn-soft:light-dark(#fff1dd,rgba(245,180,84,.13));--bad:light-dark(#c02626,#f87171);
+--bad-soft:light-dark(#fde4e4,rgba(248,113,113,.14));--ok:light-dark(#1d7a4f,#5fd0a0);--ok-soft:light-dark(#e1f5ea,rgba(95,208,160,.13));--attn-bg:light-dark(#fff5e6,rgba(245,180,84,.10));--attn-fg:light-dark(#6b4300,#f5c77e);--c:#8d889f;
+--lift:0 1px 2px light-dark(rgba(28,26,41,.05),rgba(0,0,0,.28)),inset 0 1px light-dark(transparent,rgba(255,255,255,.05))}
 :root[data-theme=light]{color-scheme:light}
 :root[data-theme=dark]{color-scheme:dark}
 .color-red{--c:#dc2f4a}.color-orange{--c:#e8830c}.color-yellow{--c:#c9a400}.color-green{--c:#17a673}
@@ -101,7 +102,7 @@ form:has(input[name=kind][value=canary]:checked) .canary-note{display:block}
 form:has(input[name=kind][value=canary]:checked) .valueblock{display:none}
 
 /* cards */
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:0 0 12px}
+.card{background:var(--card);box-shadow:var(--lift);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:0 0 12px}
 .card.danger{border-color:var(--bad)}
 .card.g{border-left:3px solid var(--c)}
 .card.flush{padding:0;overflow:hidden}
@@ -130,7 +131,7 @@ dt{color:var(--muted)}dd{margin:0}
 /* secrets list: group cards with rows */
 .nsh{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:26px 0 10px}
 .nsh:first-of-type{margin-top:0}
-.group{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:14px;overflow:hidden}
+.group{background:var(--card);box-shadow:var(--lift);border:1px solid var(--line);border-radius:14px;margin-bottom:14px;overflow:hidden}
 .gh{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line-soft);background:var(--hover)}
 .sw{width:10px;height:10px;border-radius:3px;background:var(--c);flex:none}
 .gh b{font-weight:650}
@@ -208,7 +209,7 @@ details.paste-file label{margin:0 12px 12px}
 .opts{margin-top:8px}
 
 /* lists, tables, code */
-.list{list-style:none;padding:0;margin:0 0 12px;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.list{list-style:none;padding:0;margin:0 0 12px;background:var(--card);box-shadow:var(--lift);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .list li+li{border-top:1px solid var(--line-soft)}
 .list li>a,.list li>div{display:block;padding:12px 16px;color:var(--fg)}
 .list li>a:hover{background:var(--hover);text-decoration:none}
