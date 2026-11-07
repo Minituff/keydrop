@@ -21,7 +21,13 @@ Pushes to `dev` and `main` only run the tests. To publish, go to
 | `v1.2.3` from another branch, or `v1.2.3-rc.1` | The same as a pre-release, with only the full version tag on the image (`1.2.3-rc.1`) |
 | Any other name, like `dev` | Only a multi-arch image with that tag; its version is `dev-<sha>` |
 
-Pushing a `v*` tag does the same. A version tag can't move to another
+**To write the release notes yourself,** go to **Releases → Draft a new
+release**, type the new tag, write the notes, and press **Save draft**, not
+Publish. Then run the workflow with the same tag. It attaches the binaries and
+publishes the draft. Releases are immutable once published, so one published
+straight from that page can never get its binaries: use a new tag instead.
+
+Pushing a `v*` tag does the same as running the workflow. A version tag can't move to another
 commit, and `latest` can't be typed by hand. Other tags such as `dev` do
 move, so pin them by digest. Everything is built on GitHub-hosted runners,
 with an SBOM and provenance on the image and a signed build attestation on
