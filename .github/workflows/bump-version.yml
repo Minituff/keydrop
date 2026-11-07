@@ -13,7 +13,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   bump:
-    if: contains(github.event.head_commit.message, '[bump version]')
+    # Any commit in the push: a merge commit's own message doesn't carry the
+    # marker from the commit it merged.
+    if: contains(join(github.event.commits.*.message, ' '), '[bump version]')
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the tag

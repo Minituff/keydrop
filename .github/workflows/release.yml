@@ -117,8 +117,14 @@ jobs:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
           LATEST: ${{ needs.version.outputs.latest }}
         # Makes the tag too, when this was started by hand. A tag made with
-        # this token doesn't start the workflow a second time.
-        run: gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
+        # this token doesn't start the workflow a second time. A release made
+        # first on GitHub (to write its notes) keeps them and gets the builds.
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
+          fi
   image:
     needs: [version, test, e2e]
     runs-on: ubuntu-latest
