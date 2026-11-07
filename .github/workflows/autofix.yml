@@ -43,8 +43,8 @@ jobs:
     steps:
       - name: Hand it off
         env:
-          URL: ${{ secrets.AUTOFIX_URL }}
-          TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
+          URL: ${{ secrets.CLAUDE_AUTOFIX_URL }}
+          TOKEN: ${{ secrets.CLAUDE_AUTOFIX_TOKEN }}
           TEXT: ${{ inputs.text }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_ID: ${{ github.event.workflow_run.id }}
@@ -54,7 +54,7 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
-            echo "::warning::AUTOFIX_URL or AUTOFIX_TOKEN isn't set; nothing handed off"
+            echo "::warning::CLAUDE_AUTOFIX_URL or CLAUDE_AUTOFIX_TOKEN isn't set; nothing handed off"
             exit 0
           fi
           # A Renovate PR may be fixed; anything else is only diagnosed.

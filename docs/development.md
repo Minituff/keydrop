@@ -82,7 +82,7 @@ commit. For a Renovate PR the routine may open a fix PR into `dev`; for the
 others it only opens an issue with its diagnosis. It never pushes to `main`,
 `dev`, a `renovate/*` branch or a tag, and never merges: every change still
 goes through review. Set the repository variable `AUTOFIX` to `off` to pause
-it. The routine's URL and token are the `AUTOFIX_URL` and `AUTOFIX_TOKEN`
+it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
 secrets; without them it does nothing.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
