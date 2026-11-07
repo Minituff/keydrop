@@ -1,6 +1,6 @@
 <!-- Generated from README.md by scripts/docs-index.sh. Edit the README, then run it. -->
 <div align="center" markdown>
-  <img src="images/logo.svg" width="96" alt="keydrop logo"/>
+  <a href="https://minituff.github.io/keydrop/"><img src="images/logo.svg" width="96" alt="keydrop logo"/></a>
 
   <h1>keydrop</h1>
 
