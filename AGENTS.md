@@ -25,7 +25,7 @@ and setting it up: `features.md`, `security.md`, `install.md` (including the
 configuration table), `pairing.md`, `upgrading.md` and `api.md`, plus
 `development.md` for people working on it, which also shows how releases are
 built and what's planned. They're also the MkDocs site (`mkdocs.yml`, built by the
-`docs` workflow, published only by hand). Write them in plain words for a
+`docs` workflow, published on every change to them on `main`). Write them in plain words for a
 human; keep the README short and link to them. `docs/index.md` is generated
 from `README.md`: after editing the README run `sh scripts/docs-index.sh`
 (CI fails while they differ). Screenshots in `docs/images/` show only
