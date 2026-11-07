@@ -35,27 +35,23 @@ Someone with a copy of `data/` but not the master key can't:
 
 - read any secret or variable value, or the authenticator seed;
 - read the TLS private key (`tls.key` is sealed), so they can't pose as
-  the server that agents have pinned. **Except in copies made before
-  sealing:** a backup of `data/` taken before you ran `keydrop
-  upgrade-data` (or after `downgrade-data`) holds `tls.key` in plaintext,
-  and sealing the live file doesn't change those copies. If such a backup
-  may have been exposed, [rotate the certificate](upgrading.md#rotating-the-tls-certificate);
+  the server that agents have pinned. **The exception** is a copy made after
+  `keydrop downgrade-data`, or before `keydrop upgrade-data`, which holds
+  `tls.key` in plaintext. If such a copy may have been exposed,
+  [rotate the certificate](upgrading.md#rotating-the-tls-certificate);
 - change `keydrop.json` (add a token hash, replace the admin password,
   grant a namespace) and have keydrop start on it: its HMAC no longer
   matches and keydrop refuses to start with an integrity error. Removing
-  the HMAC and pasting in the key check from an older-format copy (a
-  backup from before the upgrade, or a downgraded one) doesn't get around
-  it either: keydrop refuses older-format data outright and never upgrades
-  it on its own, so such a file isn't accepted unless the operator runs
-  `keydrop upgrade-data` on it. Only run that on data you know is your
-  own and unedited.
+  the HMAC and pasting in an older key check doesn't get around it either:
+  keydrop refuses older-format data outright and never upgrades it on its
+  own. Only the operator can, with `keydrop upgrade-data`, so only run that
+  on data you know is your own and unedited.
 
 They **can** still see metadata: secret and variable names, descriptions,
 namespaces, token names, the admin password's PBKDF2 hash, and the audit
 log. And someone who can write to `data/` can put back an **older complete
-copy** of it in the current format (a backup taken after upgrading
-verifies fine, bringing back revoked tokens or an old password), or
-delete it. Protect `data/` like any other backup, just not like the key.
+copy** of it in the current format (a backup verifies fine, bringing
+back revoked tokens or an old password), or delete it. Protect `data/` like any other backup, just not like the key.
 
 Limitations, by design for now:
 

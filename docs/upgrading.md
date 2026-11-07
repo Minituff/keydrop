@@ -1,101 +1,39 @@
 # Upgrading and rolling back
 
-Releases before the sealed TLS key and integrity check wrote
-`keydrop.json` without an HMAC and `tls.key` in plaintext. This release
-**won't start on that data**: it stops with "keydrop.json is in the format
-of an older release … run `keydrop upgrade-data` once". It doesn't upgrade
-on its own, because the old format has nothing to check: upgrading vouches
-for the files exactly as they are, which is the operator's decision. So the
-first time, upgrade by hand. With Compose (data in `./data`, the key as the
-`keydrop_master_key` secret, as in `compose.example.yml`):
+## Updating keydrop
 
-1. Stop keydrop: `docker compose stop keydrop`.
-2. Back up `data/` (for example `sudo cp -a data data.bak-$(date +%F)`),
-   and keep that copy as safe as the original: its `tls.key` is plaintext.
-3. Point the service at the new image (edit `image:`, then
-   `docker compose pull keydrop`).
-4. Upgrade the data once, with the new image and the same volumes, secret
-   and user: `docker compose run --rm keydrop upgrade-data`.
-   It prints each step: `keydrop.json` gets an HMAC (and the sealed key
-   check records that one is required from now on), and `tls.key` is
-   sealed with the master key. The key and certificate stay the same, so
-   **the pin agents hold doesn't change**; it prints the pin so you can
-   compare. The sealed copy is written beside the old one and read back
-   before it replaces it. Running it again changes nothing.
-5. Start it: `docker compose up -d keydrop`, and check `docker logs
-   keydrop` shows the same `KEYDROP_TLS_PIN=sha256:…` as before.
-6. On an agent, `keydrop whoami` should work without changes.
+With Compose (data in `./data`, as in `compose.example.yml`):
 
-With plain `docker run`, use the same mounts, environment and user as the
-server's container, with `upgrade-data` as the command:
+1. Read the release notes. If a release needs an extra step, they say so.
+2. Stop keydrop and back up `data/`, keeping the copy as safe as the original:
+   ```sh
+   docker compose stop keydrop
+   sudo cp -a data data.bak-$(date +%F)
+   ```
+3. Point `image:` at the new version, then `docker compose pull keydrop`.
+4. Start it with `docker compose up -d keydrop`. `docker logs keydrop` should
+   show the same `KEYDROP_TLS_PIN=sha256:…` as before.
+5. On an agent, `keydrop whoami` should work without changes.
 
-```sh
-docker run --rm --user 65532:65532 \
-  -v /srv/keydrop/data:/data \
-  -v /srv/keydrop/master.key:/run/secrets/keydrop_master_key:ro \
-  -e KEYDROP_MASTER_KEY_FILE=/run/secrets/keydrop_master_key \
-  ghcr.io/minituff/keydrop:NEW upgrade-data
-```
+The server carries the CLI for its own version, so agents' CLIs follow it.
+keydrop tells each agent when its CLI is a different build. If you allowed
+that agent to upgrade itself, it runs `keydrop upgrade`; if not, it tells you,
+and you can reinstall the CLI with the command on the **Agents** page.
 
-**Earlier releases can't start on upgraded data:** they refuse with
-"master key does not match this data directory" and never touch it
-(they'd fail on the sealed `tls.key` too, rather than make a new
-certificate). To go back, stop keydrop and run the *new* image once with
-the same volumes and environment:
+## Rolling back
 
-```sh
-docker compose run --rm keydrop downgrade-data
-```
-
-That writes `tls.key` back in plaintext and the key check in the old
-format; then switch `image:` back and start the older image. The new
-release refuses that data again until `upgrade-data` is run again.
-Restoring the backup of `data/` from step 2 also works.
-
-Newer fields (statuses, flags, notes, history, groups, batch requests)
-don't need `upgrade-data`. An older release that has the integrity check
-starts on data this release wrote, and ignores what it doesn't know. When
-it next saves, those fields are gone: rolling back loses groups (the keys
-stay, ungrouped), and requests stop being linked as one batch.
-
-**The alert webhook added in Settings** is a newer field too. The
-release before it starts on the data and uses `KEYDROP_ALERT_WEBHOOK` (or
-none); once it saves, the webhook is gone from the file, so add it again
-in Settings after rolling forward. `downgrade-data` isn't needed for it.
-
-**Token expiry, renewal and canaries are different.** Once any of them is
-in use (and a token made with the default lifetime counts), the sealed key
-check records that their integrity check is required, so the file can't
-be rolled back by deleting those fields. The release before them then
-refuses the data ("master key does not match this data directory") until
-you run `downgrade-data` with this release, the server stopped:
-
-```sh
-docker compose run --rm keydrop downgrade-data
-```
-
-It goes back one format at a time and lists by name what it drops:
-
-- **expiry:** every token stops expiring;
-- **renewal requests** waiting in the Inbox;
-- **renewals approved but not collected:** those tokens are deleted (the
-  old token no longer works and the new one was never handed over), so
-  pair those agents again. Collected renewals are kept: only the new
-  token works;
-- **canaries:** the flag on each secret, the Inbox's canary entries (the
-  audit log keeps them), and "revoke a token that reads a canary".
-
-Then switch `image:` back and start the older image. This release still
-starts on that data and picks the features up again when you use them.
-To go back past the integrity check as well, run `downgrade-data` a
-second time.
+Stop keydrop, put the backup of `data/` from step 2 back, switch `image:`
+back and start it. Anything changed since the backup is lost, and whatever
+you revoked or replaced since then comes back: revoked tokens work again, and
+an old admin password does too. If that matters, revoke those tokens and
+change the password again.
 
 ## Rotating the TLS certificate
 
-Do this if a copy of `tls.key` may have leaked: in particular a backup
-made before `upgrade-data`, which holds it in plaintext. With the server
-stopped and the same volumes and environment (`KEYDROP_TLS_HOSTS` sets
-the new certificate's names, as on first start):
+Do this if keydrop's TLS private key may have leaked: a plaintext copy of
+`tls.key`, or a copy of `data/` together with the master key. With the server
+stopped and the same volumes and environment (`KEYDROP_TLS_HOSTS` sets the new
+certificate's names, as on first start):
 
 ```sh
 docker compose stop keydrop
@@ -121,18 +59,32 @@ changes as well (it pins the new key), and so does the prompt under
 re-pinned, stop keydrop and rename the two `.bak` files back. Once every
 agent works, delete them.
 
-Lost the admin password or authenticator? Restart with
-`KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove the variable.
-Secrets and tokens are kept. To change the password while logged in, use
-**Settings → Password**; that logs out every other browser.
+## Lost the admin password or authenticator
 
-**Releases with history, flags, statuses, notes and the add permission**
-need no upgrade step: they start on the previous release's data as it is.
-Going back to that release also works without a command, but when it
-saves a change it drops what it doesn't know: history, statuses, flags,
-notes and pending proposals are gone, and add tokens become read-only.
-On its first start, a release with proposals turns the text of requests
-the previous release still has pending back into proposals for you to
-approve (that release wrote it straight into the description), and marks
-filled requests' descriptions as written by the agent that asked. It
-does this again after the previous release has rewritten the file.
+Restart with `KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove
+the variable. Secrets and tokens are kept. To change the password while
+logged in, use **Settings → Password**; that logs out every other browser.
+
+## Upgrading from a development build
+
+You only need this if your data was written by a build from before the first
+release. keydrop then won't start, and says to run `keydrop upgrade-data`.
+It doesn't upgrade by itself: the old format has no integrity check, so
+upgrading vouches for the files exactly as they are, and that's your decision.
+Only do it on data you know is your own and unedited.
+
+Stop keydrop, back up `data/`, and run this with the new image and the same
+volumes, secret and user. The backup holds `tls.key` in plaintext, so keep it
+as safe as the master key:
+
+```sh
+docker compose run --rm keydrop upgrade-data
+```
+
+It adds the integrity check and seals `tls.key`. The key and certificate stay
+the same, so **the pin agents hold doesn't change**. If an older copy of
+`data/` may have been exposed, [rotate the certificate](#rotating-the-tls-certificate).
+
+`keydrop downgrade-data` goes the other way, one format per run, for going
+back to such a build. It lists by name what it drops, and it writes `tls.key`
+back in plaintext. Neither command is in `keydrop help`.

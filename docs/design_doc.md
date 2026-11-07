@@ -1,8 +1,10 @@
 # keydrop: design
 
-Why keydrop exists, how it's built and why, and what comes next. The
-[README](index.md) and the pages beside this one cover using it. This page
-is for working on it.
+Why keydrop exists, how it's built and why. The [README](index.md) and the
+pages beside this one cover using it. This page is for working on it. The
+code layout is in
+[AGENTS.md](https://github.com/Minituff/keydrop/blob/main/AGENTS.md), and
+what's planned is in [Development](development.md#roadmap).
 
 ## The problem
 
@@ -63,32 +65,19 @@ One Go binary is both the server (in a container) and the agent CLI.
 - **Distroless, non-root image** with a `healthcheck` subcommand, since
   there's no shell or curl in the image.
 
-### Code layout
-
-| Path | |
-|---|---|
-| `cmd/keydrop` | Entry point: `server`, `genkey`, `healthcheck`, and the agent commands (`agent.go`). |
-| `internal/store` | State file, encryption, secrets, namespaces, tokens. |
-| `internal/auth` | Password hashing, TOTP, the failed-login limiter. |
-| `internal/server` | HTTP: web UI (`ui.go`, `web/`), agent API (`api.go`), pairing (`pair.go`), TLS (`tls.go`). |
-| `internal/client` | API client used by the CLI, including certificate pinning. |
-| `internal/mask` | Streaming output masking for `keydrop run`. |
-| `internal/qr` | QR code encoder (byte mode, level M) for the authenticator setup. |
-| `internal/audit` | JSONL audit log plus in-memory rings for the UI. Authenticated and unauthenticated events in separate files, each rotated at 10 MiB (five and one old files kept); fields capped at 200 bytes (a flag's text at 1100), and only the last 512 KiB of each read at start. |
-| `e2e` | End-to-end tests: the built binary as server and CLI, the admin through the web forms (build tag `e2e`). |
-
 ## Design decisions
 
 ### Values in the UI: shown on purpose, logged
-The MVP was write-only, like GitHub Actions secrets. That was dropped
-(2026-10-31): an admin can mint a token for every namespace and read any
-value through the API, so hiding values from the admin protected nothing,
-and the person who owns the keys should be able to check one. Instead:
+Values aren't write-only, the way GitHub Actions secrets are: an admin can
+mint a token for every namespace and read any value through the API, so
+hiding values from the admin would protect nothing, and the person who owns
+the keys should be able to check one. Instead:
 
 - Lists and pages show names and descriptions only. A value appears only
   after pressing "Show value", which is a POST with the CSRF token, so it
   never lands in a URL, browser history or a cache (`no-store`).
-- Every view is audit-logged (`secret.reveal`, "web UI") and updates
+- Every view is audit-logged (`secret.reveal`, "web UI"), isn't shown if
+  that record can't be written, and updates
   "last read", the same as an agent read.
 - You can still replace a value, roll back to the previous one (one level
   of history), or delete it.
@@ -112,9 +101,8 @@ permission:
   letting them replace one a person relies on.
 - **write**: create and replace anything in its namespaces.
 
-The token keeps `write` in the file and adds `add`; a token with neither is
-read-only, so tokens made before the add permission keep exactly what they
-had. When the admin saves a value, `created_by` is cleared: the key is the
+The token stores `write` and `add`; a token with neither is read-only. When
+the admin saves a value, `created_by` is cleared: the key is the
 admin's from then on, and the add token can't replace it (the key's page
 says so). A revoke clears what the token left attached to its name, so a
 new token with the same name starts clean: its `created_by`, its acks,
@@ -154,8 +142,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
    poll secret. The agent relays the link and code to the human in chat;
    neither is secret, since only a logged-in admin can act on the link.
 2. The admin opens the link, checks the code matches what the agent
-   showed, and sets the name, namespaces, write access and allowed
-   sources (pre-filled with the request's address).
+   showed, and sets the name, namespaces, permission, allowed sources
+   (pre-filled with the request's address), rotation and self-upgrade.
 3. The CLI, polling with its poll secret, gets the token once and writes
    it to a 0600 file.
 
@@ -165,7 +153,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   the busiest address (or /64) makes way, so one noisy host can't keep
   everyone else from pairing. Requests
   expire after 10 minutes. They're held in memory only: a restart drops
-  them, and the agent asks again.
+  them, and the agent asks again. Polls are limited too: 300 a minute per
+  address (IPv6: /64), then 429.
 - **The token goes back only to the address that asked**, and only once.
   The poll secret is 256-bit and stored hashed. A poll from another
   address gets 403 and a `pair.wrongaddr` log entry, not "expired", so an
@@ -184,12 +173,11 @@ which are the places keydrop exists to keep secrets out of. So a machine
 
 ### Token expiry and renewal
 - Every token has a lifetime, picked when it's made (pairing approval or
-  "New agent"): 30, 90 (the default), 180 or 365 days, or never. The UI
+  "Add an agent"): 30, 90 (the default), 180 or 365 days, or never. The UI
   calls it the rotation ("New token every"), because that's what it is to
   the admin: the agent asks for its replacement and one approval in the
   Inbox swaps it in, rather than the admin re-granting anything.
-  `ExpiresAt` is nil for never. Tokens made before expiry existed have
-  none and keep working; the Agents page says "no expiry".
+  `ExpiresAt` is nil for never.
 - **An expired token gets exactly the 401 an unknown one gets**
   (`invalid token`), so a caller learns nothing from the difference. The
   unauthenticated audit file records `token expired` with the name, for
@@ -218,8 +206,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   `POST /api/v1/token/collect`, and only for 30 days after it expired
   (`RenewalGrace`). After that it's dead and the agent pairs again. Allowed
   sources still apply to those calls.
-- **Approval replaces the token** (as does the Agents page's Renew, which
-  needs no request). The token's hash becomes the new token's at once, so
+- **Approval replaces the token** (as does **Rotate now** on the agent's
+  page, which needs no request). The token's hash becomes the new token's at once, so
   the old token stops working for anything but collecting; the store
   keeps a `Rotation` with the old hash, the new token sealed under the
   master key (AAD `rotation:<name>:<new hash>`, so it can't be moved to
@@ -257,9 +245,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   **To an agent a canary is indistinguishable from a real secret:** the
   same list entries, the same responses and errors, the same work per
   call, and no field, header or timing that differs.
-- A touch is any agent call on the canary, refused ones and `ack`
-  included: a reveal or `run`, a write,
-  a status, a flag or a note (a write that turns it into a variable
+- A touch is any agent call on the canary, refused ones included: a
+  reveal or `run`, a write, a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
@@ -426,11 +413,7 @@ every read logged, no way to just look). So an entry is either a
   the value makes it new to everyone again. `keydrop secrets --new` lists
   what the token hasn't read since it changed, and the admin's page shows
   *new — no agent has picked it up yet* until any agent reads it. The
-  admin reading it changes nothing. Before history, agents cleared this
-  with `keydrop ack` and read changes with `keydrop inbox`; the CLI keeps
-  those names for one release (`inbox` runs `history --since 72h`, `ack`
-  does nothing, since reading the value is the ack), and the server keeps
-  `POST …/ack` for older CLIs.
+  admin reading it changes nothing.
 - **Pull (the agent needs a key):** `keydrop request NAME --desc …` creates
   an empty placeholder and returns a link to it. The agent sends the link
   to the human, who opens it on their phone and pastes the value.
@@ -478,8 +461,9 @@ every read logged, no way to just look). So an entry is either a
   `=` must be followed by something other than `=` or the end, so base64
   padding passes. "Save it exactly as pasted" skips the check (and the
   trimming).
-- The one outgoing notification is the canary alert (below). Everything
-  else, including telling a person what an agent did, is the job of
+- The only outgoing notifications are the alerts for canaries and refused
+  token collects (see [Canary secrets](#canary-secrets)). Everything else,
+  including telling a person what an agent did, is the job of
   whatever runs the agents, not of keydrop.
 
 ### Groups
@@ -543,14 +527,7 @@ limited to what it needs:
   agent changes it while the admin is reviewing, approve and reject are
   refused and the admin sees the new one. Once approved, the description
   stays marked as written by that agent until the admin changes its text
-  (saving it unchanged keeps the mark). The release before this one wrote
-  request text straight into the description; on load, a still-pending
-  request's text becomes the requester's proposal again, and a filled
-  request's description is marked as written by the requester (once,
-  recorded in `fixups`; see the two-MAC note below). A description a
-  write token set with `put --desc` in that release left no record of who
-  wrote it, so it can't be told apart from the admin's and stays as it
-  is.
+  (saving it unchanged keeps the mark).
 - Flags, statuses and notes share a per-token rate limit, 60 an hour, and
   puts and requests another, 200 an hour (both in memory, so a restart
   resets them), then 429. All agent text (descriptions, usage, flag
@@ -566,22 +543,24 @@ limited to what it needs:
   calls.
 
 ### Audit log
-- Anyone who can reach keydrop can cause some events without a credential
-  (`api.badtoken`, `pair.request`, `pair.wrongaddr`, `login.locked`).
-  Those go through `noisyEvent`: one per minute per address (IPv6: /64) and
+- Anyone who can reach keydrop can cause some events without a working
+  credential (`api.badtoken`, `token.expired`, `token.replaced`,
+  `pair.request`, `pair.wrongaddr`, `login.locked`). Those go through `noisyEvent`: one per minute per address (IPv6: /64) and
   action, 60 a minute in all, and the next recorded one carries the count
   of those left out. So a flood shows up in the log without filling the
-  disk. Events that need a token or a session are all logged.
+  disk. Events that need a token or a session are all logged, except
+  `token.denied`, which has the same limit so a refused token can't rotate
+  the log.
 - Every field is cut at 200 bytes (an agent's `?purpose=` included),
   except a flag's reason and link, kept whole (up to 1100 bytes) in their
   own field and shown on the audit page as agent-written text; and
   each file rotates at 10 MiB.
 - The unauthenticated events go to `audit-unauth.jsonl` (one old copy
   kept) and have their own in-memory list; everything that needs a token
-  or a session goes to `audit.jsonl` (five old copies). Even throttled,
-  noise from the network used to share one file with one old copy, so it
-  could rotate `secret.read` events off the disk within a day or two.
-  Now it can only rotate itself. The UI merges the two lists by time.
+  or a session goes to `audit.jsonl` (five old copies). So noise from the
+  network can only rotate itself, never `secret.read` events off the disk.
+  The UI merges the two lists by time, and only the last 512 KiB of each
+  file is read at start.
 
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated
@@ -593,7 +572,7 @@ limited to what it needs:
 - `tls.key` is stored sealed (AES-GCM, AAD `blob:tls.key`) in a PEM block
   of type `KEYDROP SEALED PRIVATE KEY`, so a copy of the data can't
   impersonate the pinned server. The server refuses a plaintext `tls.key`
-  (from an older release, or `downgrade-data`) instead of sealing it;
+  (from a development build, or `downgrade-data`) instead of sealing it;
   `keydrop upgrade-data` seals it in place, keeping the key and
   certificate (and so the pin). The PEM type ends in ` PRIVATE KEY` on
   purpose: an older release fails to parse it and refuses to start,
@@ -616,78 +595,12 @@ limited to what it needs:
   tells the operator to run `keydrop upgrade-data` once. That command
   vouches for the file as it is (adds the MAC, seals `tls.key`), so it's
   an explicit step, not something an attacker who can write the data
-  directory can trigger by restarting the container. An earlier release
-  did upgrade on start, which let anyone with write access to the data
-  directory and any v1 copy swap in the old key check, drop the MAC, edit
-  tokens or the admin hash, and have the edit accepted. A MAC failure
-  stops the server. `keydrop downgrade-data` puts the v1 key check back
+  directory can trigger by restarting the container. Upgrading on start
+  would let anyone with write access to the data directory and any v1 copy
+  swap in the old key check, drop the MAC, edit tokens or the admin hash,
+  and have the edit accepted. A MAC failure stops the server. `keydrop downgrade-data` puts the v1 key check back
   (and unseals `tls.key`) for going back to an older release; this
   release then refuses the data until `upgrade-data` is run again.
-- **Two MACs, so the previous release can still read the file.** The
-  fields added since then (`history`, `fixups`, per-secret `ext` with
-  status, flags, notes, proposals and `created_by`, and the token's `add`)
-  are optional.
-  `mac` is computed over the state with those fields zeroed, which
-  marshals byte for byte as the previous release writes it, so that
-  release verifies it and starts. `mac2` (keyed with `HKDF(master key,
-  "state mac v2")`) covers the whole state and is written whenever a newer
-  field is set; when either is present, `mac2` must verify. Stripping
-  *every* newer field and `mac2` gives a file the previous release could
-  have written, which is accepted: that's the same as putting back an older
-  copy (below), and can only drop annotations or turn an add token into a
-  read-only one. When the previous release rewrites the file it drops all
-  of them (history, statuses, flags, notes, proposals), and add tokens
-  become read-only. Every new optional field has to go in `ext` or be
-  zeroed in `legacyView`, or the previous release stops verifying the
-  file. A load-time fix-up of data the previous release wrote (`fixups`
-  counts the ones done) changes only fields that release also has, or
-  `ext`, so the file stays one it can read; when that release rewrites
-  the file it drops `fixups`, and the fix-ups run again on what it wrote,
-  which only touches what it could have written.
-- **A third MAC for groups.** The release before groups (265e513)
-  parses `ext`, `history` and the rest, and checks `mac2` over everything
-  it parsed. So the group fields (`groups` and `settings` in the state,
-  `group` and `batch` on a key) can't be covered by `mac2`: `mac2` now
-  covers `v2View()`, the state with those fields zeroed, which is what
-  that release parses, and `mac3` (keyed with `HKDF(master key, "state mac
-  v3")`) covers everything. `mac3` is written whenever a group field is
-  set and must verify when either is present. As with `mac2`, stripping
-  every group field and `mac3` gives a file that release could have
-  written, which is accepted; it can only drop groups, the auto-groups
-  setting and batch links. When that release rewrites the file, those are
-  gone; the keys and their values stay. The e2e suite starts both older
-  releases on grouped data, lets them rewrite it, and opens the result.
-- **A fourth MAC for expiry, renewals and canaries.** The release before
-  them (5f2f64e) checks `mac3` over everything it parses, so `mac3` now
-  covers `v3View()` (the state with `expires_at`, `lifetime`, `renewal`,
-  `rotation`, per-secret `canary` and the `canary` state zeroed) and
-  `mac4` (`HKDF(master key, "state mac v4")`) covers everything. Unlike
-  the earlier optional fields, these restrict access: stripping a token's
-  expiry or rotation would revive it. So stripping isn't accepted: the
-  first save that writes any of them seals a new key check,
-  `keydrop-key-check:v4`, which says `mac4` is required whatever the file
-  holds, and only `keydrop downgrade-data` takes it back. The previous
-  release doesn't know that key check and refuses to start ("master key
-  does not match") until `downgrade-data` is run. `downgrade-data` goes
-  back one format per run: from v4 it drops these fields (tokens stop
-  expiring, pending renewal requests are dropped, tokens with an
-  uncollected rotation are deleted since only the new token would work,
-  canaries become ordinary secrets, the canary Inbox entries go; the
-  audit log keeps everything) and lists by name what it dropped; run
-  again, it goes back to the v1 key check as before.
-- **A fifth MAC for the alert webhook.** 631f015 checks `mac4` over all it
-  parses, so `mac4` now covers `v4View()` (the state with `alerts`
-  zeroed) and `mac5` (`HKDF(master key, "state mac v5")`) covers
-  everything; `mac5` is written whenever `alerts` is set and must verify
-  when either is present. The webhook doesn't restrict access, so it
-  doesn't need the key check: stripping `alerts` and `mac5` gives a file
-  631f015 could have written, and only loses the webhook.
-- **A sixth MAC for self-upgrade.** 8acec14 checks `mac5` over all it
-  parses, so `mac5` now covers `v5View()` (each token's `self_upgrade`
-  zeroed) and `mac6` (`HKDF(master key, "state mac v6")`) covers
-  everything; `mac6` is written whenever any token has it on and must
-  verify when either is present. Stripping both turns self-upgrade off,
-  the cautious default, so it needs no key check either.
 - What the MAC can't stop: putting back an older complete copy of the
   data in the current format, which verifies fine (revoked tokens and old
   passwords come back with it). Metadata (names, descriptions, the
@@ -702,6 +615,47 @@ limited to what it needs:
   data directory. Both are documented limitations.
 - Tokens are 256-bit random values with a `kd_` prefix, so they're easy to
   grep for if they leak. Only the SHA-256 hash is stored.
+
+### Data format history
+Older builds can still read what this one writes, as far as they're able.
+Each build checks its newest MAC over everything it parses, so each time
+optional fields were added, the old top MAC moved to a view of the state with
+those fields zeroed (byte for byte what that build writes), and a new MAC,
+keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
+
+| MAC | Covers | The build that reads it | Fields added on top of it | Can they be stripped? |
+|---|---|---|---|---|
+| `mac` | `legacyView()` | 0d6e2d8 | `history`, `fixups`, per-secret `ext` (status, flags, notes, proposals, `created_by`), the token's `add` | Yes, with `mac2`: only drops annotations, or turns an add token read-only |
+| `mac2` | `v2View()` | 265e513 | `groups`, `settings`, a key's `group` and `batch` | Yes, with `mac3`: only drops groups, the auto-groups setting and batch links |
+| `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
+| `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
+| `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
+| `mac6` | everything | this one | | |
+
+- Each newer MAC is written whenever one of its fields is set, and when the
+  MAC or any of those fields is present, it must verify. Stripping every
+  field of a set and its MAC gives a file that build could have written,
+  which is accepted: that's the same as putting back an older copy.
+- **Expiry, renewal and canary fields restrict access:** stripping a token's
+  expiry or rotation would revive it. So the first save that writes any of
+  them seals a new key check, `keydrop-key-check:v4`, which says `mac4` is
+  required whatever the file holds, and only `keydrop downgrade-data` takes
+  it back. An older build doesn't know that key check and refuses to start
+  ("master key does not match") until `downgrade-data` is run.
+- `downgrade-data` goes back one format per run: from v4 it drops these
+  fields (tokens stop expiring, pending renewal requests are dropped, tokens
+  with an uncollected rotation are deleted since only the new token would
+  work, canaries become ordinary secrets, the canary Inbox entries go; the
+  audit log keeps everything) and lists by name what it dropped; run again,
+  it goes back to the v1 key check.
+- When an older build rewrites the file it drops the fields it doesn't know;
+  keys and their values stay. The e2e suite starts the older builds on data
+  this one wrote, lets them rewrite it, and opens the result.
+- Every new optional field has to stay outside every older view (the rules
+  are in AGENTS.md). A load-time fix-up (`fixups` counts the ones done)
+  changes only fields the previous build also has, or `ext`, so the file
+  stays one it can read; when that build rewrites the file it drops
+  `fixups`, and the fix-ups run again on what it wrote.
 
 ### Admin login
 - Password (PBKDF2-HMAC-SHA256, 600,000 iterations, minimum 12
@@ -735,10 +689,7 @@ limited to what it needs:
   `internal/qr` is a small stdlib-only encoder), an `otpauth://` link (on
   a phone, tapping it opens the authenticator app) and the key as text.
   `KEYDROP_RESET_ADMIN=true` reopens setup without touching secrets.
-- Sessions: a `__Host-` cookie, `HttpOnly`, `SameSite=Strict`, 1 hour idle
-  and 8 hours maximum. Every form has a CSRF token, and cross-site requests
-  (`Sec-Fetch-Site`) are refused.
-- Headers: strict CSP, `X-Frame-Options: DENY`, `no-referrer`, `no-store`.
+- Sessions and headers are listed in [Security](security.md#security-design).
 
 ### Transport
 - HTTPS by default with a self-signed certificate kept in the data
@@ -764,8 +715,8 @@ The server hands out the CLI it was built with: every image carries all
 six builds (linux, darwin, windows × amd64, arm64), gzipped in `/cli`.
 `GET /install.sh` picks one with `uname`, checks `SHA256SUMS` and installs
 it; `GET /cli/<build>` serves the file. Why the server and not GitHub
-releases: an agent needs no GitHub access (the repo may be private), and
-the CLI's version always equals the server's.
+releases: an agent needs no GitHub access, and the CLI's version always
+equals the server's.
 
 The trust question is the first download, before the agent has paired.
 Straight to keydrop, the command is `curl -k --pinnedpubkey sha256//…`:
@@ -790,7 +741,7 @@ seconds is cut off, and none runs past 10 minutes. Authenticated API responses c
 compatibility levels below. They aren't sent to anyone without a token, so
 the server doesn't announce its version.
 
-**CLI compatibility.** Every dev push changes the version, so a version
+**CLI compatibility.** Every build changes the version, so a version
 mismatch alone said nothing about whether an older CLI still works, and
 warning on every one taught agents to ignore it. So there are two numbers
 in `internal/server/compat.go`: `APILevel`, raised when the agent API
@@ -856,74 +807,20 @@ Non-root, read-only root filesystem, `cap_drop: ALL`,
 and update deliberately: a bad image of this app exposes every key.
 
 ### Configuration
-Everything is configured by env vars, with no lab-specific values in the
-code. The full list is in [Configuration](install.md#configuration).
+Everything is configured by env vars, with no deployment-specific values in
+the code. The full list is in [Configuration](install.md#configuration).
 
 ## Build and release
-- CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, and a
-  Docker build on every push and pull request, and the end-to-end suite
-  (`go test -tags e2e ./e2e/...`) as a separate job with the full history,
-  since its upgrade test builds the release before the integrity check.
-  The suite also builds a test binary with the `e2eclock` tag, whose
-  clock (server and CLI) reads an offset from `KEYDROP_E2E_CLOCK_FILE`,
-  to test expiry and the renewal windows without waiting; release builds
-  don't include it. A push publishes nothing: `release.yml` does, started
-  by hand with a branch and a tag, so a test image is a run with a tag
-  like `dev` (its version is `dev-<sha>`; pin the digest). CI also starts
-  the image, installs the CLI
-  with its own pinned `install.sh`, checks `--version`, and checks that a
-  wrong pin is refused. The bundle comes from the Dockerfile, so no release
-  can ship without it.
-- Release (`release.yml`, on a `v*` tag): cross-built CLI binaries with
-  `SHA256SUMS` on the GitHub release, and a multi-arch image (amd64, arm64)
-  on GHCR with SBOM and provenance attestations. GitHub-hosted runners
-  only. Don't use a self-hosted runner on a public repo: a fork's pull
-  request could run code on it.
-- Go cross-compiles from any OS: `GOOS=linux GOARCH=amd64 go build ./cmd/keydrop`.
+CI, publishing and Renovate are in [Development](development.md). What the
+design depends on:
 
-## Status
-
-v0.1 (MVP), not yet released:
-
-- **Done:** server, web UI, admin password + optional TOTP, namespaced agent
-  tokens (read, add, write), `run` with masking, variables,
-  `secrets`/`vars`/`info`/`history`, statuses, flags, notes with admin
-  approval,
-  `request`/`wait`, `get --to-file`, `put`, `import`, `expiring`,
-  change password, pairing, allowed sources, agent labels, audit log,
-  TLS with pinning, Dockerfile, CI and release
-  workflows, unit tests.
-- **Tested so far:** unit tests, and an end-to-end suite (`e2e/`, run in
-  CI) that drives the built binary as server and CLI: setup and login
-  through the forms, pairing, listing without values, `run` masking (plain,
-  base64, Basic auth), exit codes, environment and argv, write and
-  read-only tokens, requests, revoke, a wrong pin, `get --to-file`, a
-  restart, `upgrade-data`/`downgrade-data` against the previous format,
-  `rotate-tls` with re-pinning, add-token limits (including another
-  token's request), *new* clearing when an agent reads a value, flag text
-  hidden from agents, statuses (set by a read-only token, and the admin's
-  not clearable by tokens) and the `run` warning, note approval, the
-  `inbox` alias, revoke clearing a token's requests, notes and proposals,
-  the put/request rate limit and per-namespace history, and the previous
-  release starting on (and rewriting) data this one wrote, including its
-  request text coming back as a proposal.
-- **Not yet checked:** the UI in a real browser (phone especially), the
-  Docker image build, and the CI and release workflows.
-
-## Roadmap
-
-1. **Before v0.1.0:** check the UI on a phone, confirm the Docker build and
-   CI, choose a license.
-2. **Agent integrations:** ship the example hook scripts from
-   [agent-setup.md](agent-setup.md) (session-start history, the `--raw` guard) as
-   files rather than docs.
-3. **Later:**
-   - Passkeys (WebAuthn) for admin login.
-   - Trusted proxy-header auth (Authelia, Authentik), deliberately left
-     out of v1 because a misconfigured proxy would bypass the login.
-   - An MCP server exposing **metadata only** (`secrets`, `vars`, `history`, `request`).
-     A tool that returns values would put them in the transcript.
-   - `--stdin-to CMD` (for example `docker login --password-stdin`).
-   - Optional per-secret allowlists inside a namespace.
-   - Version history beyond one previous value.
-   - An OpenAPI description of the agent API.
+- The end-to-end suite runs as a separate job with the full history, since
+  it builds older commits. It also builds a test binary with the `e2eclock`
+  tag, whose clock (server and CLI) reads an offset from
+  `KEYDROP_E2E_CLOCK_FILE`, to test expiry and the renewal windows without
+  waiting; release builds don't include it.
+- CI starts the image, installs the CLI with its own pinned `install.sh`,
+  checks `--version`, and checks that a wrong pin is refused. The bundle
+  comes from the Dockerfile, so no release can ship without it.
+- GitHub-hosted runners only. Don't use a self-hosted runner on a public
+  repo: a fork's pull request could run code on it.

@@ -5,10 +5,15 @@ The [agent setup guide](agent-setup.md) does all of this for you. These are the 
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-docker run --rm ghcr.io/minituff/keydrop genkey > master.key
+# Makes the key, private from the start, and never replaces an existing one.
 # Compose mounts the file as it is on the host, and the container runs as
-# uid 65532, so give it the key (and only it):
-sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+# uid 65532, so the key then goes to it (and only it).
+if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+  sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+else
+  [ -s master.key ] || rm -f master.key
+  echo "No new master.key was made. If one exists, it was left alone."
+fi
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 # edit KEYDROP_PUBLIC_URL and KEYDROP_TLS_HOSTS, then:
 docker compose -f compose.example.yml up -d
@@ -26,10 +31,24 @@ The log prints two things:
    Settings.
 2. **The certificate pin** (`KEYDROP_TLS_PIN=sha256:…`). Agents need this.
 
-**Back up `master.key` separately from `data/`.** Without it the data can't be
-read, which is deliberate.
+## The master key
 
-Keep the master key safe: [what it protects](security.md#what-the-master-key-protects).
+keydrop encrypts everything with this key, and never writes it to `data/`.
+
+- **Make it once.** The commands above won't replace an existing
+  `master.key`. Don't generate a new one for a server that's in use: a new key
+  can't read the old data.
+- **Use the same file on every start.** If you move the server, move
+  `master.key` with `data/`.
+- **Back it up away from `data/`,** for example in your password manager.
+  Someone with both can read every value.
+- **If you lose it,** nothing stored can be recovered, and there's no reset.
+  You'd start again with a new key and an empty `data/`.
+- **If it leaks,** and someone may also have a copy of `data/`, treat every
+  value as exposed. keydrop can't change the key of existing data, so start a
+  new server with a new key, and replace each value where it was issued.
+
+More on [what it protects](security.md#what-the-master-key-protects).
 
 ## Configuration
 
@@ -45,7 +64,7 @@ Keep the master key safe: [what it protects](security.md#what-the-master-key-pro
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
-| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible; Slack and ntfy accept it too). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
+| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
 override the files written by `keydrop pair` / `keydrop login`. A pin
@@ -55,11 +74,11 @@ the check.
 
 ## Behind a reverse proxy
 
-keydrop serves HTTPS itself. With Traefik in front, either point Traefik
-at `https://keydrop:8443` with a `serversTransport` that skips verification,
-or set `KEYDROP_TLS=off` and keep the hop on a private Docker network. Set
-`KEYDROP_TRUSTED_PROXIES` to the proxy's IP. The proxy must send
-`X-Forwarded-Proto: https` (Traefik does by default); without it keydrop
+keydrop serves HTTPS itself. With a reverse proxy in front, either point it
+at `https://keydrop:8443` and turn off certificate verification for that hop
+(in Traefik, a `serversTransport` that skips it), or set `KEYDROP_TLS=off` and
+keep the hop on a private Docker network. Set `KEYDROP_TRUSTED_PROXIES` to the
+proxy's IP. The proxy must send `X-Forwarded-Proto: https`; without it keydrop
 won't serve `/install.sh` or `/setup.md` through the proxy, since it can't
 tell the client didn't use plain http. Agents can still talk to the
 container directly with the pinned certificate, so they don't depend on the

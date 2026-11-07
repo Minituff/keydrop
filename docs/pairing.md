@@ -1,9 +1,9 @@
 # Pairing an agent by hand
 
-0. Install the CLI. The server hands out its own build for Linux and
-   macOS (amd64 and arm64), so the CLI is always the server's version and
-   the machine needs nothing but `curl`. The exact command is on the
-   **Agents** page and in the server log:
+0. Install the CLI. The server hands out its own build, so the CLI is always
+   the server's version. On Linux and macOS (amd64 and arm64) the machine
+   needs nothing but `curl`. The exact command is on the **Agents** page and
+   in the server log:
    ```sh
    curl -fsSk --pinnedpubkey 'sha256//…' https://192.168.1.50:8443/install.sh | sh
    ```
@@ -12,14 +12,8 @@
    a different binary. Behind a proxy with a real certificate it's just
    `curl -fsS https://secrets.example.com/install.sh | sh`. The script
    picks the build with `uname`, checks it against `SHA256SUMS`, and
-   installs to `~/.local/bin` (`KEYDROP_INSTALL_DIR` to change). Windows:
-   download the `.exe` from Agents → Add. Tagged releases also attach
-   every build to the GitHub release. `keydrop --version` shows the build;
-   the CLI warns once if it doesn't match the server's. Settings shows the
-   server's build, its commit time and when it started, and the
-   Appearance choice (System, Light or Dark; a cookie per browser); images built by
-   CI link the version to its commit (build args `COMMIT`, `COMMIT_TIME`,
-   `REPO_URL`).
+   installs to `~/.local/bin` (`KEYDROP_INSTALL_DIR` to change). For
+   Windows, see [below](#windows).
 1. On the agent's machine, as the agent's user (or let the agent run it):
    ```sh
    keydrop pair --url https://192.168.1.50:8443 --pin sha256:…
@@ -27,8 +21,10 @@
    It prints a link and a short code, then waits.
 2. Open the link (logged in to keydrop). The page shows the code and the
    address the request came from. Check the code matches, then choose the
-   agent's name, its namespaces (tick existing ones, or type new ones), its permission (read, add or write), and where it's
-   allowed from (pre-filled with that address). Approve.
+   agent's name, its namespaces (tick existing ones, or type new ones), its
+   permission (read, add or write), where it's allowed from (pre-filled with
+   that address), how often it gets a new token, and whether it may upgrade
+   its own CLI. Approve.
 3. `keydrop pair` picks up the token within a few seconds and writes
    `~/.config/keydrop/{url,token,pin}` with mode 600. The token never
    passes through the chat or the page. If it was interrupted, running
@@ -72,10 +68,6 @@ This needs a write token. A variable an agent stores can be at most 2,000
 characters on one line, and other agents see it labelled as untrusted text.
 `put` takes text up to 60 KiB; base64 a binary value first.
 
-`keydrop inbox` and `keydrop ack` are the old names: for one more release
-`inbox` runs `history --since 72h` and `ack` does nothing (reading a value
-is what marks it as no longer new), each with a note on stderr.
-
 To migrate an existing `.env` (needs a token with add or write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
 lines above a key become its description, and each key keeps its name
@@ -102,6 +94,20 @@ not an identity: anything with the token can set it.
 
 Without pairing, you can still create a token by hand under **Agents** and
 paste it into `keydrop login --url URL`.
+
+## Windows
+
+`install.sh` is for Linux and macOS. On Windows, download the build under
+**Other systems** on the **Agents → Add an agent** page and check it against
+`SHA256SUMS`. Releases on GitHub carry every build too. The CLI keeps its
+files in `%USERPROFILE%\.config\keydrop`, and works from there like on any
+other system, except that Windows has no file modes, so there's no warning
+about a token file other users could read.
+
+`keydrop --version` shows the build on any system. keydrop tells you, at most
+once a day, if it doesn't match the server's.
+
+## What to read next
 
 The rules to give the agent (for its `CLAUDE.md` or `AGENTS.md`), a
 session-start history hook and a guard against `--raw` are in

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -66,6 +67,9 @@ type file struct {
 	f      *os.File
 	size   int64
 	recent []Event
+	// failing: the last write failed, so the next failure isn't reported
+	// again in keydrop's log.
+	failing bool
 }
 
 // NoisePath is where the unauthenticated events for the main log at path
@@ -146,14 +150,14 @@ func (lf *file) open() error {
 
 // rotate shifts <path>.1 … to .2 …, dropping the oldest, moves the file to
 // <path>.1 and starts a new one.
-func (lf *file) rotate() {
+func (lf *file) rotate() error {
 	lf.f.Close()
 	lf.f = nil
 	for i := lf.gens - 1; i >= 1; i-- {
 		_ = os.Rename(fmt.Sprintf("%s.%d", lf.path, i), fmt.Sprintf("%s.%d", lf.path, i+1))
 	}
 	_ = os.Rename(lf.path, lf.path+".1")
-	_ = lf.open()
+	return lf.open()
 }
 
 func (lf *file) push(e Event) {
@@ -163,23 +167,37 @@ func (lf *file) push(e Event) {
 	}
 }
 
-func (lf *file) write(e Event, maxBytes int64) {
+// write appends e, reopening the file if an earlier failure closed it, so
+// logging comes back by itself once the disk does.
+func (lf *file) write(e Event, maxBytes int64) error {
+	err := lf.tryWrite(e, maxBytes)
+	if err != nil && !lf.failing {
+		log.Printf("audit: can't write to %s: %v", lf.path, err)
+	} else if err == nil && lf.failing {
+		log.Printf("audit: writing to %s again", lf.path)
+	}
+	lf.failing = err != nil
+	return err
+}
+
+func (lf *file) tryWrite(e Event, maxBytes int64) error {
 	if lf.f == nil {
-		return
+		if err := lf.open(); err != nil {
+			return err
+		}
 	}
 	b, err := json.Marshal(e)
 	if err != nil {
-		return
+		return err
 	}
 	if maxBytes > 0 && lf.size+int64(len(b))+1 > maxBytes && lf.size > 0 {
-		lf.rotate()
-		if lf.f == nil {
-			return
+		if err := lf.rotate(); err != nil {
+			return err
 		}
 	}
-	if n, err := lf.f.Write(append(b, '\n')); err == nil {
-		lf.size += int64(n)
-	}
+	n, err := lf.f.Write(append(b, '\n'))
+	lf.size += int64(n)
+	return err
 }
 
 // clip shortens s to at most MaxField bytes, on a rune boundary.
@@ -196,10 +214,15 @@ func clipTo(s string, n int) string {
 	return s[:cut] + "…"
 }
 
-// Add records an event. Write errors are ignored: auditing must not take the
-// service down, and the event is still kept in memory. An event with
+// Add records an event. A write error doesn't stop the caller: auditing
+// must not take the service down, the event is still kept in memory, and
+// keydrop's log says so. Use Record for what must not happen unlogged.
+func (l *Log) Add(e Event) { _ = l.Record(e) }
+
+// Record is Add that returns the write error, for a caller that must not go
+// on without a record on disk: showing a secret. An event with
 // Unauthenticated set goes to the unauthenticated log.
-func (l *Log) Add(e Event) {
+func (l *Log) Record(e Event) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
@@ -212,7 +235,7 @@ func (l *Log) Add(e Event) {
 		lf = l.noise
 	}
 	lf.push(e)
-	lf.write(e, l.MaxBytes)
+	return lf.write(e, l.MaxBytes)
 }
 
 // Recent returns up to n events from both logs, newest first.

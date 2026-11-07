@@ -19,18 +19,23 @@ var (
 	repoURL    string
 )
 
+// upgrade-data and downgrade-data are left out of the usage on purpose: they
+// only matter for data written before the first release (docs/upgrading.md).
 const usage = `keydrop — a secret drop for homelab agents.
 
 Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
-                                         secrets masked (-e NAME sets $NAME; VAR=REF renames)
+                                         secrets masked (-e NAME sets $NAME; VAR=REF renames;
+                                         --no-mask turns masking off, and is logged)
   secrets [--new] [--pending]           list secrets this token can see (no values;
                                          --new: changed since this token last read it),
                                          under [namespace: group] headings
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
-  history [NAME] [--since 72h]          recent changes to what this token can see: who
-                                         did what, when (values never shown)
+  history [NAME] [--since 72h] [--quiet]
+                                        recent changes to what this token can see: who
+                                         did what, when (values never shown; --quiet:
+                                         print nothing when nothing changed)
   flag REF ["reason"] [--link URL]      ask the admin to look at a key (the reason
                                          and link are the admin's only)
   status REF ok|expired|revoked|leaked|replaced-by NAME
@@ -50,10 +55,13 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   put REF [--var] [--desc …]            store a value read from stdin (add or write
                                          tokens; --var: a variable, not a secret,
                                          write tokens only)
-  import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (add or write tokens)
-  pair --url URL [--pin sha256:…]       ask the admin for a token; prints a link to
+  import FILE [--namespace NS] [--vars] [--overwrite] [--dry-run]
+                                        upload a KEY=VALUE env file (add or write tokens;
+                                         --vars: as variables, write tokens only)
+  pair --url URL [--pin sha256:…] [--new]
+                                        ask the admin for a token; prints a link to
                                          approve, waits, then saves it (run again
-                                         to keep waiting)
+                                         to keep waiting; --new: start a new request)
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
   whoami                                show the token's name, namespaces, permission and
                                          expiry
@@ -65,23 +73,11 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          (checked against its SHA256SUMS; the old binary is
                                          kept as .<version>.bak). Run it when keydrop says
                                          the server is a different build
-  inbox, ack                            deprecated: inbox runs history --since 72h,
-                                         ack does nothing (reading a value marks it read)
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
   genkey                                print a new master key
   healthcheck                           exit 0 if the local server answers (for Docker)
-  upgrade-data                          with the server stopped, once: move a data directory
-                                         from a release before the integrity check to the
-                                         current format (HMAC the state, seal tls.key; the
-                                         pin doesn't change). The server won't start until then
-  downgrade-data                        with the server stopped: step the data directory back
-                                         one format. First to the release before token expiry
-                                         and canaries (lists what's dropped: expiry, renewals,
-                                         uncollected renewed tokens, canary flags), then, run
-                                         again, undo upgrade-data for a release before the
-                                         integrity check
   rotate-tls                            with the server stopped: replace the self-signed
                                          certificate (old files kept as .bak); prints the
                                          new pin, which every agent then needs

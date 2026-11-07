@@ -12,7 +12,7 @@ isn't worth it.
 
 | Page | Read it before changing | Covers |
 |---|---|---|
-| [docs/design_doc.md](docs/design_doc.md) | Any behaviour: `internal/store`, `internal/auth`, `internal/server` (API, pairing, TLS), `cmd/keydrop`, the data format | The design, the reasons behind it, and what's planned |
+| [docs/design_doc.md](docs/design_doc.md) | Any behaviour: `internal/store`, `internal/auth`, `internal/server` (API, pairing, TLS), `cmd/keydrop`, the data format | The design and the reasons behind it |
 | [docs/ui.md](docs/ui.md) | Anything in `internal/server/web/` (`style.css`, templates) or UI handlers in `ui.go` | Light/dark palette, components, phone layout, how to check a page |
 | [docs/agent-setup.md](docs/agent-setup.md) | The agent setup flow, `setup.go`, `agent-setup.md.tmpl`, CLI commands agents use | Setting up keydrop with an AI agent (part of it is generated; see Conventions) |
 
@@ -22,8 +22,9 @@ here and a row in this table.
 
 The other pages in `docs/` are for **people** deciding whether to run keydrop
 and setting it up: `features.md`, `security.md`, `install.md` (including the
-configuration table), `pairing.md`, `upgrading.md`, `api.md` and
-`development.md`. They're also the MkDocs site (`mkdocs.yml`, built by the
+configuration table), `pairing.md`, `upgrading.md` and `api.md`, plus
+`development.md` for people working on it, which also shows how releases are
+built and what's planned. They're also the MkDocs site (`mkdocs.yml`, built by the
 `docs` workflow, published only by hand). Write them in plain words for a
 human; keep the README short and link to them. `docs/index.md` is generated
 from `README.md`: after editing the README run `sh scripts/docs-index.sh`
@@ -37,7 +38,8 @@ made-up data.
   POST with the CSRF token), never in a list, a URL or a redirect. Agents
   get secrets only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a
   token. Both are audit-logged, and those are the only two ways a secret
-  leaves the server. **Variables** (`Secret.Variable`) are the deliberate
+  leaves the server. A view that can't be written to the audit log fails:
+  no record, no value (`audit.Record`). **Variables** (`Secret.Variable`) are the deliberate
   exception: their values appear in lists and API responses, reads aren't
   logged, and `run` doesn't mask them. Any code that shows a value must
   check the kind, via `store.VariableValue`, which refuses secrets.
@@ -58,12 +60,15 @@ made-up data.
   and only within `RenewalGrace`; a replaced one only those too. The only
   unauthenticated API endpoints are `/api/v1/pair` and `/api/v1/pair/poll`;
   keep them capped.
-- **Pairing and renewal are the only ways a token is handed over.** Both
+- **Pairing and renewal are the only automatic ways a token is handed
+  over.** Both
   need the admin's approval in the UI, and both hand the token only to the
   address that asked. A renewed token is sealed under the master key until
   collected; it's never stored in plaintext or shown to the admin. The CLI
   writes a collected token atomically (lock, temp file, fsync, rename) and
-  never prints it.
+  never prints it. The one exception is a token the admin makes by hand on
+  the Agents page, for scripts and machines that can't pair: it's shown once,
+  to the admin, isn't tied to an address, and goes in with `keydrop login`.
 - **A canary is indistinguishable to agents.** No API response, error,
   header or code path may differ between a canary and an ordinary secret
   as seen by the token. Every agent call on one (read, write, status, flag,
@@ -76,8 +81,8 @@ made-up data.
   data directory. `tls.key` is sealed too, and `keydrop.json` is HMAC'd
   with a key derived from the master key (`Store.DeriveKey`; never reuse
   the encryption key for anything else). Any change to the data format
-  needs a migration, a way back (`keydrop downgrade-data`) and a README
-  note under "Upgrading and rolling back". The server never upgrades
+  needs a migration, a way back (`keydrop downgrade-data`) and a note in
+  `docs/upgrading.md`. The server never upgrades
   data on start: a format the HMAC doesn't cover is refused, and the
   operator migrates it with `keydrop upgrade-data` (otherwise anyone who
   can write the data directory could get an edited old-format file
@@ -168,9 +173,9 @@ free localhost port with a temporary data directory, drives the admin web
 forms over HTTP and runs the CLI as an agent would, with `HOME` in a
 temporary directory (your own `~/.config/keydrop` is never read). It takes
 a few seconds after the build and needs `sh`, `base64` and `sha256sum`. The
-upgrade test also builds the release at the previous data format from git
-history (`git worktree`, removed afterwards); in a shallow clone it skips
-with a message, so fetch the full history to run it. CI runs the suite as
+upgrade and rollback tests also build older commits from git history (`git
+worktree`, removed afterwards); in a shallow clone they skip with a message,
+so fetch the full history to run them. CI runs the suite as
 its own job. When a change touches the server and CLI together (pairing,
 `run`, the data format, TLS), add a step there as well as unit tests.
 
@@ -220,6 +225,8 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 ## Git
 
 - Work on `dev`; `main` is for releases. CI runs on both.
+- Never squash or rewrite history, and never force-push: the e2e tests build
+  old releases by commit hash, and those commits have to stay reachable.
 - Commit messages: a short summary line, then the why if it isn't obvious.
   No AI attribution lines (`Co-Authored-By`, "Generated with …").
 - Never commit real secrets, master keys, tokens or data directories, even

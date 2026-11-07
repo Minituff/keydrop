@@ -18,3 +18,14 @@ func TestTrailingWhitespaceVariant(t *testing.T) {
 		}
 	}
 }
+
+// Too short once trimmed means the caller has to warn: "abc" can't be
+// masked, even though "abc" plus a newline is long enough to add.
+func TestAddReportsShortTrimmedValue(t *testing.T) {
+	for _, stored := range []string{"abc\n", "  ab  ", "    "} {
+		var m Masker
+		if m.Add("K", []byte(stored)) {
+			t.Fatalf("%q reported as masked", stored)
+		}
+	}
+}

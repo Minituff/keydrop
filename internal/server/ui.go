@@ -213,6 +213,12 @@ func (s *Server) handleCSS(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
+// recordRead is event for showing a secret: the caller mustn't show it if
+// this returns an error.
+func (s *Server) recordRead(r *http.Request, actor, action, target, detail string) error {
+	return s.audit.Record(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r)})
+}
+
 func (s *Server) event(r *http.Request, actor, action, target, detail string) {
 	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r)})
 }
@@ -754,7 +760,11 @@ func (s *Server) handleReveal(w http.ResponseWriter, r *http.Request, _ string, 
 		return
 	}
 	if !variable {
-		s.event(r, "admin", "secret.reveal", ns+"/"+name, "web UI")
+		// Every view is logged, so no record means no view.
+		if err := s.recordRead(r, "admin", "secret.reveal", ns+"/"+name, "web UI"); err != nil {
+			s.renderSecret(w, r, se, http.StatusInternalServerError, "Couldn't write this view to the audit log, so the value isn't shown. Check the disk and keydrop's log.")
+			return
+		}
 	}
 	s.renderSecretWith(w, r, se, http.StatusOK, "", string(val))
 }

@@ -16,8 +16,8 @@
 
   <p>
     <a href="#quick-start">Quick start</a> ·
-    <a href="features.md">Features</a> ·
-    <a href="security.md">Security</a> ·
+    <a href="features/">Features</a> ·
+    <a href="security/">Security</a> ·
     <a href="#documentation">Docs</a>
   </p>
 </div>

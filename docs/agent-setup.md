@@ -95,11 +95,11 @@ On that machine:
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-if [ -e master.key ]; then echo "master.key already exists: STOP"
+if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+  sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
-  docker run --rm ghcr.io/minituff/keydrop genkey > master.key
-  if [ -s master.key ]; then sudo chown 65532:65532 master.key && sudo chmod 400 master.key
-  else rm -f master.key; echo "genkey made no key: STOP"; fi
+  [ -s master.key ] || rm -f master.key
+  echo "no new master.key was made: STOP"
 fi
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 ```
@@ -174,7 +174,10 @@ from the log in step 2.
 
 ### 5. Install the CLI
 
-On this machine, as the user you run as:
+On Windows there's no install script: ask the person to download the Windows
+build from **Agents → Add an agent** in keydrop, check it against
+`SHA256SUMS`, and put it on your `PATH`. Otherwise, on this machine, as the
+user you run as:
 
 ```sh
 curl -fsSk --pinnedpubkey '<key-pin>' <server-url>/install.sh | sh
@@ -362,29 +365,21 @@ step 9 above into its `CLAUDE.md` or `AGENTS.md`.
 
 ## Claude Code hooks
 
-The setup above suggests a `SessionStart` hook. A `PreToolUse` guard is
-worth adding as well. In `.claude/settings.json`:
+The setup above suggests a `SessionStart` hook: whatever `keydrop history`
+prints becomes context at the start of the session. A `PreToolUse` guard is
+worth adding as well, under `hooks` in `.claude/settings.json`:
 
 ```json
 {
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [ { "type": "command", "command": "keydrop-guard" } ] }
-    ]
-  }
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [ { "type": "command", "command": "keydrop-guard" } ]
+    }
+  ]
 }
 ```
 
-- **SessionStart:** whatever `keydrop history` prints becomes context at the
-  start of the session: the keys created, replaced or marked in the last
-  three days, with who and when. `--quiet` prints nothing when there's
-  nothing. (`keydrop inbox --quiet`, the old hook, still works for one
-  release: it runs `history --since 72h` and prints a deprecation note.)
 - **PreToolUse guard:** a small script that blocks commands that would print
   a value. For example, `keydrop-guard`:
 
