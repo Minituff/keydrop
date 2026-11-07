@@ -20,7 +20,7 @@ import (
 //
 // Leave both alone for UI-only or server-internal changes.
 const (
-	APILevel    = 2 // 2: POST /api/v1/cli/upgrade and the self-upgrade header
+	APILevel    = 3 // 3: value_by on variables an agent wrote
 	MinCLILevel = 1
 )
 

@@ -333,6 +333,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // per address (IPv6: per /64) and action, and 60 a minute overall. What's
 // left out is counted, and the next recorded event says how many.
 func (s *Server) noisyEvent(r *http.Request, actor, action, target, detail string) {
+	s.throttledEvent(r, actor, action, target, detail, true)
+}
+
+// throttledEvent is noisyEvent's limit for any event. unauth says which log
+// it goes to: the separate unauthenticated one, or the main one.
+func (s *Server) throttledEvent(r *http.Request, actor, action, target, detail string, unauth bool) {
 	ip := s.clientIP(r)
 	now := s.now()
 	key := sourceGroup(ip) + " " + action
@@ -387,7 +393,7 @@ func (s *Server) noisyEvent(r *http.Request, actor, action, target, detail strin
 			detail = extra
 		}
 	}
-	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r), Unauthenticated: true})
+	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r), Unauthenticated: unauth})
 }
 
 func (s *Server) clientIP(r *http.Request) string {

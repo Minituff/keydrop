@@ -36,8 +36,12 @@ var (
 	ErrSource      = errors.New("token not allowed from this address")
 	ErrBadSource   = errors.New("allowed sources must be IP addresses or CIDR ranges, like 10.0.0.5 or 10.0.0.0/24")
 	ErrNotVariable = errors.New("not a variable")
-	ErrBadName     = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
-	ErrBadSecret   = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
+	// ErrVariableNeedsWrite: an add token tried to store a variable.
+	ErrVariableNeedsWrite = errors.New("storing a variable needs write permission; store it as a secret, or ask the admin")
+	// ErrTokenCap: a token holds as many keys, or as much data, as it may.
+	ErrTokenCap  = errors.New("this token has stored as much as it's allowed; ask the admin to remove some keys")
+	ErrBadName   = errors.New("namespace and token names must match [a-z0-9][a-z0-9._-]{0,63}")
+	ErrBadSecret = errors.New("secret names are env-var style: capital letters, digits and '_', not starting with a digit (CLOUDFLARE_API_TOKEN)")
 	// ErrRequestedByOther: another token already has a pending request for
 	// this name, and only it (or the admin) may change the request.
 	ErrRequestedByOther = errors.New("already requested by another agent")
@@ -512,6 +516,10 @@ type Store struct {
 	// file holds. Set the first time a MAC4 field is written; only
 	// DowngradeV4 clears it.
 	v4 bool
+	// recentFrom is the last few distinct addresses each token was used
+	// from, newest last. Memory only: it backs a warning, not a decision,
+	// so it needs no place in the file and a restart just forgets it.
+	recentFrom map[string][]string
 }
 
 // ParseKey accepts a 32-byte master key as base64 (standard or URL) or hex.
@@ -1058,6 +1066,26 @@ func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
 	return err
 }
 
+// SetValue is PutValue for the admin's value form: the kind is said
+// outright, never kept from the old value. Otherwise an agent could make a
+// variable and ask for a real key to be pasted into it.
+func (s *Store) SetValue(ns, name string, value []byte, variable bool) error {
+	if !ValidName(ns) {
+		return ErrBadName
+	}
+	if !ValidSecretName(name) {
+		return ErrBadSecret
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.st.clone()
+	if _, err := s.putLocked(ns, name, value, nil, &variable, true, nil); err != nil {
+		s.st = snap
+		return err
+	}
+	return s.commit(snap)
+}
+
 // CreateValue is PutValue that refuses (ErrExists) to replace a value. The
 // check and the write happen under one lock, so two writers can't both
 // see "empty" and the second silently replace the first.
@@ -1102,7 +1130,54 @@ func (s *Store) AgentPut(ns, name string, value []byte, p AgentPut) (PutResult, 
 	if err := CheckAgentText(d, u); err != nil {
 		return PutResult{}, err
 	}
+	if p.Variable {
+		// Every token in the namespace reads a variable at once, with no
+		// approval, so it's held to the rules for agent text. A secret
+		// isn't: it's only read on purpose, and the check would refuse
+		// real keys.
+		if p.Token.Permission() == PermAdd {
+			return PutResult{}, ErrVariableNeedsWrite
+		}
+		if err := checkText(string(value), MaxAgentVariable, false); err != nil {
+			return PutResult{}, err
+		}
+	}
 	return s.putValue(ns, name, value, nil, p.Overwrite, &p)
+}
+
+// ValueAuthor names the token that wrote a key's current value, or "" if
+// the admin did. Variables from an agent are labelled with it.
+func (s *Store) ValueAuthor(ns, name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.st.History) - 1; i >= 0; i-- {
+		ev := s.st.History[i]
+		if ev.Namespace == ns && ev.Name == name && (ev.Action == "created" || ev.Action == "replaced") {
+			return strings.TrimPrefix(strings.TrimPrefix(ev.Actor, "admin"), "token:")
+		}
+	}
+	// Aged out of the history: the creator is the best that's left.
+	if sec, ok := s.st.Secrets[key(ns, name)]; ok {
+		return sec.creator()
+	}
+	return ""
+}
+
+// checkTokenCaps limits what one token can make the state hold: every save
+// rewrites the whole file under s.mu, so a large state slows every call.
+// Keys the admin has since set no longer count. Call with s.mu held.
+func (s *Store) checkTokenCaps(name string, newKey bool, size int) error {
+	keys, bytes := 0, size
+	for _, sec := range s.st.Secrets {
+		if sec.creator() == name && len(sec.Value) > 0 {
+			keys++
+			bytes += len(sec.Value) + len(sec.Previous)
+		}
+	}
+	if newKey && keys >= MaxKeysPerToken || bytes > MaxBytesPerToken {
+		return ErrTokenCap
+	}
+	return nil
 }
 
 func (s *Store) putValue(ns, name string, value []byte, meta *Meta, overwrite bool, ap *AgentPut) (PutResult, error) {
@@ -1145,6 +1220,11 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 			// made. Anything else is someone else's to change.
 			if ok && (res.Existed && sec.creator() != ap.Token.Name || !res.Existed && sec.RequestedBy != ap.Token.Name) {
 				return res, ErrNotOwner
+			}
+		}
+		if !res.Existed || sec.creator() == ap.Token.Name {
+			if err := s.checkTokenCaps(ap.Token.Name, !res.Existed, len(value)); err != nil {
+				return res, err
 			}
 		}
 	}
@@ -1681,6 +1761,41 @@ func (s *Store) LookupTokenForRenewal(plain, ip string) (Token, error) {
 	return s.lookupToken(plain, ip, true)
 }
 
+// maxRecentFrom is how many addresses recentFrom keeps per token.
+const maxRecentFrom = 8
+
+// noteAddress remembers that a token was used from ip. Call with s.mu held.
+func (s *Store) noteAddress(name, ip string) {
+	if ip == "" {
+		return
+	}
+	if s.recentFrom == nil {
+		s.recentFrom = map[string][]string{}
+	}
+	list := slices.DeleteFunc(s.recentFrom[name], func(a string) bool { return a == ip })
+	if len(list) >= maxRecentFrom {
+		list = list[len(list)-maxRecentFrom+1:]
+	}
+	s.recentFrom[name] = append(list, ip)
+}
+
+// AddressesOtherThan lists the addresses a token was recently used from,
+// apart from ip. It looks at more than the last one, so a thief who makes
+// one ordinary call before asking for a renewal doesn't hide the real
+// agent's address.
+func (s *Store) AddressesOtherThan(name, ip string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var all []string
+	if t, ok := s.st.Tokens[name]; ok && t.LastUsedFrom != "" {
+		all = append(all, t.LastUsedFrom)
+	}
+	all = append(all, s.recentFrom[name]...)
+	slices.Sort(all)
+	all = slices.Compact(all)
+	return slices.DeleteFunc(all, func(a string) bool { return a == ip })
+}
+
 func (s *Store) lookupToken(plain, ip string, renewal bool) (Token, error) {
 	if !strings.HasPrefix(plain, TokenPrefix) {
 		return Token{}, ErrNotFound
@@ -1704,7 +1819,12 @@ func (s *Store) lookupToken(plain, ip string, renewal bool) (Token, error) {
 			return *t, nil // in the grace window: not use, not recorded
 		}
 		at := now.UTC()
-		t.LastUsedFrom = ip
+		s.noteAddress(t.Name, ip)
+		// A renewal request isn't use: if it were recorded here, the Inbox
+		// would compare the requester's address with itself.
+		if !renewal {
+			t.LastUsedFrom = ip
+		}
 		save := false
 		if t.Rotation != nil {
 			// The renewed token's first use: the old one, and the sealed

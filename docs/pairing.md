@@ -68,6 +68,8 @@ environment, but the command runs as the same user and could read the
 token file: `run` keeps the token out of the way, it isn't a sandbox.
 
 To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
+This needs a write token. A variable an agent stores can be at most 2,000
+characters on one line, and other agents see it labelled as untrusted text.
 `put` takes text up to 60 KiB; base64 a binary value first.
 
 `keydrop inbox` and `keydrop ack` are the old names: for one more release
@@ -79,7 +81,10 @@ To migrate an existing `.env` (needs a token with add or write access):
 lines above a key become its description, and each key keeps its name
 (keys that aren't upper-case are skipped). Values are never printed. Rotate
 anything that sat in plaintext for long. `--vars` imports every key as a
-variable instead, for a file of plain settings.
+variable instead, for a file of plain settings (write tokens only).
+
+Each token can hold up to 500 keys and 8 MiB of values that it stored. Keys
+you've saved a value for yourself stop counting.
 
 **Allowed sources.** Each token can be limited to addresses or ranges
 (`10.0.0.5`, `10.0.1.0/24`). Use from anywhere else is refused (HTTP 403)

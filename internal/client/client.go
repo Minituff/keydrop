@@ -167,7 +167,7 @@ func FromEnv() (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("no token: run `keydrop pair` or set KEYDROP_TOKEN_FILE (%v)", err)
 		}
-		if fi.Mode().Perm()&0o077 != 0 {
+		if TooOpen(fi.Mode()) {
 			return nil, fmt.Errorf("%s is readable by other users; run chmod 600 %s", path, path)
 		}
 		b, err := os.ReadFile(path)
@@ -427,6 +427,13 @@ func (c *Client) Get(ref string) (*Secret, error) {
 	}
 	var s Secret
 	return &s, c.do("GET", secretPath(ns, name), nil, &s)
+}
+
+// TooOpen says whether a file's mode lets other users read it. Windows has
+// no such bits: Go reports 0666 for every file there, and what protects a
+// file is its ACL, so the check would refuse every token.
+func TooOpen(m os.FileMode) bool {
+	return !isWindows && m.Perm()&0o077 != 0
 }
 
 // Reveal returns a value, and whether it's a variable (which isn't
