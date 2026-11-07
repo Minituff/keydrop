@@ -228,14 +228,11 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
   maintainer asks: they publish binaries and an image. Publishing is by hand;
   see "Building" in [docs/development.md](docs/development.md).
 
-## Private-only setup
+## Keeping private details out
 
-This repo is private for now. Anything that only works on the maintainer's
-own infrastructure (a self-hosted runner, a private registry, internal
-hostnames) must not go into general code or docs. Where it's unavoidable
-(for example a workflow file), mark each such line or block with a
-`PRIVATE:` comment, so `git grep PRIVATE:` lists everything to remove
-before the repo goes public.
+Anything that only works on the maintainer's own infrastructure (a
+self-hosted runner, a private registry, internal hostnames) doesn't go in
+the repo: not in code, docs or workflows.
 
 CI fails if the tree contains any of the maintainer's own addresses,
 domains or host names (`scripts/leak-check.sh`; the list is the
@@ -243,7 +240,8 @@ domains or host names (`scripts/leak-check.sh`; the list is the
 extended regex per line, surrounding whitespace trimmed, blank lines
 ignored). It fails closed: a pattern grep can't compile, or a grep/git error, fails the
 check (`scripts/leak-check-test.sh` tests that). Without the secret (forks,
-local runs) it skips with a warning that nothing was checked. Use
+local runs) it skips with a warning that nothing was checked. The
+`leak-history` workflow, run by hand, checks every commit the same way. Use
 generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
 with a GitHub noreply address.
 
@@ -258,27 +256,3 @@ with a GitHub noreply address.
 - Workflow permissions are per job, with nothing at the top level
   (`permissions: {}` in `release.yml`). Anything that publishes `needs:` a
   job that ran the tests on the same commit.
-
-### Before going public
-
-In this order; the maintainer does steps 6 to 8:
-
-1. Check the web UI in a real browser, on a phone and a desktop.
-2. Merge `dev` into `main`; CI green on `main`.
-3. Run the `leak-history` workflow (it only appears once on the default
-   branch) and clean up anything it finds.
-4. Push the rewritten history to a **new private repository**. Don't
-   force-push this one: GitHub keeps force-pushed-away commits fetchable
-   by hash, and each old Actions run still shows its commit's author
-   email. Then rename this repo (e.g. `keydrop-old`, kept private) and
-   give the new one its name, and link the ghcr.io package to it in the
-   package settings. A hard gate for every later step:
-   `git log --all --format='%ae%n%ce' | sort -u` on a fresh clone of the
-   new repo prints only noreply addresses.
-5. `git grep PRIVATE:` is empty: each such line removed or made generic.
-6. Make the repository and its container package public.
-7. Run the `release` workflow on `main` with tag `v0.1.0`.
-   Then give the Renovate app access to the new repo. Not before: patch
-   releases count up from this tag, and `bump-version.yml` stops without one.
-8. Optionally publish the docs site: set Settings → Pages → Source to
-   GitHub Actions, then Actions → docs → Run workflow on `main`.
