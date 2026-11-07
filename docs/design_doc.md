@@ -630,7 +630,7 @@ limited to what it needs:
   `ext`, so the file stays one it can read; when that release rewrites
   the file it drops `fixups`, and the fix-ups run again on what it wrote,
   which only touches what it could have written.
-- **A third MAC for groups.** The release before groups (733cf9f)
+- **A third MAC for groups.** The release before groups (265e513)
   parses `ext`, `history` and the rest, and checks `mac2` over everything
   it parsed. So the group fields (`groups` and `settings` in the state,
   `group` and `batch` on a key) can't be covered by `mac2`: `mac2` now
@@ -644,7 +644,7 @@ limited to what it needs:
   gone; the keys and their values stay. The e2e suite starts both older
   releases on grouped data, lets them rewrite it, and opens the result.
 - **A fourth MAC for expiry, renewals and canaries.** The release before
-  them (b0b9efe) checks `mac3` over everything it parses, so `mac3` now
+  them (5f2f64e) checks `mac3` over everything it parses, so `mac3` now
   covers `v3View()` (the state with `expires_at`, `lifetime`, `renewal`,
   `rotation`, per-secret `canary` and the `canary` state zeroed) and
   `mac4` (`HKDF(master key, "state mac v4")`) covers everything. Unlike
@@ -661,14 +661,14 @@ limited to what it needs:
   canaries become ordinary secrets, the canary Inbox entries go; the
   audit log keeps everything) and lists by name what it dropped; run
   again, it goes back to the v1 key check as before.
-- **A fifth MAC for the alert webhook.** 7b184c1 checks `mac4` over all it
+- **A fifth MAC for the alert webhook.** 631f015 checks `mac4` over all it
   parses, so `mac4` now covers `v4View()` (the state with `alerts`
   zeroed) and `mac5` (`HKDF(master key, "state mac v5")`) covers
   everything; `mac5` is written whenever `alerts` is set and must verify
   when either is present. The webhook doesn't restrict access, so it
   doesn't need the key check: stripping `alerts` and `mac5` gives a file
-  7b184c1 could have written, and only loses the webhook.
-- **A sixth MAC for self-upgrade.** cf00c92 checks `mac5` over all it
+  631f015 could have written, and only loses the webhook.
+- **A sixth MAC for self-upgrade.** 8acec14 checks `mac5` over all it
   parses, so `mac5` now covers `v5View()` (each token's `self_upgrade`
   zeroed) and `mac6` (`HKDF(master key, "state mac v6")`) covers
   everything; `mac6` is written whenever any token has it on and must

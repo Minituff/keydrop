@@ -257,7 +257,7 @@ func grouped(t *testing.T, dir string) *Store {
 	return s
 }
 
-// The release before groups (733cf9f) parses the newer annotation fields
+// The release before groups (265e513) parses the newer annotation fields
 // but not the group ones, and checks mac and mac2 over what it parsed. A
 // file this release wrote must pass both, and what it writes back (no
 // group fields, no mac3) must open here.

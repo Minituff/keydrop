@@ -28,27 +28,27 @@ import (
 
 // oldFormatCommit is the last commit that writes the data format before
 // the integrity check (no HMAC, plaintext tls.key).
-const oldFormatCommit = "57fef22"
+const oldFormatCommit = "8c943a5"
 
 // rollbackCommit is the release before history, flags, statuses, notes
 // and the add permission. It must still open what this one writes.
-const rollbackCommit = "038a737"
+const rollbackCommit = "0d6e2d8"
 
 // v2RollbackCommit is the release before groups and batch requests. It
 // checks mac2 over everything it parses, so it's a separate case.
-const v2RollbackCommit = "733cf9f"
+const v2RollbackCommit = "265e513"
 
 // v3RollbackCommit is the release before token expiry, renewal and
 // canaries. It refuses data that used them until downgrade-data is run.
-const v3RollbackCommit = "b0b9efe"
+const v3RollbackCommit = "5f2f64e"
 
 // v4RollbackCommit is the release before the alert webhook could be set in
 // Settings. It opens data with one set, ignoring it.
-const v4RollbackCommit = "7b184c1"
+const v4RollbackCommit = "631f015"
 
 // v5RollbackCommit is the release before an agent could be allowed to
 // upgrade its own CLI. It opens data with that on, ignoring it.
-const v5RollbackCommit = "cf00c92"
+const v5RollbackCommit = "8acec14"
 
 var (
 	binary   string // the keydrop under test, built by TestMain

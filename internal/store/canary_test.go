@@ -73,7 +73,7 @@ func keyCheckOf(t *testing.T, dir string) string {
 }
 
 // Once the MAC4 fields are used, the key check requires MAC4, which the
-// release before them (b0b9efe) doesn't know: it refuses the file until
+// release before them (5f2f64e) doesn't know: it refuses the file until
 // downgrade-data. That drops the fields, and then that release parses
 // everything, checks mac, mac2 and mac3 over what it parsed, and what it
 // writes back opens here.

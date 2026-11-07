@@ -83,11 +83,11 @@ made-up data.
   can write the data directory could get an edited old-format file
   vouched for by restarting the server).
 - **Optional fields need no migration, but must keep the previous
-  release reading the file.** `mac` covers `legacyView()` (the 038a737
-  format), `mac2` covers `v2View()` (the 733cf9f format, which checks
+  release reading the file.** `mac` covers `legacyView()` (the 0d6e2d8
+  format), `mac2` covers `v2View()` (the 265e513 format, which checks
   `mac2` over everything it parses), `mac3` covers
-  `v3View()` (the b0b9efe format), `mac4` covers `v4View()` (the 7b184c1
-  format), `mac5` covers `v5View()` (the cf00c92 format) and `mac6` covers
+  `v3View()` (the 5f2f64e format), `mac4` covers `v4View()` (the 631f015
+  format), `mac5` covers `v5View()` (the 8acec14 format) and `mac6` covers
   everything. A new optional field goes outside every older view. This
   release checks `mac6` over all it parses, so once it has shipped, the
   next new field needs a `v6View` that zeroes it and a seventh MAC, the
@@ -256,34 +256,30 @@ with a GitHub noreply address.
 
 ### Before going public
 
-In this order; the maintainer does steps 8 to 10:
+In this order; the maintainer does steps 7 to 9:
 
 1. A thorough security review of the whole codebase, with findings fixed.
-   The repo and its history were reviewed for leaks on 2026-11-01:
-   no real secrets; the only history-only problems (a personal author
-   email on some commits, private addresses in an old test) go away with
-   step 6. Private addresses alone are acceptable; the email is not.
+   The repo and its history were reviewed for leaks on 2026-11-07: no
+   real secrets. The personal author email on some commits was rewritten
+   out; every commit keeps its tree, and the hashes the e2e tests build
+   old releases from were updated to match. Private addresses in an old
+   test stay in the history, which is acceptable; the email is not.
 2. Check the web UI in a real browser, on a phone and a desktop.
-3. Make the e2e tests survive the squash: `e2e/e2e_test.go` and
-   `e2e/compat_test.go` build old releases by commit hash, and those
-   commits won't exist afterwards. Build them from tags or archived
-   release binaries instead, or drop them.
-4. Merge `dev` into `main`; CI green on `main`.
-5. Run the `leak-history` workflow (it only appears once on the default
+3. Merge `dev` into `main`; CI green on `main`.
+4. Run the `leak-history` workflow (it only appears once on the default
    branch) and clean up anything it finds.
-6. Squash the history into one commit, authored **and committed** with
-   the noreply address, and push it to a **new private repository**.
-   Don't force-push this one: GitHub keeps force-pushed-away commits
-   fetchable by hash, and each old Actions run still shows its commit's
-   author email. Then rename this repo (e.g. `keydrop-old`, kept private)
-   and give the new one its name, and link the ghcr.io package to it in
-   the package settings. A hard gate for every later step:
+5. Push the rewritten history to a **new private repository**. Don't
+   force-push this one: GitHub keeps force-pushed-away commits fetchable
+   by hash, and each old Actions run still shows its commit's author
+   email. Then rename this repo (e.g. `keydrop-old`, kept private) and
+   give the new one its name, and link the ghcr.io package to it in the
+   package settings. A hard gate for every later step:
    `git log --all --format='%ae%n%ce' | sort -u` on a fresh clone of the
-   new repo prints only the noreply address.
-7. `git grep PRIVATE:` is empty: each such line removed or made generic.
-8. Make the repository and its container package public.
-9. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
+   new repo prints only noreply addresses.
+6. `git grep PRIVATE:` is empty: each such line removed or made generic.
+7. Make the repository and its container package public.
+8. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
    Then give the Renovate app access to the new repo. Not before: patch
    releases count up from this tag, and `bump-version.yml` stops without one.
-10. Optionally publish the docs site: Actions → docs → Run workflow on
-    `main`, then Settings → Pages → the `gh-pages` branch.
+9. Optionally publish the docs site: Actions → docs → Run workflow on
+   `main`, then Settings → Pages → the `gh-pages` branch.

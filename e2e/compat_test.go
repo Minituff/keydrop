@@ -22,7 +22,7 @@ import (
 // its commit here: TestOldCLI runs that CLI against this server, so an API
 // change that breaks it without raising MinCLILevel fails CI.
 var cliLevelCommits = map[int]string{
-	1: "7b184c1", // the oldest CLI still in use when levels were added
+	1: "631f015", // the oldest CLI still in use when levels were added
 }
 
 // TestOldCLI: the oldest CLI this server still accepts pairs, reads and
