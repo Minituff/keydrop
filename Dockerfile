@@ -1,9 +1,10 @@
-# Base images are pinned by digest (the tag is kept for readers); bump both
-# together when updating.
+# Base images are pinned by digest (the tag is kept for readers). Renovate
+# updates both. The golang tag names the full Go version so Renovate can tell
+# a Go release from an image refresh; it must match go.mod's toolchain line.
 # Build on the runner's own platform and cross-compile, so multi-arch
 # builds don't need emulation. This stage doesn't depend on the target, so
 # a multi-arch build runs it once and every image gets the same files.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 ARG VERSION=dev
 # Where the build came from, for the version line in Settings: the full
 # commit hash, its commit time (RFC 3339) and the repository URL. Empty is fine.

@@ -128,6 +128,10 @@ seems to need a dependency, ask first and explain why the stdlib can't do it.
 GitHub Actions are the exception; keep them to well-known actions
 (`actions/*`, `docker/*`).
 
+Renovate keeps Go, the base images and the actions current, and cuts patch
+releases for the ones that ship; see "Updates and releases" in
+[docs/development.md](docs/development.md).
+
 ## Layout
 
 | Path | |
@@ -279,5 +283,7 @@ In this order; the maintainer does steps 8 to 10:
 7. `git grep PRIVATE:` is empty: each such line removed or made generic.
 8. Make the repository and its container package public.
 9. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
+   Then give the Renovate app access to the new repo. Not before: patch
+   releases count up from this tag, and `bump-version.yml` stops without one.
 10. Optionally publish the docs site: Actions → docs → Run workflow on
     `main`, then Settings → Pages → the `gh-pages` branch.

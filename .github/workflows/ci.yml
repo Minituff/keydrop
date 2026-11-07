@@ -17,9 +17,11 @@ jobs:
         run: sh scripts/leak-check.sh
       - name: Leak check fails closed
         run: sh scripts/leak-check-test.sh
+      - name: go.mod and the Dockerfile use the same Go
+        run: sh scripts/go-version-check.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27"
+          go-version-file: go.mod
           cache: false # zero deps: no go.sum to key a cache on
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
@@ -91,7 +93,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27"
+          go-version-file: go.mod
           cache: false # zero deps: no go.sum to key a cache on
       - run: go vet -tags e2e ./e2e/...
       - run: go test -tags e2e -count=1 -v ./e2e/...
