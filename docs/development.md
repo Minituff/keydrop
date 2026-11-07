@@ -73,6 +73,18 @@ with an error until the first version tag exists.
 Anything merged to `main` since the last tag goes out with the next patch, so
 tag feature work as soon as it reaches `main`.
 
+### When an unattended run fails
+
+`autofix.yml` hands a failure nobody is watching to a Claude Code routine:
+a check on a Renovate PR, a push Renovate merged to `main`, or a release
+`bump-version.yml` started. It sends only the run's link, workflow, branch and
+commit. For a Renovate PR the routine may open a fix PR into `dev`; for the
+others it only opens an issue with its diagnosis. It never pushes to `main`,
+`dev`, a `renovate/*` branch or a tag, and never merges: every change still
+goes through review. Set the repository variable `AUTOFIX` to `off` to pause
+it. The routine's URL and token are the `AUTOFIX_URL` and `AUTOFIX_TOKEN`
+secrets; without them it does nothing.
+
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in
 the `Dockerfile` (what ships). Renovate changes both in one PR. It doesn't
