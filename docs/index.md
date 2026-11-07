@@ -12,6 +12,7 @@
   [![Go](https://img.shields.io/github/go-mod/go-version/Minituff/keydrop?logo=go&logoColor=white)](https://github.com/Minituff/keydrop/blob/main/go.mod)
   [![Dependencies](https://img.shields.io/badge/dependencies-none-6d4aff)](https://github.com/Minituff/keydrop/blob/main/go.mod)
   [![Image](https://img.shields.io/badge/image-ghcr.io-6d4aff?logo=docker&logoColor=white)](https://github.com/Minituff/keydrop/pkgs/container/keydrop)
+  [![Image size](https://ghcr-badge.egpl.dev/minituff/keydrop/size)](https://github.com/Minituff/keydrop/pkgs/container/keydrop)
   [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/Minituff/keydrop/blob/main/LICENSE)
 
   <p>
