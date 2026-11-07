@@ -28,7 +28,7 @@ RUN set -e; mkdir -p /out/bin /out/cli /out/data; pids=; \
     for f in keydrop-*; do gzip -9 -c "$f" > /out/cli/"$f".gz; done
 
 # distroless/static: no shell, no package manager, runs as uid 65532.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 ARG TARGETOS TARGETARCH
 COPY --from=build /out/bin/keydrop-${TARGETOS}-${TARGETARCH} /keydrop
 COPY --from=build /out/cli /cli
