@@ -47,16 +47,18 @@ type Masker struct {
 
 // Add registers value under label. It also masks common encodings of the
 // value (base64, URL-encoded), which is how secrets often reappear in debug
-// output such as Basic auth headers. It returns false if value is too short
-// to mask.
+// output such as Basic auth headers. It returns false if value, or value
+// without its surrounding whitespace, is too short to mask, so the caller
+// can warn.
 func (m *Masker) Add(label string, value []byte) bool {
 	if len(value) < MinLength {
 		return false
 	}
 	// A value stored with a trailing newline usually reaches the output
 	// without it, as in curl -H "Authorization: $KEY".
+	masked := true
 	if t := bytes.TrimSpace(value); len(t) < len(value) {
-		m.Add(label, t)
+		masked = m.Add(label, t)
 	}
 	variants := [][]byte{
 		value,
@@ -81,7 +83,7 @@ func (m *Masker) Add(label string, value []byte) bool {
 	// Longest first, so a longer match wins over one of its substrings.
 	sort.SliceStable(m.patterns, func(i, j int) bool { return len(m.patterns[i].match) > len(m.patterns[j].match) })
 	m.index()
-	return true
+	return masked
 }
 
 func key2(b []byte) int { return int(b[0])<<8 | int(b[1]) }

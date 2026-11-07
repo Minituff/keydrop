@@ -100,11 +100,11 @@ On that machine:
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-if [ -e master.key ]; then echo "master.key already exists: STOP"
+if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+  sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
-  docker run --rm ghcr.io/minituff/keydrop genkey > master.key
-  if [ -s master.key ]; then sudo chown 65532:65532 master.key && sudo chmod 400 master.key
-  else rm -f master.key; echo "genkey made no key: STOP"; fi
+  [ -s master.key ] || rm -f master.key
+  echo "no new master.key was made: STOP"
 fi
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 ```
@@ -179,7 +179,10 @@ from the log in step 2.
 {{end}}
 {{.H}}# {{next}}. Install the CLI
 {{if .CLI}}
-On this machine, as the user you run as:
+On Windows there's no install script: ask the person to download the Windows
+build from **Agents → Add an agent** in keydrop, check it against
+`SHA256SUMS`, and put it on your `PATH`. Otherwise, on this machine, as the
+user you run as:
 
 ```sh
 {{if .KeyPin}}curl -fsSk --pinnedpubkey '{{.KeyPin}}' {{.URL}}/install.sh | sh{{else}}curl -fsS {{.URL}}/install.sh | sh{{end}}

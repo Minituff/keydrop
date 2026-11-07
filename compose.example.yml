@@ -1,7 +1,8 @@
 # Example deployment. Before the first start:
 #   mkdir -p data && sudo chown 65532:65532 data
-#   docker run --rm ghcr.io/minituff/keydrop genkey > master.key
+#   (umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key)
 #   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
+# (set -C refuses to replace an existing key. Run this once, not per deploy.)
 # (Compose mounts the secret file with its host owner and mode, and keydrop
 # runs as uid 65532, so a 600 file owned by you would be unreadable to it.
 # keydrop warns at start if the key file is readable by anyone else.)
@@ -20,7 +21,7 @@ services:
       # Names/IPs for the self-signed certificate.
       KEYDROP_TLS_HOSTS: secrets.example.com,192.168.1.50
       # If a reverse proxy sits in front, let it pass the real client IP
-      # (it must also send X-Forwarded-Proto: https, as Traefik does):
+      # (it must also send X-Forwarded-Proto: https):
       # KEYDROP_TRUSTED_PROXIES: 192.168.1.10
     secrets:
       - keydrop_master_key

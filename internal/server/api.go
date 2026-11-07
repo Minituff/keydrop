@@ -313,17 +313,22 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		purpose = "agent says: " + purpose
 	}
 	kind := "variable"
+	var unlogged error
 	switch {
 	case hit != nil:
 		// One audit entry either way, so a canary read costs the same.
-		s.event(r, actor(t), "secret.read.canary", sec.Ref(), purpose)
+		unlogged = s.recordRead(r, actor(t), "secret.read.canary", sec.Ref(), purpose)
 		s.canaryTouched(r, *hit)
 		if !variable {
 			kind = "secret"
 		}
 	case !variable: // variables aren't secret, so their reads aren't logged
 		kind = "secret"
-		s.event(r, actor(t), "secret.read", sec.Ref(), purpose)
+		unlogged = s.recordRead(r, actor(t), "secret.read", sec.Ref(), purpose)
+	}
+	if unlogged != nil { // every read is logged, so no record means no value
+		apiError(w, http.StatusInternalServerError, "couldn't write this read to the audit log, so the value wasn't returned; tell the admin")
+		return
 	}
 	out := map[string]any{"ref": sec.Ref(), "kind": kind, "value": string(val)}
 	if st := sec.StatusOf(); st != nil {

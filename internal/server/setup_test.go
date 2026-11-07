@@ -247,7 +247,7 @@ func TestSetupGuideKeepsCodeFromAgent(t *testing.T) {
 				t.Errorf("guide has a plain docker logs line: %q", line)
 			}
 		}
-		if g.Generic && (!strings.Contains(s, "the setup code") || !strings.Contains(s, "test") && !strings.Contains(s, "-e master.key")) {
+		if g.Generic && (!strings.Contains(s, "the setup code") || !strings.Contains(s, "set -C")) {
 			t.Error("generic guide lacks the setup-code rule or the master.key guard")
 		}
 	}

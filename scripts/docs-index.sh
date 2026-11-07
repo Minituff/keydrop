@@ -10,7 +10,7 @@ render() {
   sed -e 's|<div align="center">|<div align="center" markdown>|' \
       -e 's|docs/images/|images/|g' \
       -e 's|](docs/|](|g' \
-      -e 's|href="docs/|href="|g' \
+      -e 's|href="docs/\([a-z_-]*\)\.md"|href="\1/"|g' \
       -e "s|](LICENSE)|]($gh/LICENSE)|g" \
       -e "s|](go.mod)|]($gh/go.mod)|g" \
       -e "s|](compose.example.yml)|]($gh/compose.example.yml)|g" \

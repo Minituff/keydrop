@@ -6,7 +6,7 @@ import (
 )
 
 // CLI compatibility. Server and CLI are one codebase, so a CLI carries the
-// APILevel it was built with. Every dev push changes the version, but most
+// APILevel it was built with. Every build changes the version, but most
 // don't change what the CLI relies on, so the version alone can't say
 // whether an older CLI still works; these levels do.
 //

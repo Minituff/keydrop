@@ -76,7 +76,7 @@ type tokenView struct {
 	store.Token
 	Expiry  string
 	Expired bool
-	Soon    bool // within 14 days
+	Soon    bool // within 30 days
 	// Stale: not used for staleAfter (or, never used, made that long ago).
 	Stale     bool
 	StaleDays int
