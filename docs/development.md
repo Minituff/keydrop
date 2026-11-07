@@ -79,9 +79,16 @@ tag feature work as soon as it reaches `main`.
 a check on a Renovate PR, a push Renovate merged to `main`, or a release
 `bump-version.yml` started. It sends only the run's link, workflow, branch and
 commit. For a Renovate PR the routine may open a fix PR into `dev`; for the
-others it only opens an issue with its diagnosis. It never pushes to `main`,
-`dev`, a `renovate/*` branch or a tag, and never merges: every change still
-goes through review. Set the repository variable `AUTOFIX` to `off` to pause
+others it only opens an issue with its diagnosis.
+
+**Nothing Claude writes is merged or released without the maintainer's
+review.** Its instructions forbid merging, tagging and starting workflows,
+and its GitHub access enforces part of that: it can push only to its own
+`claude/*` branches and can't push tags. The only changes that merge and
+release by themselves are Renovate's, in the table above, and only with every
+check green.
+
+Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
 secrets; without them it does nothing.
 
