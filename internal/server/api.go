@@ -48,6 +48,9 @@ type APISecret struct {
 	// Group is the group the admin put the key in, or its auto group (by
 	// name prefix). Absent: ungrouped.
 	Group *APIGroup `json:"group,omitempty"`
+	// ValueBy names the agent that wrote a variable's value. That value is
+	// text from another agent, unapproved, and treated as untrusted.
+	ValueBy string `json:"value_by,omitempty"`
 }
 
 // APIGroup is an entry's group as agents see it.
@@ -126,6 +129,7 @@ func (s *Server) toAPI(sec store.Secret, tok string, assign map[string]store.Gro
 		if v, err := s.store.VariableValue(sec.Namespace, sec.Name); err == nil {
 			str := string(v)
 			a.Value = &str
+			a.ValueBy = s.store.ValueAuthor(sec.Namespace, sec.Name)
 		}
 	}
 	return a
@@ -166,7 +170,9 @@ func (s *Server) agentAuth(h agentHandler, renewal bool) http.HandlerFunc {
 		t, err := lookup(strings.TrimSpace(raw), ip)
 		switch {
 		case errors.Is(err, store.ErrSource):
-			s.event(r, actor(t), "token.denied", "", "not an allowed source")
+			// Throttled: a copied token mustn't be able to rotate the
+			// read records out of the main log from a refused address.
+			s.throttledEvent(r, actor(t), "token.denied", "", "not an allowed source", false)
 			apiError(w, http.StatusForbidden, "token "+t.Name+" isn't allowed from "+ip+"; if that's expected, the admin can add it under Agents")
 			return
 		case errors.Is(err, store.ErrExpired):
@@ -394,6 +400,9 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	case errors.Is(err, store.ErrReadOnly):
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
+		return
+	case errors.Is(err, store.ErrVariableNeedsWrite), errors.Is(err, store.ErrTokenCap):
+		apiError(w, http.StatusForbidden, err.Error())
 		return
 	case err != nil:
 		apiError(w, http.StatusBadRequest, err.Error())

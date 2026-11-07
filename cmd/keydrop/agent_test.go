@@ -218,3 +218,21 @@ func TestPrintListGroups(t *testing.T) {
 		t.Fatalf("ungrouped list: %q", b.String())
 	}
 }
+
+// A variable an agent wrote is quoted and labelled, like its descriptions;
+// one the admin wrote stays on the ref's line for scripts to read.
+func TestPrintSecretAgentVariable(t *testing.T) {
+	v := "https://x.test/\x1b[31m"
+	var b strings.Builder
+	printSecret(&b, client.Secret{Ref: "lab/URL", HasValue: true, Value: &v, ValueBy: "writer"}, false)
+	got := b.String()
+	if strings.Contains(got, "lab/URL=") || !strings.Contains(got, "untrusted text from another agent") || !strings.Contains(got, "      | https://x.test/\\x1b[31m") {
+		t.Fatalf("got %q", got)
+	}
+	b.Reset()
+	plain := "https://x.test"
+	printSecret(&b, client.Secret{Ref: "lab/URL", HasValue: true, Value: &plain}, false)
+	if b.String() != "lab/URL=https://x.test\n" {
+		t.Fatalf("got %q", b.String())
+	}
+}

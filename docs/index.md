@@ -8,6 +8,7 @@
   Paste an API key on your phone. Your agent uses it without ever seeing it.</p>
 
   [![CI](https://github.com/Minituff/keydrop/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Minituff/keydrop/actions/workflows/ci.yml)
+  [![Coverage](https://codecov.io/gh/Minituff/keydrop/graph/badge.svg)](https://codecov.io/gh/Minituff/keydrop)
   [![Go](https://img.shields.io/github/go-mod/go-version/Minituff/keydrop?logo=go&logoColor=white)](https://github.com/Minituff/keydrop/blob/main/go.mod)
   [![Dependencies](https://img.shields.io/badge/dependencies-none-6d4aff)](https://github.com/Minituff/keydrop/blob/main/go.mod)
   [![Image](https://img.shields.io/badge/image-ghcr.io-6d4aff?logo=docker&logoColor=white)](https://github.com/Minituff/keydrop/pkgs/container/keydrop)

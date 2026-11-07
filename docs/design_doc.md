@@ -208,8 +208,12 @@ which are the places keydrop exists to keep secrets out of. So a machine
   one per token, asking again is a no-op that says so, and status checks
   and requests are rate-limited per (token, address). The Inbox shows it
   with Approve (with the next rotation) and Decline. If the request came from an
-  address other than where the token was last used, the Inbox says so in
-  red: a stolen token asking to be renewed looks exactly like this.
+  address other than ones the token was recently used from, the Inbox says
+  so in red: a stolen token asking to be renewed looks exactly like this.
+  Asking doesn't count as use, and the server remembers the last 8
+  addresses per token (in memory only, so a restart forgets all but the
+  last), so a thief who makes an ordinary call first doesn't hide the real
+  agent's address.
 - An expired token can call only `GET`/`POST /api/v1/token/renew` and
   `POST /api/v1/token/collect`, and only for 30 days after it expired
   (`RenewalGrace`). After that it's dead and the agent pairs again. Allowed
@@ -304,8 +308,9 @@ which are the places keydrop exists to keep secrets out of. So a machine
 
 ### Allowed sources
 A token can be limited to addresses and CIDR ranges. Use from anywhere
-else gets 403 and a `token.denied` log entry, and isn't counted as "last
-used". The point is that a token copied off its machine (into a log, a
+else gets 403 and a `token.denied` log entry (at most one a minute per
+address, so a refused token can't rotate the log), and isn't counted as
+"last used". The point is that a token copied off its machine (into a log, a
 backup, another box) is useless elsewhere. Empty means anywhere, for
 tokens made by hand. The address is the one `KEYDROP_TRUSTED_PROXIES`
 resolves, so behind a proxy keydrop has to be told which proxy to trust.
@@ -385,10 +390,18 @@ every read logged, no way to just look). So an entry is either a
   `keydrop vars`), so a list of settings never mixes in key names and the
   other way round.
 - Marking a secret as a variable is the admin's call, made in the UI or by
-  a write token, and logged.
+  a write token, and logged. An add token can't store a variable.
+- **A variable from an agent is agent text.** Every token in the namespace
+  reads it at once, with no approval, so it's at most 2,000 characters on
+  one line with no control or invisible characters. The API names its
+  author in `value_by`, and the CLI quotes it and labels it untrusted. Once
+  the admin saves the value, the label goes.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
-  so a generated password can't land in a list. The previous value keeps
+  so a generated password can't land in a list. The same goes for the
+  admin's Replace form, which makes you choose on a variable: otherwise an
+  agent could stage a variable and ask for a real key to be pasted into
+  it. The previous value keeps
   its own kind, so rolling back after a kind change can't bring back an
   old secret as a variable. The API reads the kind under the same lock as
   the value, so a kind change mid-read can't skip the audit log.

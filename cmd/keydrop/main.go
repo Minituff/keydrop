@@ -48,7 +48,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   get REF --to-file PATH                write a value to a 0600 file
   get REF --raw                         print a secret (avoid: it ends up in logs)
   put REF [--var] [--desc …]            store a value read from stdin (add or write
-                                         tokens; --var: a variable, not a secret)
+                                         tokens; --var: a variable, not a secret,
+                                         write tokens only)
   import FILE [--namespace NS] [--vars] upload a KEY=VALUE env file (add or write tokens)
   pair --url URL [--pin sha256:…]       ask the admin for a token; prints a link to
                                          approve, waits, then saves it (run again

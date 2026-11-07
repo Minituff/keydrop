@@ -11,6 +11,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # Codecov's action runs in this job
       - name: No homelab details
         env:
           KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
@@ -26,11 +28,18 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      # Unit tests only: the e2e suite runs the real binary, which this
+      # profile can't see. An outage at Codecov must not turn CI red.
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
-  # Builds the image once, checks it hands out a working CLI, and stores the
-  # layers in the Actions cache so dev-image pushes the same build without
-  # compiling it again. Runs alongside test and e2e.
+  # Builds the image and checks it hands out a working CLI. Runs alongside
+  # test and e2e. Its layer cache only speeds up this job: nothing that
+  # publishes may read it, since any job in the workflow can write to it.
   image:
     runs-on: ubuntu-latest
     permissions:
@@ -52,7 +61,6 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: keydrop:ci
-          # dev-image must pass the same build args, or it misses this cache.
           build-args: |
             VERSION=${{ steps.ver.outputs.version }}
             COMMIT=${{ github.sha }}
@@ -99,8 +107,8 @@ jobs:
       - run: go test -tags e2e -count=1 -v ./e2e/...
 
   # Pushes to dev also publish ghcr.io/<repo>:dev and :dev-<sha>, after the
-  # tests pass. Deployments pin the digest, never the moving :dev tag. The
-  # build comes from the image job's cache (same platform and VERSION).
+  # tests pass. Deployments pin the digest, never the moving :dev tag. It
+  # builds from scratch: see the image job for why it can't use the cache.
   dev-image:
     needs: [test, e2e, image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -135,12 +143,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: | # the image job's, so the build comes from its cache
+          build-args: |
             VERSION=dev-${{ steps.short.outputs.sha }}
             COMMIT=${{ github.sha }}
             COMMIT_TIME=${{ steps.short.outputs.time }}
             REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: false
-          cache-from: type=gha
+          no-cache: true
       - name: Digest
         run: echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"

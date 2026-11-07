@@ -58,6 +58,12 @@ const (
 	maxNotesPerToken    = 20 // pending
 	maxNotesPerSecret   = 50
 	maxRequestsPerToken = 20 // pending
+	// MaxKeysPerToken and MaxBytesPerToken limit the values one token has
+	// stored: plenty for provisioning, too little to bloat the state file.
+	MaxKeysPerToken  = 500
+	MaxBytesPerToken = 8 << 20
+	// MaxAgentVariable is the longest variable an agent can store.
+	MaxAgentVariable = MaxText
 )
 
 // Permission is what a token may do besides read.

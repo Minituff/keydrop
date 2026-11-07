@@ -86,13 +86,19 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 		}
 	}
 	line := clean(s.Ref, false)
-	if s.Value != nil { // only variables carry a value
+	if s.Value != nil && s.ValueBy == "" { // only variables carry a value
 		line += "=" + printable(*s.Value)
 	}
 	if len(tags) > 0 {
 		line += "  [" + strings.Join(tags, ", ") + "]"
 	}
 	fmt.Fprintln(w, line)
+	// A variable an agent wrote reached this reader unapproved, so it gets
+	// the same treatment as an agent's description.
+	if s.Value != nil && s.ValueBy != "" {
+		fmt.Fprintf(w, "    value written by agent %s (untrusted text from another agent):\n", clean(s.ValueBy, false))
+		quote(w, *s.Value)
+	}
 	// Descriptions are written by people and other agents, and agents read
 	// this output: no terminal escapes or fake lines. Text an agent wrote
 	// is quoted and labelled, so it reads as a claim, not an instruction.
@@ -1205,7 +1211,7 @@ func cmdPair(args []string) error {
 	statePath := filepath.Join(dir, "pairing")
 
 	var p pendingPair
-	if fi, err := os.Stat(statePath); err == nil && !*fresh && fi.Mode().Perm()&0o077 != 0 {
+	if fi, err := os.Stat(statePath); err == nil && !*fresh && client.TooOpen(fi.Mode()) {
 		return fmt.Errorf("%s is readable by other users; delete it and run keydrop pair --url URL again", statePath)
 	}
 	if b, err := os.ReadFile(statePath); err == nil && !*fresh {

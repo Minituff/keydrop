@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/minituff/keydrop/internal/audit"
@@ -80,8 +81,10 @@ type tokenView struct {
 	Stale     bool
 	StaleDays int
 	// OtherIP: the renewal was asked from somewhere other than where the
-	// token was last used. Could be a stolen token; the Inbox says so.
+	// token was recently used. Could be a stolen token; the Inbox says so.
 	OtherIP bool
+	// OtherFrom lists those addresses, for the warning.
+	OtherFrom string
 }
 
 func (s *Server) tokenViews() []tokenView {
@@ -110,7 +113,8 @@ func (s *Server) renewalViews() (asked, collecting []tokenView) {
 		case v.Rotation != nil:
 			collecting = append(collecting, v)
 		case v.Renewal != nil:
-			v.OtherIP = v.LastUsedFrom != "" && v.Renewal.IP != v.LastUsedFrom
+			others := s.store.AddressesOtherThan(v.Name, v.Renewal.IP)
+			v.OtherIP, v.OtherFrom = len(others) > 0, strings.Join(others, ", ")
 			asked = append(asked, v)
 		}
 	}

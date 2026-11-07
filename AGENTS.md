@@ -106,7 +106,10 @@ made-up data.
   quote it in the CLI. New agent-writable fields need a size limit, the
   `checkText` character check (no control or Cf characters), and a
   per-token rate limit (`annotations` or `writes`); anything an agent can
-  add to the state needs a per-token cap too.
+  add to the state needs a per-token cap too. Variables reach other agents
+  with no approval, so only write tokens can store them, they're held to
+  `checkText` and `MaxAgentVariable`, and the CLI quotes and labels them
+  (`value_by`).
 - **Store mutations** take a snapshot (`s.st.clone()`) and finish with
   `s.commit(snap)`, so a failed save leaves memory as it was.
 - **The web UI has no JavaScript.** The CSP forbids scripts. Don't add
@@ -126,7 +129,9 @@ crypto, TOTP and TLS. `go.mod` should have no `require` block. If something
 seems to need a dependency, ask first and explain why the stdlib can't do it.
 
 GitHub Actions are the exception; keep them to well-known actions
-(`actions/*`, `docker/*`).
+(`actions/*`, `docker/*`), plus `codecov/codecov-action`, which runs only
+in the `test` job. A job that publishes must never read the Actions cache:
+any job in the workflow can write to it, whatever its `permissions`.
 
 Renovate keeps Go, the base images and the actions current, and cuts patch
 releases for the ones that ship; see "Updates and releases" in
@@ -172,8 +177,8 @@ its own job. When a change touches the server and CLI together (pairing,
 While iterating, run only the package and tests you're changing
 (`go test ./internal/store -run TestFlag`). Run the full list above once
 before pushing. In CI, `test`, `e2e` and `image` (one Docker build plus the
-CLI install check) run in parallel; `dev-image` pushes afterwards from the
-build cache. To confirm a change, wait for `test` and `e2e`; the image jobs
+CLI install check) run in parallel; `dev-image` builds again from scratch
+and pushes afterwards. To confirm a change, wait for `test` and `e2e`; the image jobs
 only matter when deploying.
 
 Run it locally:

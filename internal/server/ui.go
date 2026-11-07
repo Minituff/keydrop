@@ -779,9 +779,14 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 		s.renderSecret(w, r, se, http.StatusBadRequest, "The value is empty.")
 		return
 	}
-	if err := s.store.PutValue(ns, name, val, nil); err != nil {
+	// Anything but an explicit "variable" is a secret, whatever the key was.
+	variable := r.PostFormValue("kind") == "variable"
+	if err := s.store.SetValue(ns, name, val, variable); err != nil {
 		s.renderSecret(w, r, se, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if sec.HasValue() && sec.Variable != variable {
+		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(variable))
 	}
 	detail := ""
 	switch {
