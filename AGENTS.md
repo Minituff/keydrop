@@ -67,7 +67,7 @@ made-up data.
 - **A canary is indistinguishable to agents.** No API response, error,
   header or code path may differ between a canary and an ordinary secret
   as seen by the token. Every agent call on one (read, write, status, flag,
-  note) is a touch; agents can't clear the flag.
+  note, ack) is a touch, refused ones too; agents can't clear the flag.
 - **The alert webhook URL is a credential.** Never log, show or return it,
   and never put a value or a token in an alert body. Alerts go through the
   one `alerter` (rate-limited, async); don't add another sender.

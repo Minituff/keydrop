@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1120,6 +1121,14 @@ type PutResult struct {
 // ErrReadOnly for a read-only token, ErrNotOwner when an add token tries to
 // replace a value (or fill a request) another token or the admin made.
 func (s *Store) AgentPut(ns, name string, value []byte, p AgentPut) (PutResult, error) {
+	res, err := s.agentPut(ns, name, value, p)
+	if err != nil {
+		res.Canary = s.AgentTouch(ns, name, AgentCtx{p.Token.Name, p.IP}, "write")
+	}
+	return res, err
+}
+
+func (s *Store) agentPut(ns, name string, value []byte, p AgentPut) (PutResult, error) {
 	var d, u string
 	if p.Description != nil {
 		d = *p.Description
@@ -1554,6 +1563,14 @@ func (s *Store) Ack(ns, name, by string) error {
 	return s.commit(snap)
 }
 
+// AgentAck is Ack by the token in a, which counts as a touch on a canary.
+func (s *Store) AgentAck(ns, name string, a AgentCtx) (*CanaryTouch, error) {
+	if err := s.Ack(ns, name, a.Token); err != nil {
+		return nil, err
+	}
+	return s.AgentTouch(ns, name, a, "ack"), nil
+}
+
 // forgetToken drops what a revoked token left attached to its name, so a
 // new token given the same name starts clean: its acks; its ownership of
 // the keys it created (else the new token could replace them under add
@@ -1708,6 +1725,13 @@ func (s *Store) Collected(plain string) error {
 func (s *Store) RevokeUncollected(now time.Time) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// This runs on every unauthenticated poll: copy the state only when
+	// there's something to do.
+	if !slices.ContainsFunc(slices.Collect(maps.Values(s.st.Tokens)), func(t *Token) bool {
+		return t.CollectBy != nil && now.After(*t.CollectBy)
+	}) {
+		return nil
+	}
 	snap := s.st.clone()
 	var gone []string
 	for name, t := range s.st.Tokens {

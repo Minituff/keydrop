@@ -251,7 +251,7 @@ func (s *Server) viaProxy(r *http.Request) bool {
 
 var installScript = template.Must(template.New("install").Parse(`#!/bin/sh
 # Installs the keydrop CLI from the keydrop server that served this script
-# (keydrop {{.Version}}). Linux and macOS, amd64 and arm64.
+# Linux and macOS, amd64 and arm64.
 # KEYDROP_INSTALL_DIR overrides where it goes (default ~/.local/bin).
 set -eu
 base='{{.Base}}'
@@ -315,7 +315,7 @@ func (s *Server) handleInstallScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	installScript.Execute(w, map[string]string{"Version": s.cfg.Version, "Base": base, "KeyPin": keyPin, "CertPin": certPin})
+	installScript.Execute(w, map[string]string{"Base": base, "KeyPin": keyPin, "CertPin": certPin})
 }
 
 // InstallCommands are the one-liners shown on the Agents page and in the

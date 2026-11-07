@@ -307,18 +307,23 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The purpose is the agent's word, and the Log shows it to the admin.
+	purpose := store.AgentLine(r.URL.Query().Get("purpose"))
+	if purpose != "" {
+		purpose = "agent says: " + purpose
+	}
 	kind := "variable"
 	switch {
 	case hit != nil:
 		// One audit entry either way, so a canary read costs the same.
-		s.event(r, actor(t), "secret.read.canary", sec.Ref(), r.URL.Query().Get("purpose"))
+		s.event(r, actor(t), "secret.read.canary", sec.Ref(), purpose)
 		s.canaryTouched(r, *hit)
 		if !variable {
 			kind = "secret"
 		}
 	case !variable: // variables aren't secret, so their reads aren't logged
 		kind = "secret"
-		s.event(r, actor(t), "secret.read", sec.Ref(), r.URL.Query().Get("purpose"))
+		s.event(r, actor(t), "secret.read", sec.Ref(), purpose)
 	}
 	out := map[string]any{"ref": sec.Ref(), "kind": kind, "value": string(val)}
 	if st := sec.StatusOf(); st != nil {
@@ -332,11 +337,15 @@ func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if !ok {
 		return
 	}
-	if err := s.store.Ack(sec.Namespace, sec.Name, t.Name); err != nil {
+	hit, err := s.store.AgentAck(sec.Namespace, sec.Name, s.agentCtx(r, t))
+	if err != nil {
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.event(r, actor(t), "secret.ack", sec.Ref(), "")
+	if hit != nil {
+		s.canaryTouched(r, *hit)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"ref": sec.Ref()})
 }
 
@@ -355,6 +364,11 @@ type putBody struct {
 func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	if t.Permission() == store.PermRead || !t.Allows(ns) {
+		if t.Allows(ns) {
+			if h := s.store.AgentTouch(ns, name, s.agentCtx(r, t), "write"); h != nil {
+				s.canaryTouched(r, *h)
+			}
+		}
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
 		return
 	}
@@ -391,6 +405,9 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 		p.Expires = &exp
 	}
 	res, err := s.store.AgentPut(ns, name, []byte(b.Value), p)
+	if err != nil && res.Canary != nil {
+		s.canaryTouched(r, *res.Canary)
+	}
 	switch {
 	case errors.Is(err, store.ErrExists):
 		apiError(w, http.StatusConflict, ns+"/"+name+" already has a value; set overwrite to replace it")
@@ -639,6 +656,9 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 	}
 	hit, err := s.store.AgentAddFlag(sec.Namespace, sec.Name, b.Reason, b.Link, s.agentCtx(r, t))
 	if err != nil {
+		if hit != nil {
+			s.canaryTouched(r, *hit)
+		}
 		if errors.Is(err, store.ErrExists) {
 			apiError(w, http.StatusConflict, "this token already has an open flag on "+sec.Ref())
 			return
@@ -673,6 +693,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token
 	}
 	hit, err := s.store.AgentSetStatus(sec.Namespace, sec.Name, b.Status, b.ReplacedBy, s.agentCtx(r, t))
 	if err != nil {
+		if hit != nil {
+			s.canaryTouched(r, *hit)
+		}
 		annotationError(w, sec, err)
 		return
 	}
@@ -702,6 +725,9 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 	}
 	hit, err := s.store.AgentProposeNote(sec.Namespace, sec.Name, b.Text, s.agentCtx(r, t))
 	if err != nil {
+		if hit != nil {
+			s.canaryTouched(r, *hit)
+		}
 		if errors.Is(err, store.ErrExists) {
 			apiError(w, http.StatusConflict, "this token already has a note on "+sec.Ref()+" waiting for approval")
 			return
@@ -740,6 +766,9 @@ type rateLimit struct {
 	seen   map[string][]time.Time
 }
 
+// maxRateKeys is how many keys a rateLimit holds before it drops idle ones.
+const maxRateKeys = 10000
+
 func newRateLimit(n int, window time.Duration) *rateLimit {
 	return &rateLimit{n: n, window: window, seen: map[string][]time.Time{}}
 }
@@ -752,6 +781,13 @@ func (l *rateLimit) allow(tok string, now time.Time) bool {
 func (l *rateLimit) allowN(tok string, n int, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if len(l.seen) > maxRateKeys { // keys can be addresses, so bound them
+		for k, v := range l.seen {
+			if len(v) == 0 || now.Sub(v[len(v)-1]) >= l.window {
+				delete(l.seen, k)
+			}
+		}
+	}
 	recent := l.seen[tok][:0:0]
 	for _, at := range l.seen[tok] {
 		if now.Sub(at) < l.window {

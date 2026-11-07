@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"time"
@@ -214,6 +215,12 @@ func (s *Store) CollectRotation(old Token, ip string) (plain string, t Token, er
 func (s *Store) RevokeUncollectedRotations(now time.Time) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Like RevokeUncollected: no copy of the state on the polling path.
+	if !slices.ContainsFunc(slices.Collect(maps.Values(s.st.Tokens)), func(t *Token) bool {
+		return t.Rotation != nil && !now.Before(t.Rotation.CollectBy)
+	}) {
+		return nil
+	}
 	snap := s.st.clone()
 	var gone []string
 	changed := false

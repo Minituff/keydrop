@@ -296,8 +296,8 @@ func newID() string {
 // characters (newlines and tabs are allowed when multiline), and the
 // invisible ones that make text read differently from what it is:
 // formatting characters (Cf: bidi overrides and isolates, zero-width
-// spaces and joiners, the BOM, soft hyphens, tag characters) and the
-// Unicode line and paragraph separators.
+// spaces and joiners, the BOM, soft hyphens, tag characters), the Unicode
+// line and paragraph separators, and the rest of what unseen lists.
 func checkText(t string, max int, multiline bool) error {
 	if len(t) > max {
 		return ErrTooLong
@@ -309,11 +309,40 @@ func checkText(t string, max int, multiline bool) error {
 		if multiline && (r == '\n' || r == '\t') {
 			continue
 		}
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Zl, unicode.Zp) {
+		if unseen(r) {
 			return ErrBadText
 		}
 	}
 	return nil
+}
+
+// unseen says whether a character can hide in text the admin reads: control
+// characters, formatting characters, line separators, variation selectors
+// (the ones above U+E0100 can carry a whole hidden message) and the blank
+// fillers Unicode says to ignore.
+func unseen(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp,
+		unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
+}
+
+// maxAgentLine bounds AgentLine's result.
+const maxAgentLine = 200
+
+// AgentLine makes one line of agent text safe to log: what can't be seen
+// goes and the rest is cut to length. For text that isn't worth refusing a
+// call over, such as a read's purpose.
+func AgentLine(t string) string {
+	t = strings.ToValidUTF8(t, "")
+	t = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unseen(r) {
+			return -1
+		}
+		return r
+	}, t))
+	if len(t) > maxAgentLine {
+		t = strings.ToValidUTF8(t[:maxAgentLine], "")
+	}
+	return t
 }
 
 // CheckAgentText checks a description (multiline) and usage (one line)
@@ -407,17 +436,48 @@ type agentTouch struct {
 
 // AgentSetStatus is SetStatus by the token in a.
 func (s *Store) AgentSetStatus(ns, name, value, replacedBy string, a AgentCtx) (*CanaryTouch, error) {
-	return s.setStatus(ns, name, value, replacedBy, "token:"+a.Token, &agentTouch{a, "status"})
+	hit, err := s.setStatus(ns, name, value, replacedBy, "token:"+a.Token, &agentTouch{a, "status"})
+	return s.orRefused(ns, name, a, "status", hit, err)
 }
 
 // AgentAddFlag is AddFlag by the token in a.
 func (s *Store) AgentAddFlag(ns, name, reason, link string, a AgentCtx) (*CanaryTouch, error) {
-	return s.addFlag(ns, name, a.Token, reason, link, &agentTouch{a, "flag"})
+	hit, err := s.addFlag(ns, name, a.Token, reason, link, &agentTouch{a, "flag"})
+	return s.orRefused(ns, name, a, "flag", hit, err)
 }
 
 // AgentProposeNote is ProposeNote by the token in a.
 func (s *Store) AgentProposeNote(ns, name, text string, a AgentCtx) (*CanaryTouch, error) {
-	return s.proposeNote(ns, name, a.Token, text, &agentTouch{a, "note"})
+	hit, err := s.proposeNote(ns, name, a.Token, text, &agentTouch{a, "note"})
+	return s.orRefused(ns, name, a, "note", hit, err)
+}
+
+// AgentTouch records an agent's call on a key as a canary touch, if the key
+// is a canary. A call that was refused still shows the token went for it,
+// which is what a canary is there to see. The caller's response must not
+// depend on the result.
+func (s *Store) AgentTouch(ns, name string, a AgentCtx, action string) *CanaryTouch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sec, ok := s.st.Secrets[key(ns, name)]
+	if !ok || !sec.Canary {
+		return nil
+	}
+	snap := s.st.clone()
+	sec = s.st.Secrets[key(ns, name)]
+	h := s.touchCanary(sec, a.Token, a.IP, action, s.now().UTC())
+	if s.commit(snap) != nil {
+		return nil
+	}
+	return &h
+}
+
+// orRefused adds the touch for a call that failed.
+func (s *Store) orRefused(ns, name string, a AgentCtx, action string, hit *CanaryTouch, err error) (*CanaryTouch, error) {
+	if err != nil && hit == nil {
+		hit = s.AgentTouch(ns, name, a, action)
+	}
+	return hit, err
 }
 
 // SetStatus sets a key's status (value "ok" clears it). actor is "admin"

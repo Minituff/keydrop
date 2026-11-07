@@ -429,6 +429,17 @@ func (c *Client) Get(ref string) (*Secret, error) {
 	return &s, c.do("GET", secretPath(ns, name), nil, &s)
 }
 
+// printableOnly drops what could fake or hide output in a terminal from
+// text a server sent.
+func printableOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if !strconv.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, ""))
+}
+
 // TooOpen says whether a file's mode lets other users read it. Windows has
 // no such bits: Go reports 0666 for every file there, and what protects a
 // file is its ACL, so the check would refuse every token.

@@ -79,7 +79,9 @@ is what marks it as no longer new), each with a note on stderr.
 To migrate an existing `.env` (needs a token with add or write access):
 `keydrop import .secrets.env --dry-run`, then without `--dry-run`. Comment
 lines above a key become its description, and each key keeps its name
-(keys that aren't upper-case are skipped). Values are never printed. Rotate
+(keys that aren't upper-case are skipped). Values are never printed, and a
+file with a multi-line value is refused whole: use `keydrop put` for that
+one. Rotate
 anything that sat in plaintext for long. `--vars` imports every key as a
 variable instead, for a file of plain settings (write tokens only).
 

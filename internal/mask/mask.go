@@ -53,6 +53,11 @@ func (m *Masker) Add(label string, value []byte) bool {
 	if len(value) < MinLength {
 		return false
 	}
+	// A value stored with a trailing newline usually reaches the output
+	// without it, as in curl -H "Authorization: $KEY".
+	if t := bytes.TrimSpace(value); len(t) < len(value) {
+		m.Add(label, t)
+	}
 	variants := [][]byte{
 		value,
 		[]byte(base64.StdEncoding.EncodeToString(value)),

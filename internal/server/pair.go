@@ -233,6 +233,10 @@ func (s *Server) apiPairPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h, ip := hashPoll(b.Poll), s.clientIP(r)
+	if !s.polls.allow(sourceGroup(ip), s.now()) {
+		apiError(w, http.StatusTooManyRequests, "too many checks from this address; wait a minute and run keydrop pair again")
+		return
+	}
 	s.pairMu.Lock()
 	s.expirePairingsLocked()
 	var p *pairing

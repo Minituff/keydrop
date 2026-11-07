@@ -257,7 +257,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   **To an agent a canary is indistinguishable from a real secret:** the
   same list entries, the same responses and errors, the same work per
   call, and no field, header or timing that differs.
-- A touch is any agent call on the canary: a reveal or `run`, a write,
+- A touch is any agent call on the canary, refused ones and `ack`
+  included: a reveal or `run`, a write,
   a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
