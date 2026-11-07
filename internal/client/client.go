@@ -269,13 +269,17 @@ func New(baseURL, token, pin string) *Client {
 		}
 	}
 	hc := &http.Client{Transport: tr, Timeout: 30 * time.Second}
-	if pin != "" {
-		hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if req.URL.Scheme != "https" {
-				return ErrPinNeedsHTTPS
-			}
-			return nil
+	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		switch {
+		case pin != "" && req.URL.Scheme != "https":
+			return ErrPinNeedsHTTPS
+		case via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https":
+			// The token, or a build about to be run, would go in the clear.
+			return ErrRedirectToHTTP
+		case len(via) >= 10:
+			return errors.New("stopped after 10 redirects")
 		}
+		return nil
 	}
 	return &Client{URL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: hc, pin: pin}
 }
@@ -283,6 +287,9 @@ func New(baseURL, token, pin string) *Client {
 // ErrPinNeedsHTTPS: a certificate pin is set but the URL is plain http, so
 // there's no certificate to check.
 var ErrPinNeedsHTTPS = errors.New("a TLS pin is set but the URL isn't https://, so it can't be checked; use the https:// URL")
+
+// ErrRedirectToHTTP: an https server redirected to plain http.
+var ErrRedirectToHTTP = errors.New("the server redirected from https to plain http, which keydrop refuses; fix the server's or proxy's redirect")
 
 // APIError is a non-2xx response.
 type APIError struct {

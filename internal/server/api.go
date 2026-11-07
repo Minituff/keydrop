@@ -370,22 +370,23 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	if t.Permission() == store.PermRead || !t.Allows(ns) {
 		if t.Allows(ns) {
-			if h := s.store.AgentTouch(ns, name, s.agentCtx(r, t), "write"); h != nil {
-				s.canaryTouched(r, *h)
-			}
+			s.touchRefused(r, t, ns, name, "write")
 		}
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
 		return
 	}
 	if !s.writeAllowed(w, t) {
+		s.touchRefused(r, t, ns, name, "write")
 		return
 	}
 	var b putBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		s.touchRefused(r, t, ns, name, "write")
 		apiError(w, http.StatusBadRequest, "body must be JSON: "+err.Error())
 		return
 	}
 	if b.Value == "" {
+		s.touchRefused(r, t, ns, name, "write")
 		apiError(w, http.StatusBadRequest, "value is empty")
 		return
 	}
@@ -404,6 +405,7 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	if b.Expires != nil {
 		exp, err := parseDate(*b.Expires)
 		if err != nil {
+			s.touchRefused(r, t, ns, name, "write")
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -631,20 +633,30 @@ func annotationError(w http.ResponseWriter, sec store.Secret, err error) {
 // annotationTarget does what every flag, status and note call shares: the
 // key must be visible to the token (else it doesn't exist), the token
 // within its rate limit, and the body JSON.
-func (s *Server) annotationTarget(w http.ResponseWriter, r *http.Request, t store.Token, body any) (store.Secret, bool) {
+func (s *Server) annotationTarget(w http.ResponseWriter, r *http.Request, t store.Token, body any, action string) (store.Secret, bool) {
 	sec, ok := s.lookup(w, r, t)
 	if !ok {
 		return sec, false
 	}
 	if !s.annotations.allow(t.Name, s.now()) {
+		s.touchRefused(r, t, sec.Namespace, sec.Name, action)
 		apiError(w, http.StatusTooManyRequests, "too many flags, statuses and notes from this token; try again later")
 		return sec, false
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(body); err != nil {
+		s.touchRefused(r, t, sec.Namespace, sec.Name, action)
 		apiError(w, http.StatusBadRequest, "body must be JSON: "+err.Error())
 		return sec, false
 	}
 	return sec, true
+}
+
+// touchRefused counts a call refused before it reached the store as a touch,
+// if the key is a canary. The caller's response doesn't depend on it.
+func (s *Server) touchRefused(r *http.Request, t store.Token, ns, name, action string) {
+	if h := s.store.AgentTouch(ns, name, s.agentCtx(r, t), action); h != nil {
+		s.canaryTouched(r, *h)
+	}
 }
 
 type flagBody struct {
@@ -655,7 +667,7 @@ type flagBody struct {
 // apiFlag lets any token that sees a key ask the admin to look at it.
 func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) {
 	var b flagBody
-	sec, ok := s.annotationTarget(w, r, t, &b)
+	sec, ok := s.annotationTarget(w, r, t, &b, "flag")
 	if !ok {
 		return
 	}
@@ -692,7 +704,7 @@ type statusBody struct {
 // apiStatus sets a key's status; "ok" clears it.
 func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token) {
 	var b statusBody
-	sec, ok := s.annotationTarget(w, r, t, &b)
+	sec, ok := s.annotationTarget(w, r, t, &b, "status")
 	if !ok {
 		return
 	}
@@ -724,7 +736,7 @@ type noteBody struct {
 // approves; the response links to the page where that happens.
 func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) {
 	var b noteBody
-	sec, ok := s.annotationTarget(w, r, t, &b)
+	sec, ok := s.annotationTarget(w, r, t, &b, "note")
 	if !ok {
 		return
 	}

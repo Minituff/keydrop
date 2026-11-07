@@ -5,15 +5,22 @@ The [agent setup guide](agent-setup.md) does all of this for you. These are the 
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-# Makes the key, private from the start, and never replaces an existing one.
-# Compose mounts the file as it is on the host, and the container runs as
-# uid 65532, so the key then goes to it (and only it).
+# Generate a key only for a new installation.
 if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
-  [ -s master.key ] || rm -f master.key
-  echo "No new master.key was made. If one exists, it was left alone."
+  echo "Key generation failed or master.key already exists. Stop and investigate."
 fi
+```
+
+If key generation or either `sudo` command fails, **stop** before starting the server.
+An existing `master.key` is left untouched. A failed first attempt may leave
+an empty or incomplete file; inspect the situation before removing it and
+trying again. Never replace the key for an existing installation.
+
+Once the key is ready:
+
+```sh
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 # edit KEYDROP_PUBLIC_URL and KEYDROP_TLS_HOSTS, then:
 docker compose -f compose.example.yml up -d
@@ -34,14 +41,21 @@ The log prints two things:
 ## The master key
 
 keydrop encrypts everything with this key, and never writes it to `data/`.
+`genkey` writes a random key straight to `master.key` without displaying it.
+Compose mounts that file at `/run/secrets/keydrop_master_key`, and keydrop
+reads it there on every start.
 
 - **Make it once.** The commands above won't replace an existing
   `master.key`. Don't generate a new one for a server that's in use: a new key
   can't read the old data.
 - **Use the same file on every start.** If you move the server, move
   `master.key` with `data/`.
-- **Back it up away from `data/`,** for example in your password manager.
-  Someone with both can read every value.
+- **Back it up away from `data/`.** In a private terminal, run
+  `sudo cat master.key` and copy the line into your password manager. Don't
+  paste it into a chat or give it to an agent. Someone with both the key and
+  `data/` can read every value.
+- **To restore it,** put the saved line back in `master.key`, then run
+  `sudo chown 65532:65532 master.key && sudo chmod 400 master.key`.
 - **If you lose it,** nothing stored can be recovered, and there's no reset.
   You'd start again with a new key and an empty `data/`.
 - **If it leaks,** and someone may also have a copy of `data/`, treat every

@@ -102,7 +102,9 @@ paste it into `keydrop login --url URL`.
 `SHA256SUMS`. Releases on GitHub carry every build too. The CLI keeps its
 files in `%USERPROFILE%\.config\keydrop`, and works from there like on any
 other system, except that Windows has no file modes, so there's no warning
-about a token file other users could read.
+about a token file other users could read. What protects the file is its
+folder's permissions, and your user profile is private by default, so keep the
+token there: don't point `KEYDROP_TOKEN_FILE` at a shared folder.
 
 `keydrop --version` shows the build on any system. keydrop tells you, at most
 once a day, if it doesn't match the server's.

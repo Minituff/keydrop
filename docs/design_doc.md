@@ -357,8 +357,9 @@ log, not for access control.
 - `put` takes text up to 60 KiB from stdin, and refuses anything that
   isn't valid UTF-8 rather than letting JSON mangle it: base64 a binary
   value first.
-- A pin with an `http://` URL is an error, not silently unchecked, and a
-  pinned client won't follow a redirect away from https.
+- A pin with an `http://` URL is an error, not silently unchecked, and the
+  client won't follow a redirect from https to plain http, pinned or not:
+  the token or a build would go in the clear.
 
 ### Variables
 Not everything an agent needs is secret: an API base URL, an account ID, a
