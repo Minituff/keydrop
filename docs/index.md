@@ -18,7 +18,7 @@
     <a href="#quick-start">Quick start</a> ·
     <a href="features/">Features</a> ·
     <a href="security/">Security</a> ·
-    <a href="#documentation">Docs</a>
+    <a href="https://minituff.github.io/keydrop/">Docs</a>
   </p>
 </div>
 
@@ -125,6 +125,8 @@ Step by step: [Installing the server](install.md), then
 [Pairing an agent](pairing.md).
 
 ## Documentation
+
+Also on the web, with search: **[minituff.github.io/keydrop](https://minituff.github.io/keydrop/)**.
 
 | | |
 |---|---|

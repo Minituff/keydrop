@@ -6,6 +6,10 @@
 #   v1.2.3-rc.1       the same as a pre-release, without :latest
 #   any other name    only a multi-arch image with that tag, such as dev
 #
+# To write the notes yourself, save a draft release on GitHub with the tag
+# first (don't publish it: published releases are immutable), then run this
+# with the same tag. It attaches the builds and publishes the draft.
+#
 # Pushing a v* tag does the same, and bump-version.yml starts it by dispatch
 # for Renovate's patch releases. Runs on GitHub-hosted runners only; never
 # point a public repo at a self-hosted runner.
@@ -116,9 +120,25 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
           LATEST: ${{ needs.version.outputs.latest }}
-        # Makes the tag too, when this was started by hand. A tag made with
-        # this token doesn't start the workflow a second time.
-        run: gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
+        # Releases are immutable once published, so the builds go on before
+        # that. A draft written on GitHub keeps its notes, gets the builds and
+        # is published here, its tag on the commit that was tested and built.
+        # A tag made with this token doesn't start the workflow a second time.
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          case $draft in
+          true)
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST" --draft=false
+            ;;
+          false)
+            echo "::error::$TAG is already published, and a published release can't take new files. Save the release as a draft on GitHub, or use a new tag."
+            exit 1
+            ;;
+          *)
+            gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
+            ;;
+          esac
   image:
     needs: [version, test, e2e]
     runs-on: ubuntu-latest
