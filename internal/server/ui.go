@@ -366,6 +366,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	s.setupMu.Lock()
 	s.setupCode, s.setupSeed = "", nil
 	s.setupMu.Unlock()
+	s.credentialsChanged()
 	s.mu.Lock()
 	s.sessions = map[string]*session{} // a reset logs everyone out
 	s.mu.Unlock()
@@ -403,6 +404,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in 15 minutes.")
 		return
 	}
+	gen := s.credentialGen()
 	hash, seed, _, err := s.store.Admin()
 	ok := err == nil && auth.CheckPassword(hash, r.PostFormValue("password"))
 	if ok && seed != nil {
@@ -421,10 +423,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, r, http.StatusUnauthorized, msg)
 		return
 	}
+	if !s.newSessionSince(w, gen) {
+		s.event(r, "admin", "login.fail", "", "credentials changed during the login")
+		s.renderLogin(w, r, http.StatusUnauthorized, "The login details changed while you were logging in. Try again.")
+		return
+	}
 	att.Succeed()
 	s.event(r, "admin", "login", "", "")
 	s.setDeviceCookie(w)
-	s.newSession(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -1182,6 +1188,7 @@ func (s *Server) handleTOTPOn(w http.ResponseWriter, r *http.Request, _ string, 
 		return
 	}
 	_ = s.store.UseTOTPStep(step) // fails only if this code was already used
+	s.credentialsChanged()
 	s.mu.Lock()
 	se.newTOTP = nil
 	s.mu.Unlock()
@@ -1216,6 +1223,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, _ string
 	}
 	// End every session, this one included, and start a fresh one: if the
 	// leak being reacted to is this session's own cookie, it must die too.
+	s.credentialsChanged()
 	s.mu.Lock()
 	clear(s.sessions)
 	s.mu.Unlock()
@@ -1235,6 +1243,7 @@ func (s *Server) handleTOTPOff(w http.ResponseWriter, r *http.Request, _ string,
 		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save. Check keydrop's log.")
 		return
 	}
+	s.credentialsChanged()
 	s.event(r, "admin", "admin.totp.off", "", "")
 	http.Redirect(w, r, "/settings?msg=totpoff", http.StatusSeeOther)
 }

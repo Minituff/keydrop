@@ -98,17 +98,17 @@ mkdir data && sudo chown 65532:65532 data
 if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
-  [ -s master.key ] || rm -f master.key
-  echo "no new master.key was made: STOP"
+  echo "key generation failed or master.key already exists: STOP"
 fi
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
 ```
 
 `genkey` writes the master key straight into `master.key`, never to the
 screen. The commands never overwrite an existing `master.key` (it may be
-the key to data that's already stored) and delete an empty one. If either
-message above printed, stop and tell the person. Don't open or print that
-file (see step 3). keydrop runs as uid
+the key to data that's already stored). A failed first attempt can leave an
+empty or incomplete file. If the failure message printed or either `sudo`
+command failed, stop and tell the person; don't remove or replace the file
+yourself. Don't open or print that file (see step 3). keydrop runs as uid
 65532, so the file and `data/` belong to it.
 
 In `compose.example.yml`, set `KEYDROP_PUBLIC_URL` to the address the

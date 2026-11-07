@@ -94,6 +94,10 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+	// credGen counts changes to the admin's credentials. A login that began
+	// before one mustn't end in a session: checking a password takes long
+	// enough for the change to land in between. Guarded by mu.
+	credGen uint64
 
 	setupMu   sync.Mutex
 	setupCode string // empty when setup isn't open
@@ -445,9 +449,39 @@ func (s *Server) cookieName() string {
 }
 
 func (s *Server) newSession(w http.ResponseWriter) {
+	s.mu.Lock()
+	gen := s.credGen
+	s.mu.Unlock()
+	s.newSessionSince(w, gen)
+}
+
+// credentialGen is what a login notes before it checks anything.
+func (s *Server) credentialGen() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.credGen
+}
+
+// credentialsChanged records a change to the admin's password or
+// authenticator, after the store has it.
+func (s *Server) credentialsChanged() {
+	s.mu.Lock()
+	s.credGen++
+	s.mu.Unlock()
+}
+
+// newSessionSince makes a session unless the credentials changed since gen,
+// and says which. The check and the insert share the lock, and a change
+// counts before it clears sessions, so a login either fails here or leaves
+// a session that the change then clears.
+func (s *Server) newSessionSince(w http.ResponseWriter, gen uint64) bool {
 	id := randomString(32)
 	now := s.now()
 	s.mu.Lock()
+	if s.credGen != gen {
+		s.mu.Unlock()
+		return false
+	}
 	s.sessions[id] = &session{csrf: randomString(24), created: now, seen: now}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
@@ -455,6 +489,7 @@ func (s *Server) newSession(w http.ResponseWriter) {
 		Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
 		MaxAge: int(sessionAbsolute / time.Second),
 	})
+	return true
 }
 
 func (s *Server) currentSession(r *http.Request) (string, *session) {
