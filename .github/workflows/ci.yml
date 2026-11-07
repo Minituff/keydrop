@@ -19,6 +19,8 @@ jobs:
         run: sh scripts/leak-check.sh
       - name: Leak check fails closed
         run: sh scripts/leak-check-test.sh
+      - name: Release tags publish what they should
+        run: sh scripts/release-version-test.sh
       - name: go.mod and the Dockerfile use the same Go
         run: sh scripts/go-version-check.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -38,8 +40,9 @@ jobs:
           fail_ci_if_error: false
 
   # Builds the image and checks it hands out a working CLI. Runs alongside
-  # test and e2e. Its layer cache only speeds up this job: nothing that
-  # publishes may read it, since any job in the workflow can write to it.
+  # test and e2e. CI publishes nothing: release.yml does, by hand. The layer
+  # cache only speeds up this job. Nothing that publishes may read it, since
+  # any job in the workflow can write to it.
   image:
     runs-on: ubuntu-latest
     permissions:
@@ -48,11 +51,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: ver
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/dev ]; then
-            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=ci-test" >> "$GITHUB_OUTPUT"
-          fi
+          echo "version=ci-test" >> "$GITHUB_OUTPUT"
           echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -105,50 +104,3 @@ jobs:
           cache: false # zero deps: no go.sum to key a cache on
       - run: go vet -tags e2e ./e2e/...
       - run: go test -tags e2e -count=1 -v ./e2e/...
-
-  # Pushes to dev also publish ghcr.io/<repo>:dev and :dev-<sha>, after the
-  # tests pass. Deployments pin the digest, never the moving :dev tag. It
-  # builds from scratch: see the image job for why it can't use the cache.
-  dev-image:
-    needs: [test, e2e, image]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=dev
-            type=sha,prefix=dev-
-      - id: short
-        run: |
-          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
-      - id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=dev-${{ steps.short.outputs.sha }}
-            COMMIT=${{ github.sha }}
-            COMMIT_TIME=${{ steps.short.outputs.time }}
-            REPO_URL=${{ github.server_url }}/${{ github.repository }}
-          provenance: false
-          no-cache: true
-      - name: Digest
-        run: echo "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"

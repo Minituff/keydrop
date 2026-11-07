@@ -177,9 +177,8 @@ its own job. When a change touches the server and CLI together (pairing,
 While iterating, run only the package and tests you're changing
 (`go test ./internal/store -run TestFlag`). Run the full list above once
 before pushing. In CI, `test`, `e2e` and `image` (one Docker build plus the
-CLI install check) run in parallel; `dev-image` builds again from scratch
-and pushes afterwards. To confirm a change, wait for `test` and `e2e`; the image jobs
-only matter when deploying.
+CLI install check) run in parallel; nothing publishes from a push. To
+confirm a change, wait for `test` and `e2e`.
 
 Run it locally:
 
@@ -225,8 +224,9 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
   No AI attribution lines (`Co-Authored-By`, "Generated with …").
 - Never commit real secrets, master keys, tokens or data directories, even
   in tests. Test fixtures use obviously fake values.
-- Don't push tags or create releases unless the maintainer asks: a `v*` tag
-  publishes binaries and an image.
+- Don't push tags, run `release.yml` or create releases unless the
+  maintainer asks: they publish binaries and an image. Publishing is by hand;
+  see "Building" in [docs/development.md](docs/development.md).
 
 ## Private-only setup
 
@@ -261,19 +261,13 @@ with a GitHub noreply address.
 
 ### Before going public
 
-In this order; the maintainer does steps 7 to 9:
+In this order; the maintainer does steps 6 to 8:
 
-1. A thorough security review of the whole codebase, with findings fixed.
-   The repo and its history were reviewed for leaks on 2026-11-07: no
-   real secrets. The personal author email on some commits was rewritten
-   out; every commit keeps its tree, and the hashes the e2e tests build
-   old releases from were updated to match. Private addresses in an old
-   test stay in the history, which is acceptable; the email is not.
-2. Check the web UI in a real browser, on a phone and a desktop.
-3. Merge `dev` into `main`; CI green on `main`.
-4. Run the `leak-history` workflow (it only appears once on the default
+1. Check the web UI in a real browser, on a phone and a desktop.
+2. Merge `dev` into `main`; CI green on `main`.
+3. Run the `leak-history` workflow (it only appears once on the default
    branch) and clean up anything it finds.
-5. Push the rewritten history to a **new private repository**. Don't
+4. Push the rewritten history to a **new private repository**. Don't
    force-push this one: GitHub keeps force-pushed-away commits fetchable
    by hash, and each old Actions run still shows its commit's author
    email. Then rename this repo (e.g. `keydrop-old`, kept private) and
@@ -281,10 +275,10 @@ In this order; the maintainer does steps 7 to 9:
    package settings. A hard gate for every later step:
    `git log --all --format='%ae%n%ce' | sort -u` on a fresh clone of the
    new repo prints only noreply addresses.
-6. `git grep PRIVATE:` is empty: each such line removed or made generic.
-7. Make the repository and its container package public.
-8. Tag `v0.1.0`; the release workflow builds the image and CLI binaries.
+5. `git grep PRIVATE:` is empty: each such line removed or made generic.
+6. Make the repository and its container package public.
+7. Run the `release` workflow on `main` with tag `v0.1.0`.
    Then give the Renovate app access to the new repo. Not before: patch
    releases count up from this tag, and `bump-version.yml` stops without one.
-9. Optionally publish the docs site: Actions → docs → Run workflow on
-   `main`, then Settings → Pages → the `gh-pages` branch.
+8. Optionally publish the docs site: set Settings → Pages → Source to
+   GitHub Actions, then Actions → docs → Run workflow on `main`.
