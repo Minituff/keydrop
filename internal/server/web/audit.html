@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Log</h1>
+<form method="get" action="/audit" class="filters" role="search">
+  <input type="search" name="q" value="{{.Q}}" placeholder="Search…" aria-label="Search the log" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <select name="who" aria-label="Who">
+    <option value="">Anyone</option>
+    {{range .Whos}}<option value="{{.}}"{{if eq . $.Who}} selected{{end}}>{{.}}</option>{{end}}
+    <option value="-"{{if eq .Who "-"}} selected{{end}}>no credential</option>
+  </select>
+  <select name="what" aria-label="What">
+    <option value="">Anything</option>
+    {{range .Whats}}<option value="{{.}}"{{if eq . $.What}} selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  {{if .Old}}<input type="hidden" name="sort" value="old">{{end}}
+  <button class="small">Filter</button>
+  {{if .Filtered}}<a href="/audit{{if .Old}}?sort=old{{end}}">Clear</a>{{end}}
+</form>
+<p class="muted"><small>{{if .Filtered}}{{.Matched}} of {{end}}{{.Total}} recent events{{if gt .Pages 1}} · page {{.Page}} of {{.Pages}}{{end}}. The full log is in keydrop's data directory.</small></p>
+<div class="card flush scroll"><table>
+<thead><tr><th><a href="{{.SortLink}}" title="Change the order">When {{if .Old}}↑{{else}}↓{{end}}</a></th><th>Who</th><th>What</th><th>Secret</th><th>From</th></tr></thead>
+<tbody>
+{{range .Events}}
+<tr><td>{{fmtTime .Time}}</td><td>{{.Actor}}</td><td>{{.Action}}{{if or (eq .Action "secret.read.canary") (eq .Action "secret.canary.touch")}} <span class="badge expired">canary</span>{{end}}{{if .Unauthenticated}} <small class="muted">(no credential)</small>{{end}}{{if .Detail}} <small>{{.Detail}}</small>{{end}}{{if .Text}}<div class="agent-text"><small>agent-written:</small> {{.Text}}</div>{{end}}</td><td>{{.Target}}</td><td>{{.IP}}</td></tr>
+{{else}}
+<tr><td colspan="5" class="muted">{{if .Filtered}}Nothing matches.{{else}}Nothing yet.{{end}}</td></tr>
+{{end}}
+</tbody>
+</table></div>
+{{if gt .Pages 1}}<nav class="pager" aria-label="Pages">
+  {{with .Prev}}<a class="button secondary small" href="{{.}}">← Previous</a>{{end}}
+  {{with .Next}}<a class="button secondary small next" href="{{.}}">Next →</a>{{end}}
+</nav>{{end}}
+{{end}}

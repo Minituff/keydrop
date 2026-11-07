@@ -1,0 +1,25 @@
+{{define "content"}}
+{{if .Pairings}}
+<h1>Waiting for approval</h1>
+<ul class="list">
+{{range .Pairings}}
+  <li><a href="/pair/{{.ID}}"><strong>{{.Host}}</strong> <span class="badge">code {{code .Code}}</span>
+    <small>from {{.IP}} · user {{.User}} · asked {{fmtTime .Created}}</small></a></li>
+{{end}}
+</ul>
+{{end}}
+
+<div class="top">
+  <h1>Agents</h1>
+  <a class="button" href="/tokens/new">{{template "icon" "plus"}}Add</a>
+</div>
+<p class="lead">Each agent sees only its namespaces, from the addresses it's allowed. Each gets a new token on a schedule: it asks, you approve in the Inbox, and it picks the token up by itself.</p>
+<ul class="list agents">
+{{range .Tokens}}
+  <li><a href="/token/{{.Name}}"><strong>{{.Name}}</strong> <span class="badge">{{.Permission}}</span>{{if .Expired}} <span class="badge expired">{{.Expiry}}</span>{{else if .Soon}} <span class="badge soon">{{.Expiry}}</span>{{end}}{{if .Rotation}} <span class="badge soon">renewed, not collected</span>{{else if .Renewal}} <span class="badge soon">asked for renewal</span>{{end}}{{if .Stale}} <span class="badge">unused {{.StaleDays}}d</span>{{end}}
+    <small>{{join .Namespaces ", "}} · last used {{since .LastUsedAt}}</small></a></li>
+{{else}}
+  <li class="muted">No agents yet. <a href="/tokens/new">Add one</a>.</li>
+{{end}}
+</ul>
+{{end}}

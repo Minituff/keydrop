@@ -1,0 +1,96 @@
+{{define "content"}}
+<h1>Settings</h1>
+<h2 id="appearance">Appearance</h2>
+<form method="post" action="/settings/theme" class="seg" aria-label="Appearance">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{$cur := or .Theme "system"}}{{range .Themes}}<button name="theme" value="{{.}}" class="{{if eq . $cur}}on{{else}}secondary{{end}} small" aria-pressed="{{eq . $cur}}">{{if eq . "system"}}System{{else if eq . "light"}}Light{{else}}Dark{{end}}</button>{{end}}
+</form>
+<p><small class="muted">System follows this device's light or dark mode. Saved in this browser only.</small></p>
+
+<h2>Authenticator code</h2>
+{{if .TOTP}}
+<p><span class="badge new">on</span> Logging in needs your password and a 6-digit code from your authenticator app.</p>
+<form method="post" action="/settings/totp/off" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Password <small>(to confirm)</small>
+    <input type="password" name="password" autocomplete="current-password" required></label>
+  <button class="secondary">Turn off</button>
+</form>
+{{else if .OTPSecret}}
+<p>Add keydrop to your authenticator app, then enter the code it shows. Nothing changes until you do.</p>
+<form method="post" action="/settings/totp/on" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{template "authenticator" .}}
+  <label>Password <small>(to confirm)</small>
+    <input type="password" name="password" autocomplete="current-password" required></label>
+  <label>6-digit code from the app
+    <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>
+  <button>Turn on</button>
+</form>
+{{else}}
+<p><span class="badge">off</span> Logging in needs only your password. This page can show every stored key, so an authenticator code is worth having: someone who learns your password still can't get in.</p>
+<form method="post" action="/settings/totp/start" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button>Set up an authenticator</button>
+</form>
+{{end}}
+
+<h2>Auto groups</h2>
+<form method="post" action="/settings/autogroups" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label class="check"><input type="checkbox" name="on" value="yes"{{if .AutoGroups}} checked{{end}}> Group entries by name: entries not in a group are grouped by the part before the first _ (CLOUDFLARE_TOKEN and CLOUDFLARE_ZONE go under CLOUDFLARE) when at least two share it</label>
+  <button>Save</button>
+</form>
+
+<h2>Alerts and canaries</h2>
+<div class="card alerts">
+{{if .AlertsConfigured}}
+  <p>Alerts go to: {{with .AlertDest}}{{if .Discord}}<strong>Discord</strong>{{if .Name}}, posted as <strong>{{.Name}}</strong>{{end}}{{if .ChannelURL}} · <a href="{{.ChannelURL}}" target="_blank" rel="noopener noreferrer">open the channel</a>{{end}}{{else if .Host}}a webhook at <strong>{{.Host}}</strong>{{else}}the webhook{{end}}{{end}}</p>
+  {{with .AlertDest.Problem}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <p><small class="muted">{{if eq .AlertSource "settings"}}Added here {{fmtTime .AlertSetAt}}.{{if .AlertEnv}} keydrop's container also sets KEYDROP_ALERT_WEBHOOK; that one is used again if you remove this.{{end}}{{else}}Set by KEYDROP_ALERT_WEBHOOK in keydrop's container. A webhook added here is used instead.{{end}}</small></p>
+  <form method="post" action="/settings/alert-test" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="secondary">Send test alert</button>
+  </form>
+{{else}}
+  <p>Alert webhook: <span class="badge">not configured</span>. Canary reads still show in the Inbox; add a webhook to get them in a chat channel too.</p>
+{{end}}
+  <form method="post" action="/settings/alert-webhook">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>{{if eq .AlertSource "settings"}}Replace the webhook{{else if .AlertsConfigured}}Use a different webhook{{else}}Webhook URL{{end}}
+      <input type="password" name="webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <p><small class="muted">Stored encrypted and never shown again. In Discord: the channel's settings → Integrations → Webhooks → Copy Webhook URL.</small></p>
+    <button>Save webhook</button>
+  </form>
+{{if eq .AlertSource "settings"}}  <form method="post" action="/settings/alert-webhook/remove" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="secondary">Remove this webhook</button>
+  </form>
+{{end}}</div>
+<form method="post" action="/settings/canary" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label class="check"><input type="checkbox" name="revoke" value="yes"{{if .RevokeOnCanary}} checked{{end}}> <span>Revoke a token that reads a canary <small>(or changes one). Stops it at once, but the agent then knows which secret was the decoy.</small></span></label>
+  <button>Save</button>
+</form>
+
+<h2>Password</h2>
+<form method="post" action="/settings/password" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Current password
+    <input type="password" name="current" autocomplete="current-password" required></label>
+  <label>New password <small>(at least 12 characters)</small>
+    <input type="password" name="password" autocomplete="new-password" minlength="12" required></label>
+  <label>New password again
+    <input type="password" name="password2" autocomplete="new-password" minlength="12" required></label>
+  <button>Change password</button>
+</form>
+<p class="muted">Every other browser gets logged out, and this one gets a new session. Agent tokens keep working: revoke any you don't trust under Agents.</p>
+
+<h2>Session</h2>
+<form method="post" action="/logout" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="secondary">{{template "icon" "out"}}Log out</button>
+</form>
+<p class="muted version">keydrop {{with .Build.CommitURL}}<a href="{{.}}" rel="noreferrer">{{$.Version}}</a>{{else}}{{.Version}}{{end}}
+{{- with .Build.Committed}}<br>committed {{.}}{{end}}<br>running since {{.Build.Started}}</p>
+{{end}}

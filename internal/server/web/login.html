@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Log in</h1>
+<form method="post" action="/login" class="card">
+  <label>Password
+    <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+  {{if .TOTP}}<label>Authenticator code
+    <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" required></label>{{end}}
+  <button>Log in</button>
+</form>
+{{end}}

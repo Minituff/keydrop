@@ -1,0 +1,41 @@
+{{define "content"}}
+<div class="top">
+  <h1>Secrets</h1>
+  <form method="get" action="/" class="searchbox" role="search">{{template "icon" "search"}}<input type="search" name="q" value="{{.Query}}" placeholder="Search names…" aria-label="Search names" autocomplete="off" autocapitalize="off" spellcheck="false"></form>
+  <a class="button" href="/new">{{template "icon" "plus"}}New</a>
+</div>
+{{if .NoAgents}}<p class="attn info">{{template "icon" "bot"}}<span>No agents yet. Set up an agent: one prompt to paste into it.</span><a href="/tokens/setup">Set up an agent {{template "icon" "chev"}}</a></p>{{end}}
+{{if .InboxCount}}<p class="attn warn">{{template "icon" "flag"}}<span><b>{{.InboxCount}} {{if eq .InboxCount 1}}thing needs{{else}}things need{{end}} you</b><span class="lng">{{with .InboxSummary}}: {{.}}{{end}}</span></span><a href="/inbox">Open inbox {{template "icon" "chev"}}</a></p>{{end}}
+
+{{range .Sections}}
+<h2 class="nsh">{{.Namespace}}</h2>
+{{range .Groups}}
+<section class="group{{if .Color}} color-{{.Color}}{{end}}{{if .Auto}} auto{{end}}{{if .Ungrouped}} ungrouped{{end}}" data-color="{{.Color}}"{{if .Auto}} data-auto="true"{{end}}>
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b>{{if .Auto}}<span class="chip">auto</span>{{end}}{{if .Description}}<span class="desc">{{.Description}}</span>{{end}}<span class="cnt count">{{.Count}}</span></h3>
+  {{range .Rows}}
+  <a class="erow entry-row" href="/secret/{{.Namespace}}/{{.Name}}">
+    <span class="k{{if not .Variable}} s{{end}}">{{if .Variable}}{{template "icon" "var"}}{{else}}{{template "icon" "lock"}}{{end}}</span>
+    <span class="nm">{{.Name}}</span>
+    {{if .Variable}}<code class="val value">{{.Value}}</code>{{else}}<span class="mask" aria-label="hidden">••••••••••</span>{{end}}
+    <span class="meta">
+      {{if .New}}<span class="st new">new</span>{{end}}
+      {{with .StatusOf}}<span class="st bad">{{.}}</span>{{end}}
+      {{with expiry .Expires}}<span class="st {{if .Class}}{{.Class}}{{else}}ok{{end}}">{{.Text}}</span>{{end}}
+      {{if not .Variable}}<span class="rd">{{if .LastReadAt}}read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}{{else}}never read{{end}}</span>{{end}}
+    </span>
+  </a>
+  {{end}}
+</section>
+{{end}}
+{{end}}
+
+{{if and (not .Sections) .Query}}
+<div class="card empty"><b class="t">Nothing matches "{{.Query}}"</b>Names, descriptions and groups are searched. <a href="/">Show everything</a></div>
+{{else if not .Sections}}
+<div class="card empty">
+  <b class="t">No secrets yet</b>
+  Add one with <b>New</b>, or let an agent ask: it runs <code>keydrop request NAME</code> and the request shows up in your <a href="/inbox">Inbox</a> for you to fill in.
+  <div class="actions"><a class="button" href="/new">{{template "icon" "plus"}}New secret</a><a class="button secondary" href="/tokens/setup">Set up an agent</a></div>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,47 @@
+{{define "content"}}
+<p><a href="/tokens">← Agents</a></p>
+{{with .T}}
+<h1>{{.Name}} <span class="badge">{{.Permission}}</span></h1>
+<p><small>created {{fmtTime .CreatedAt}} · last used {{since .LastUsedAt}}{{if .LastUsedFrom}} from {{.LastUsedFrom}}{{end}}</small><br>
+<small>{{if .Expired}}<span class="badge expired">{{.Expiry}}</span>{{else if .Soon}}<span class="badge soon">{{.Expiry}}</span>{{else}}{{.Expiry}}{{end}}{{if .Rotation}} · <span class="badge soon">renewed, waiting for the agent to collect</span>{{else if .Renewal}} · <a href="/inbox">asked for renewal</a>{{end}}</small></p>
+{{if .Stale}}<p class="muted"><small>Not used for {{.StaleDays}} days. Revoke it if no agent needs it any more.</small></p>{{end}}
+
+<h2>Namespaces</h2>
+<form method="post" action="/tokens/{{.Name}}/namespaces">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  {{template "nschecks" (nsOpts $.Namespaces .Namespaces)}}
+  <button class="small">Save namespaces</button>
+</form>
+
+<h2>Access</h2>
+<form method="post" action="/tokens/{{.Name}}/permission" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label>Permission {{template "permission" .Permission}}</label>
+  <button class="small">Save</button>
+</form>
+<form method="post" action="/tokens/{{.Name}}/sources" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label>Allowed from{{if not .Sources}} <span class="badge">anywhere</span>{{end}}
+    <input name="sources" value="{{join .Sources ", "}}" placeholder="anywhere" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <button class="small">Save</button>
+</form>
+<form method="post" action="/tokens/{{.Name}}/selfupgrade" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label class="check"><input type="checkbox" name="selfupgrade" value="yes"{{if .SelfUpgrade}} checked{{end}}> Allow self-upgrade</label>
+  <button class="small">Save</button>
+</form>
+<p><small class="muted">When this agent's CLI is behind the server, keydrop tells it to run <code>keydrop upgrade</code>. Off: it's told to leave that to you, and <code>keydrop upgrade</code> refuses. Advisory: it guides the agent, it can't stop a machine replacing its own files.</small></p>
+
+<h2>Token</h2>
+<form method="post" action="/tokens/{{.Name}}/renew" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label>New token every {{template "lifetime" .RenewLifetime}}</label>
+  <button class="small">Rotate now</button>
+</form>
+<form method="post" action="/tokens/{{.Name}}/revoke" class="inline">
+  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+  <label class="check"><input type="checkbox" name="confirm" value="yes" required> sure</label>
+  <button class="danger small">Revoke</button>
+</form>
+{{end}}
+{{end}}

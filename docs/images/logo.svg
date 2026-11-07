@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="keydrop">
+  <rect width="128" height="128" rx="30" fill="#6d4aff"/>
+  <g transform="translate(24 24) scale(3.333)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+    <circle cx="8" cy="15" r="4"/>
+    <path d="M11 12l8-8m-3 3l2 2m-4 0l2 2"/>
+  </g>
+</svg>

@@ -1,0 +1,33 @@
+/* keydrop's palette (internal/server/web/style.css), so the docs look like the app. */
+:root, [data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1f1a3d;        /* the app's sidebar */
+  --md-primary-fg-color--light: #29244a;
+  --md-primary-fg-color--dark: #1f1a3d;
+  --md-accent-fg-color: #6d4aff;
+  --md-typeset-a-color: #5b39e8;
+  --md-default-bg-color: #f7f6fb;
+  --md-footer-bg-color: #1f1a3d;
+  --md-footer-bg-color--dark: #1f1a3d;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 250;
+  --md-primary-fg-color: #29244a;
+  --md-primary-fg-color--light: #34304a;
+  --md-primary-fg-color--dark: #1f1a3d;
+  --md-accent-fg-color: #a993ff;
+  --md-typeset-a-color: #a993ff;
+  --md-default-bg-color: #1f1d2b;
+  --md-code-bg-color: #2b2839;
+  --md-footer-bg-color: #1f1a3d;
+  --md-footer-bg-color--dark: #1a1634;
+}
+
+/* The logo is a coloured tile already; give it a little more room. */
+.md-header__button.md-logo img { height: 1.6rem; border-radius: 6px; }
+
+/* Screenshot rows on the home page: phone frames with rounded corners. */
+.md-typeset table:not([class]) td img { border-radius: 14px; box-shadow: 0 2px 10px rgba(28, 26, 41, .18); }
+
+/* Buttons and badges in the app's accent. */
+.md-typeset .md-button--primary { background-color: #6d4aff; border-color: #6d4aff; }

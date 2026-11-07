@@ -1,0 +1,88 @@
+# The docs site, for people deciding whether to run keydrop and setting it up.
+# Preview: pip install mkdocs-material==9.8.0 && mkdocs serve (the version docs.yml uses)
+# docs/index.md is generated from README.md (scripts/docs-index.sh).
+site_name: keydrop
+site_description: A secret drop for AI agents. Paste an API key on your phone; your agent uses it without ever seeing it.
+site_author: James Tufarelli
+site_url: https://minituff.github.io/keydrop/
+repo_name: Minituff/keydrop
+repo_url: https://github.com/Minituff/keydrop
+edit_uri: edit/main/docs/
+
+nav:
+  - Home: index.md
+  - Features: features.md
+  - Security: security.md
+  - Setup:
+      - With your agent: agent-setup.md
+      - Installing the server: install.md
+      - Pairing an agent: pairing.md
+      - Upgrading and rolling back: upgrading.md
+  - Reference:
+      - API: api.md
+  - Developers:
+      - Development: development.md
+      - Design doc: design_doc.md
+      - UI styling: ui.md
+
+theme:
+  name: material
+  logo: images/logo.svg
+  favicon: images/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.view
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra:
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format

@@ -1,0 +1,41 @@
+# Cuts a patch release when Renovate merges something that changes what
+# ships. Renovate puts [bump version] in those commits (.github/renovate.json5);
+# anything else on main waits for a tag from the maintainer.
+name: bump-version
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, go.mod]
+permissions: {}
+# One at a time, so two merges can't pick the same version.
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+jobs:
+  bump:
+    if: contains(github.event.head_commit.message, '[bump version]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+      actions: write # start the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Tag the next patch version and release it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+          if [ -z "$last" ]; then
+            echo "::error::no version tag yet: the first release is tagged by hand"
+            exit 1
+          fi
+          next=$(echo "$last" | awk -F. '{ print $1 "." $2 "." $3 + 1 }')
+          git tag "$next" "$GITHUB_SHA"
+          git push origin "refs/tags/$next"
+          # A tag pushed with this token doesn't trigger workflows (GitHub's
+          # loop guard), but a dispatch does, so no personal token is needed.
+          gh workflow run release.yml --ref "$next"
+          echo "Released $next (was $last)" | tee -a "$GITHUB_STEP_SUMMARY"

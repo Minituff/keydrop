@@ -1,0 +1,77 @@
+// Keeps Go and the base images current. The rules decide what merges by
+// itself and what cuts a release; docs/development.md explains the flow.
+// [bump version] in a commit body is what bump-version.yml looks for.
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "dependencyDashboardTitle": "Renovate Dashboard 🤖",
+  "prHourlyLimit": 0,
+  "labels": ["dependencies"],
+  "assignees": ["minituff"],
+  // Nothing merges unless the checks are green, and Renovate checks that
+  // itself, so it doesn't depend on the branch protection settings.
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "ignoreTests": false,
+  "separateMinorPatch": true,
+  "packageRules": [
+    {
+      // go.mod and the Dockerfile must move together: scripts/go-version-check.sh
+      // fails CI while they differ, which also holds the merge if the
+      // official image is published after the Go release.
+      "description": "Go itself: one PR for go.mod and the build image",
+      "matchPackageNames": ["go", "golang"],
+      "matchUpdateTypes": ["patch", "minor", "major"],
+      "groupName": "go"
+    },
+    {
+      // Standard library security fixes arrive only this way. A short wait,
+      // because the official image takes a few hours to follow a Go release.
+      "description": "Go patch releases merge and ship by themselves",
+      "matchPackageNames": ["go", "golang"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "minimumReleaseAge": "1 day",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "commitBody": "[bump version]"
+    },
+    {
+      // Only the build stage uses this image, so a new digest with the same
+      // Go version changes nothing that ships. Merge it, don't release it.
+      "description": "Build image refresh: no release",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["golang"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": true,
+      "schedule": ["* 0-5 * * 1"]
+    },
+    {
+      // These files do ship, but the digest moves often, so a week's worth
+      // goes out as one patch release instead of one each.
+      "description": "Runtime image refresh: weekly, with a patch release",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["gcr.io/distroless/**"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": true,
+      "schedule": ["* 0-5 * * 1"],
+      "commitBody": "[bump version]"
+    },
+    {
+      "description": "GitHub Actions: one PR, minimum two days old",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "minimumReleaseAge": "2 days"
+    },
+    {
+      // Workflows aren't in the image, so these never cut a release.
+      "description": "GitHub Actions: low-risk updates merge by themselves",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    }
+  ]
+}

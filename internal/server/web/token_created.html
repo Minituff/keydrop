@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Token for {{.Name}}</h1>
+<p class="error">Copy it now. It won't be shown again.</p>
+<p><code class="secret">{{.Token}}</code></p>
+<p>On the agent's machine, as the agent's user:</p>
+<pre>keydrop login --url {{.URL}}</pre>
+<p>and paste the token when asked. It's saved to <code>~/.config/keydrop/token</code> (mode 600).</p>
+<p><a href="/tokens">Done</a></p>
+{{end}}

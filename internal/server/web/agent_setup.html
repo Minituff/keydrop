@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Set up an agent</h1>
+{{if .Prompt}}
+<p>Give your AI agent (Claude Code, Codex, …) one of these. It walks you through installing the CLI and pairing, and stops when it needs you: to approve the pairing here, with the code it sends you.</p>
+
+<h2>Short version</h2>
+<p>One sentence to paste into the agent. It fetches the full prompt below from this server.</p>
+{{if .Direct}}<textarea readonly rows="4" class="mono" aria-label="Short version">{{.Direct}}</textarea>
+{{if .Public}}<p>Or through the proxy, with its usual certificate checks:</p>
+<textarea readonly rows="3" class="mono" aria-label="Short version through the proxy">{{.Public}}</textarea>{{end}}
+{{else if .Public}}<textarea readonly rows="3" class="mono" aria-label="Short version">{{.Public}}</textarea>{{end}}
+
+<h2>About the pins</h2>
+{{if .KeyPin}}
+<p>This server uses its own self-signed certificate, so no public certificate authority vouches for it. Instead the agent checks two fingerprints of it:</p>
+<ul>
+  <li><strong>Key pin</strong> <code>{{.KeyPin}}</code>: a hash of the certificate's public key. <code>curl --pinnedpubkey</code> checks it. <code>-k</code> turns off curl's usual check against certificate authorities, and the pin replaces it: curl refuses any other server.</li>
+  <li><strong>Certificate pin</strong> <code>{{.CertPin}}</code>: a hash of the whole certificate. The <code>keydrop</code> CLI checks it on every connection.</li>
+</ul>
+<p>Both are public and safe to share. They let the agent check it's talking to this server before it installs anything. They don't make the agent trustworthy: what limits an agent is your approval of its pairing, the permission you give it (read, add or write), its namespaces, and the log of everything it does.</p>
+{{else}}
+<p>This server's certificate is one the agent's system already trusts, so curl and the CLI check it the normal way and there's nothing to pin. That check doesn't make the agent trustworthy: what limits an agent is your approval of its pairing, the permission you give it (read, add or write), its namespaces, and the log of everything it does.</p>
+{{end}}
+
+<h2>The whole prompt</h2>
+<p>This is the guide as the agent gets it from <code>{{.URL}}/setup.md</code>. If it reaches the server by another address (directly, or through the proxy), its copy has that address, and the pins that go with it, instead. You can paste this text instead of the short version, or just read it first.</p>
+<pre class="prompt">{{.Prompt}}</pre>
+{{else}}
+<p class="error">There's no setup prompt to show: agents can't reach this server in a way they could check.</p>
+<p>With keydrop's own certificate (<code>KEYDROP_TLS=auto</code>, the default), set <code>KEYDROP_TLS_HOSTS</code> to the address agents use. Behind a reverse proxy with a real certificate, set <code>KEYDROP_PUBLIC_URL</code> to its <code>https://</code> address (and <code>KEYDROP_TRUSTED_PROXIES</code> to the proxy). Then restart keydrop.</p>
+{{end}}
+<p><a href="/tokens/new">← Add an agent</a></p>
+{{end}}

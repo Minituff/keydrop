@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Approve an agent</h1>
+<p>A machine asked for a token. Approve it only if you just asked an agent to pair, and the code matches the one it showed you.</p>
+<div class="card">
+  <p>Code <code class="value">{{.Code}}</code></p>
+  <p>From <code>{{.P.IP}}</code><br>
+  <small class="muted">The machine says it's <code>{{.P.Host}}</code>, user <code>{{.P.User}}</code>. That part is unchecked; the address is what keydrop saw.</small></p>
+  <small>Asked {{fmtTime .P.Created}}. Requests last 10 minutes.</small>
+</div>
+
+<form method="post" action="/pair/{{.P.ID}}/approve" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Name
+    <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,63}" value="{{.Form.Get "name"}}" placeholder="laptop-claude" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  {{if .Exists}}<label class="check"><input type="checkbox" name="replace" value="yes"{{if eq (.Form.Get "replace") "yes"}} checked{{end}}> Replace it: revoke the existing agent with this name</label>{{end}}
+  <p class="label">Namespaces it can read</p>
+  {{template "nschecks" .NSOpts}}
+  <label>Permission {{template "permission" (or (.Form.Get "permission") "read")}}</label>
+  <label>Allowed from <small>(addresses or ranges, comma-separated; empty means anywhere)</small>
+    <input name="sources" value="{{.Form.Get "sources"}}" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <label>New token every {{template "lifetime" .Lifetime}}
+    <small class="muted">Near the end the agent asks for a fresh token by itself. Approving it is one tap in the Inbox, and the agent swaps it in; nothing else changes.</small></label>
+  <label class="check"><input type="checkbox" name="selfupgrade" value="yes"{{if eq (.Form.Get "selfupgrade") "yes"}} checked{{end}}> Allow self-upgrade</label>
+  <small class="muted">When this agent's CLI is behind the server, keydrop tells it to run <code>keydrop upgrade</code>. Off: it's told to leave that to you, and <code>keydrop upgrade</code> refuses. Advisory: it guides the agent, it can't stop a machine replacing its own files.</small>
+  <button>Approve</button>
+</form>
+
+<form method="post" action="/pair/{{.P.ID}}/deny" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="danger small">Deny</button>
+</form>
+{{end}}

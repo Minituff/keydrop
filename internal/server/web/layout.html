@@ -1,0 +1,121 @@
+{{define "icon"}}<svg class="ic" aria-hidden="true"><use href="#i-{{.}}"/></svg>{{end}}
+
+{{define "layout"}}<!doctype html>
+<html lang="en"{{with .Theme}} data-theme="{{.}}"{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="{{with .Theme}}{{.}}{{else}}light dark{{end}}">
+<title>{{.Title}} · keydrop</title>
+{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">
+{{end}}<link rel="stylesheet" href="/static/style.css?v={{cssv}}">
+</head>
+<body class="{{if .CSRF}}shell{{else}}bare{{end}}">
+<svg class="sprite" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11 12l8-8m-3 3l2 2m-4 0l2 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+<symbol id="i-var" viewBox="0 0 24 24"><path d="M8 4c-2 0-3 1-3 3v3l-2 2 2 2v3c0 2 1 3 3 3M16 4c2 0 3 1 3 3v3l2 2-2 2v3c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13l2-8h12l2 8v6H4zM4 13h5l1 2h4l1-2h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 4v4M9 13h.01M15 13h.01" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></symbol>
+<symbol id="i-log" viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></symbol>
+<symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21V4h10l-2 4 2 4H6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v4h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+<symbol id="i-group" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="13" y="4" width="7" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="4" y="13" width="7" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="13" y="13" width="7" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+<symbol id="i-out" viewBox="0 0 24 24"><path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4M15 8l4 4-4 4M19 12H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
+{{if .CSRF}}
+<div class="app">
+<aside class="side">
+  <a class="brand" href="/"><span class="mark">{{template "icon" "key"}}</span>keydrop</a>
+  <nav aria-label="Main">
+    <a href="/"{{if eq .Nav "secrets"}} class="on" aria-current="page"{{end}}>{{template "icon" "key"}}Secrets</a>
+    <a href="/inbox"{{if eq .Nav "inbox"}} class="on" aria-current="page"{{end}}>{{template "icon" "inbox"}}Inbox{{if .InboxCount}}<span class="n">{{.InboxCount}}</span>{{end}}</a>
+    <a href="/groups"{{if eq .Nav "groups"}} class="on" aria-current="page"{{end}}>{{template "icon" "group"}}Groups</a>
+    <a href="/tokens"{{if eq .Nav "agents"}} class="on" aria-current="page"{{end}}>{{template "icon" "bot"}}Agents</a>
+    <a href="/audit"{{if eq .Nav "log"}} class="on" aria-current="page"{{end}}>{{template "icon" "log"}}Log</a>
+    <a href="/settings"{{if eq .Nav "settings"}} class="on" aria-current="page"{{end}}>{{template "icon" "gear"}}Settings</a>
+  </nav>
+  <form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="navlink">{{template "icon" "out"}}Log out</button></form>
+</aside>
+<header class="mtop">
+  <a class="brand" href="/"><span class="mark">{{template "icon" "key"}}</span>keydrop</a>
+  {{if or (eq .Nav "secrets") (eq .Nav "groups")}}<a class="pill" href="/groups">Groups {{template "icon" "chev"}}</a>{{end}}
+</header>
+<main>
+{{if .Flash}}<p class="flash" role="status">{{.Flash}}</p>{{end}}
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{range .Dups}}<p class="error" role="alert">{{.Name}} has the same value as <a href="{{.OtherPath}}">{{.Other}}</a>. If that was a paste mistake, <a href="{{.RefPath}}">replace it</a>.</p>
+{{end}}
+{{template "content" .}}
+</main>
+<nav class="tabs" aria-label="Main">
+  <a href="/"{{if eq .Nav "secrets"}} class="on" aria-current="page"{{end}}>{{template "icon" "key"}}Secrets</a>
+  <a href="/inbox"{{if eq .Nav "inbox"}} class="on" aria-current="page"{{end}}>{{template "icon" "inbox"}}Inbox{{if .InboxCount}}<span class="n">{{.InboxCount}}</span>{{end}}</a>
+  <a href="/tokens"{{if eq .Nav "agents"}} class="on" aria-current="page"{{end}}>{{template "icon" "bot"}}Agents</a>
+  <a href="/audit"{{if eq .Nav "log"}} class="on" aria-current="page"{{end}}>{{template "icon" "log"}}Log</a>
+  <a href="/settings"{{if eq .Nav "settings"}} class="on" aria-current="page"{{end}}>{{template "icon" "gear"}}Settings</a>
+</nav>
+</div>
+{{else}}
+<main class="narrow">
+<a class="brand" href="/"><span class="mark">{{template "icon" "key"}}</span>keydrop</a>
+{{if .Flash}}<p class="flash" role="status">{{.Flash}}</p>{{end}}
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{template "content" .}}
+</main>
+{{end}}
+</body>
+</html>{{end}}
+
+
+{{define "valuefield"}}{{/* dot true: the value may be left empty (the New page fills a canary in) */}}
+<label>Value
+  <textarea name="value" rows="3"{{if not .}} required{{end}} autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" class="mono"></textarea></label>
+<label class="check"><input type="checkbox" name="keepws" value="yes"> Keep leading/trailing spaces and newlines</label>
+<label class="check"><input type="checkbox" name="exact" value="yes"> <span>Save it exactly as pasted <small>(skip the check for a pasted whole line)</small></span></label>
+{{end}}
+
+
+{{define "authenticator"}}
+{{with .QR}}<div class="qr">{{.}}</div>
+<p class="muted">Scan this with your authenticator app. On this phone, use the button instead.</p>{{end}}
+<p><a class="button" href="{{.OTPURI}}">Add to authenticator app</a></p>
+<p>Or enter this key by hand:</p>
+<p><code class="secret">{{.OTPSecret}}</code></p>
+{{end}}
+
+{{define "permission"}}<select name="permission">
+  <option value="read"{{if eq . "read"}} selected{{end}}>read: read only</option>
+  <option value="add"{{if eq . "add"}} selected{{end}}>add: create new keys, replace only its own</option>
+  <option value="write"{{if eq . "write"}} selected{{end}}>write: create and replace any key</option>
+</select>{{end}}
+
+
+{{define "lifetime"}}<select name="lifetime">
+  {{$cur := .}}{{range lifetimes}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{lifetimeLabel .}}</option>
+  {{end}}</select>{{end}}
+
+{{/* One namespace: existing ones in a list, plus an explicit "+ New namespace". Dot is the page. */}}
+{{define "nspick"}}<label>Namespace
+  <select name="namespace" required>
+    {{if .Namespaces}}{{if not .DefaultNS}}<option value="" disabled selected>Choose a namespace</option>{{end}}{{end}}
+    {{range .Namespaces}}<option value="{{.}}"{{if eq . $.DefaultNS}} selected{{end}}>{{.}}</option>{{end}}
+    <option value="{{newNS}}"{{if not .Namespaces}} selected{{end}}>+ New namespace…</option>
+  </select></label>
+<div class="newns">
+  <label>New namespace name
+    <input name="new_namespace" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" placeholder="homelab" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+  <p class="note">This creates a new namespace. No agent can read it until you tick it for one on the Agents page.</p>
+</div>{{end}}
+
+{{/* Several namespaces: a checkbox each, plus new ones typed in. Dot is []nsOpt. */}}
+{{define "nschecks"}}<fieldset class="nschecks">
+  {{range .}}<label class="check"><input type="checkbox" name="ns" value="{{.Name}}"{{if .On}} checked{{end}}> {{.Name}}</label>{{end}}
+  <label class="newns-multi">{{if .}}Or new namespaces{{else}}Namespaces{{end}} <small>(comma-separated; each one typed here is created)</small>
+    <input name="namespaces" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+</fieldset>{{end}}

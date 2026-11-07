@@ -1,0 +1,61 @@
+{{define "content"}}
+<h1>Groups</h1>
+<p class="lead">Groups sort entries on the Secrets page. Deleting a group never deletes its entries; they become ungrouped.{{if .AutoOn}} Entries not in a group are grouped by name (auto groups); turn that off in <a href="/settings">Settings</a>.{{else}} Auto groups are off; turn them on in <a href="/settings">Settings</a>.{{end}}</p>
+
+<section>
+<h2>New group</h2>
+<form method="post" action="/groups" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  {{template "nspick" .}}
+  <div class="row">
+    <label>Name
+      <input name="name" required maxlength="64" placeholder="Router"></label>
+  </div>
+  <label>Colour {{template "colors" (colorPick $.Palette "")}}</label>
+  <label>Description <small>(optional, one line)</small>
+    <input name="description" maxlength="200"></label>
+  <button>Create group</button>
+</form>
+</section>
+
+{{range .Sections}}
+<section class="namespace">
+<h2 class="nsh">{{.Namespace}}</h2>
+{{range .Groups}}
+<div class="group gcard color-{{.Color}}" data-color="{{.Color}}">
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b><span class="cnt count">{{.Count}}</span></h3>
+  <form method="post" action="/groups/{{.Namespace}}/{{.Slug}}" class="card">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label>Name <input name="name" required maxlength="64" value="{{.Name}}"></label>
+    <label>Colour {{template "colors" (colorPick $.Palette .Color)}}</label>
+    <label>Description <input name="description" maxlength="200" value="{{.Description}}"></label>
+    <button>Save</button>
+  </form>
+  <form method="post" action="/groups/{{.Namespace}}/{{.Slug}}/delete" class="inline danger">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label class="check"><input type="checkbox" name="confirm" value="yes" required> Delete this group ({{.Count}} entries become ungrouped)</label>
+    <button class="secondary">Delete group</button>
+  </form>
+</div>
+{{end}}
+{{range .Auto}}
+<div class="group gcard auto color-{{.Color}}" data-color="{{.Color}}" data-auto="true">
+  <h3 class="gh group-header"><span class="sw"></span><b class="group-name">{{.Name}}</b><span class="chip">auto</span><span class="cnt count">{{.Count}}</span></h3>
+  <form method="post" action="/groups/promote" class="inline">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="namespace" value="{{.Namespace}}">
+    <input type="hidden" name="prefix" value="{{.Name}}">
+    <button class="secondary">Make this a real group</button>
+  </form>
+</div>
+{{end}}
+</section>
+{{else}}
+<p class="muted">No groups yet.</p>
+{{end}}
+{{end}}
+
+{{define "colors"}}<select name="color">
+  {{if not .Selected}}<option value="" selected>pick one for me</option>{{end}}
+  {{range .Palette}}<option value="{{.}}"{{if eq . $.Selected}} selected{{end}}>{{.}}</option>{{end}}
+</select>{{end}}
