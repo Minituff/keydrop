@@ -236,3 +236,49 @@ func TestPrintSecretAgentVariable(t *testing.T) {
 		t.Fatalf("got %q", b.String())
 	}
 }
+
+// A multi-line value is refused whole, naming a line and not its text: its
+// lines would otherwise read as entries, and the PEM body as their names.
+func TestParseEnvFileRefusesMultiLine(t *testing.T) {
+	in := "OK=1\nKEY=\"-----BEGIN PRIVATE KEY-----\nMIIfakefakefake==\n-----END PRIVATE KEY-----\"\n"
+	_, err := parseEnvFile(strings.NewReader(in))
+	if err == nil || !strings.Contains(err.Error(), "line 2") || strings.Contains(err.Error(), "MII") {
+		t.Fatalf("%v", err)
+	}
+	got, err := parseEnvFile(strings.NewReader("A=\"x\" # note\nB='y'\n"))
+	if err != nil || len(got) != 2 {
+		t.Fatalf("closed quotes: %v %v", got, err)
+	}
+}
+
+func TestCleanShowsHiddenCharacters(t *testing.T) {
+	if got := clean("a\U000e0100b\ufe0fc\u3164d", false); strings.ContainsAny(got, "\U000e0100\ufe0f\u3164") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestSaveLoginDoesntFollowSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	cfg := client.ConfigDir()
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(cfg, "token")); err != nil {
+		t.Skip("no symlinks here")
+	}
+	if _, err := saveLogin("https://x.test", "kd_fake", ""); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "untouched" {
+		t.Fatal("wrote through the symlink")
+	}
+	fi, err := os.Lstat(filepath.Join(cfg, "token"))
+	if err != nil || !fi.Mode().IsRegular() || client.TooOpen(fi.Mode()) {
+		t.Fatalf("%v %v", fi, err)
+	}
+}

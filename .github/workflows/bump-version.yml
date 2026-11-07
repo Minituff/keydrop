@@ -37,5 +37,5 @@ jobs:
           git push origin "refs/tags/$next"
           # A tag pushed with this token doesn't trigger workflows (GitHub's
           # loop guard), but a dispatch does, so no personal token is needed.
-          gh workflow run release.yml --ref "$next"
+          gh workflow run release.yml --ref "$next" -f tag="$next"
           echo "Released $next (was $last)" | tee -a "$GITHUB_STEP_SUMMARY"

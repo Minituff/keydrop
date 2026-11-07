@@ -1,18 +1,57 @@
-# On a version tag (v1.2.3): CLI binaries + checksums on the GitHub release,
-# and a multi-arch image on GHCR. Runs on GitHub-hosted runners only; never
-# point a public repo at a self-hosted runner. bump-version.yml starts it by
-# dispatch on the tag, so github.ref is the tag either way.
+# Publishes by hand: Actions → release → Run workflow, then pick a branch and
+# type a tag. scripts/release-version.sh decides what that tag publishes:
+#
+#   v1.2.3 on main    GitHub release with CLI binaries, multi-arch image, :latest
+#   v1.2.3 elsewhere  the same as a pre-release, without :latest
+#   v1.2.3-rc.1       the same as a pre-release, without :latest
+#   any other name    only a multi-arch image with that tag, such as dev
+#
+# Pushing a v* tag does the same, and bump-version.yml starts it by dispatch
+# for Renovate's patch releases. Runs on GitHub-hosted runners only; never
+# point a public repo at a self-hosted runner.
 name: release
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish: v1.2.3, or a name like dev for an image only"
+        required: true
+        type: string
 # Nothing by default; each job asks for only what it needs.
 permissions: {}
 jobs:
-  # Nothing publishes unless the tests pass on the tagged commit.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      semver: ${{ steps.v.outputs.semver }}
+      latest: ${{ steps.v.outputs.latest }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: v
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # A version means one commit, for good: never move a tag.
+          if have=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}") && [ "$have" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG is already on another commit; pick a new tag"
+            exit 1
+          fi
+          on_main=false
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then on_main=true; fi
+          sh scripts/release-version.sh "$TAG" "$on_main" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+  # Nothing publishes unless the tests pass on this commit.
   test:
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,7 +67,7 @@ jobs:
       - run: go test -race ./...
   # Full history, like the same job in ci.yml: it builds older commits.
   e2e:
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: version
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,10 +81,13 @@ jobs:
           cache: false # zero deps: no go.sum to key a cache on
       - run: go test -tags e2e -count=1 ./e2e/...
   binaries:
-    needs: [test, e2e]
+    needs: [version, test, e2e]
+    if: needs.version.outputs.semver == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release
+      id-token: write # sign the attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -53,25 +95,38 @@ jobs:
           go-version-file: go.mod
           cache: false # zero deps: no go.sum to key a cache on
       - name: Build
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir dist
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os=${target%/*}; arch=${target#*/}; ext=""; [ "$os" = windows ] && ext=.exe
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA} -X main.commitTime=$(git log -1 --format=%cI) -X main.repoURL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.commitTime=$(git log -1 --format=%cI) -X main.repoURL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
               -o "dist/keydrop-${os}-${arch}${ext}" ./cmd/keydrop
           done
           cd dist && sha256sum * > SHA256SUMS
+      # Ties each binary to this workflow run: gh attestation verify.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          LATEST: ${{ needs.version.outputs.latest }}
+        # Makes the tag too, when this was started by hand. A tag made with
+        # this token doesn't start the workflow a second time.
+        run: gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
   image:
-    needs: [test, e2e]
+    needs: [version, test, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write # push to GHCR
+      id-token: write # sign the attestation
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -81,16 +136,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: ctime
-        run: echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.tag }},enable=${{ needs.version.outputs.semver }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.tag }},enable=${{ needs.version.outputs.latest }}
+            type=raw,value=${{ needs.version.outputs.tag }},enable=${{ needs.version.outputs.semver != 'true' }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.latest }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -98,9 +158,15 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ needs.version.outputs.version }}
             COMMIT=${{ github.sha }}
             COMMIT_TIME=${{ steps.ctime.outputs.time }}
             REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: true
           sbom: true
+      # Signed by this workflow's identity: gh attestation verify.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.ctime.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

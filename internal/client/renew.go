@@ -196,6 +196,9 @@ func readToken(path string) string {
 // writeFileAtomic replaces path with data: a temp file in the same
 // directory, mode 600, synced, renamed over it, then the directory synced.
 // A reader sees the old file or the new one, never half of either.
+// WriteFileAtomic is writeFileAtomic for the CLI's login files.
+func WriteFileAtomic(path string, data []byte) error { return writeFileAtomic(path, data) }
+
 func writeFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".token-*")

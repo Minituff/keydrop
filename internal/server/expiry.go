@@ -83,7 +83,8 @@ type tokenView struct {
 	// OtherIP: the renewal was asked from somewhere other than where the
 	// token was recently used. Could be a stolen token; the Inbox says so.
 	OtherIP bool
-	// OtherFrom lists those addresses, for the warning.
+	// OtherFrom lists those addresses, for the warning. Without a renewal
+	// it's the recent addresses other than the last one.
 	OtherFrom string
 }
 
@@ -99,6 +100,9 @@ func (s *Server) tokenViews() []tokenView {
 		}
 		if d := now.Sub(last); d >= staleAfter {
 			v.Stale, v.StaleDays = true, int(d.Hours()/24)
+		}
+		if t.LastUsedFrom != "" {
+			v.OtherFrom = strings.Join(s.store.AddressesOtherThan(t.Name, t.LastUsedFrom), ", ")
 		}
 		out = append(out, v)
 	}

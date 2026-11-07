@@ -113,6 +113,8 @@ type Server struct {
 	// collecting a renewed token, each per token and address.
 	renewals *rateLimit
 	collects *rateLimit
+	// polls rate-limits the unauthenticated pairing poll per address group.
+	polls *rateLimit
 	// alerts sends canary alerts to AlertWebhook.
 	alerts *alerter
 }
@@ -139,6 +141,10 @@ const annotationsPerHour = 60
 // send an hour: plenty for provisioning, too few to churn the history.
 const writesPerHour = 200
 
+// pollsPerMinute is how many pairing polls an address group may send a
+// minute: the CLI sends 30, and a group can have 8 requests waiting.
+const pollsPerMinute = 300
+
 const (
 	noisyPerKey    = time.Minute // one recorded event per address and action
 	noisyPerMinute = 60          // and at most this many overall
@@ -156,6 +162,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		writes:      newRateLimit(writesPerHour, time.Hour),
 		renewals:    newRateLimit(renewalsPerHour, time.Hour),
 		collects:    newRateLimit(collectsPerHour, time.Hour),
+		polls:       newRateLimit(pollsPerMinute, time.Minute),
 		alerts:      newAlerter(cfg.AlertWebhook),
 	}
 	if cfg.Now != nil {

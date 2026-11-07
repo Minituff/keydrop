@@ -96,3 +96,28 @@ func TestAddressesOtherThan(t *testing.T) {
 		}
 	}
 }
+
+func TestUnseenCharactersRefused(t *testing.T) {
+	for _, bad := range []string{"a\ufe0fb", "a\U000e0100b", "a\u3164b", "a\u115fb", "a\u034fb", "a\u202eb"} {
+		if err := CheckAgentText(bad, ""); !errors.Is(err, ErrBadText) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	if got := AgentLine(" ok\u202e\x1b \U000e0100text "); got != "ok text" {
+		t.Fatalf("%q", got)
+	}
+	if got := AgentLine(strings.Repeat("é", 500)); len(got) > maxAgentLine || strings.ContainsRune(got, 0xfffd) {
+		t.Fatalf("%d %q", len(got), got)
+	}
+}
+
+// Nothing due means no copy of the state on the unauthenticated poll path.
+func TestSweepsWithNothingDue(t *testing.T) {
+	s, _ := capStore(t)
+	if got := s.RevokeUncollected(s.now()); got != nil {
+		t.Fatal(got)
+	}
+	if got := s.RevokeUncollectedRotations(s.now()); got != nil {
+		t.Fatal(got)
+	}
+}

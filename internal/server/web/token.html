@@ -38,6 +38,8 @@
   <label>New token every {{template "lifetime" .RenewLifetime}}</label>
   <button class="small">Rotate now</button>
 </form>
+<p><small class="muted">Rotating hands the new token only to the address that last used this one, or that asked for a renewal. If this token may be stolen, revoke it and pair the agent again instead.</small></p>
+{{if .OtherFrom}}<p class="error" role="alert">Also used recently from {{.OtherFrom}}. If you don't expect that, revoke this token: rotating could give the new one to whoever used it last.</p>{{end}}
 <form method="post" action="/tokens/{{.Name}}/revoke" class="inline">
   <input type="hidden" name="csrf" value="{{$.CSRF}}">
   <label class="check"><input type="checkbox" name="confirm" value="yes" required> sure</label>

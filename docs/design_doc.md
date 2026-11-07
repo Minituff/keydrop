@@ -257,7 +257,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   **To an agent a canary is indistinguishable from a real secret:** the
   same list entries, the same responses and errors, the same work per
   call, and no field, header or timing that differs.
-- A touch is any agent call on the canary: a reveal or `run`, a write,
+- A touch is any agent call on the canary, refused ones and `ack`
+  included: a reveal or `run`, a write,
   a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
@@ -866,10 +867,10 @@ code. The full list is in [Configuration](install.md#configuration).
   The suite also builds a test binary with the `e2eclock` tag, whose
   clock (server and CLI) reads an offset from `KEYDROP_E2E_CLOCK_FILE`,
   to test expiry and the renewal windows without waiting; release builds
-  don't include it. Pushes to `dev` then
-  publish `ghcr.io/minituff/keydrop:dev` and `:dev-<sha>` (amd64), for a
-  test deployment that pins the digest. The image's version is
-  `dev-<sha>`, matching the tag. CI also starts the image, installs the CLI
+  don't include it. A push publishes nothing: `release.yml` does, started
+  by hand with a branch and a tag, so a test image is a run with a tag
+  like `dev` (its version is `dev-<sha>`; pin the digest). CI also starts
+  the image, installs the CLI
   with its own pinned `install.sh`, checks `--version`, and checks that a
   wrong pin is refused. The bundle comes from the Dockerfile, so no release
   can ship without it.

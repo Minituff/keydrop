@@ -12,15 +12,31 @@ GOOS=linux GOARCH=amd64 go build ./cmd/keydrop  # cross-compile (from Windows to
 docker build -t keydrop .
 ```
 
-Tags `v*` publish CLI binaries with `SHA256SUMS` to the GitHub release, and a
-multi-arch image (with SBOM and provenance) to GHCR, from GitHub-hosted
-runners. Pushes to `dev` publish an amd64 image tagged `dev` and
-`dev-<sha>` (its version is `dev-<sha>` too) once the tests pass; pin it by
-digest, not by the moving tag. Every image includes the CLI for all six
-platforms (about 24 MB compressed); CI installs it from a running image
-with `install.sh` and checks the version before anything is published.
-Nothing is published unless the tests passed on that commit. Workflow
-actions are pinned to commit SHAs and base images to digests.
+Pushes to `dev` and `main` only run the tests. To publish, go to
+**Actions → release → Run workflow**, pick a branch and type a tag:
+
+| Tag | Publishes |
+|---|---|
+| `v1.2.3` from `main` | GitHub release with CLI binaries and `SHA256SUMS`, multi-arch image, `:latest` |
+| `v1.2.3` from another branch, or `v1.2.3-rc.1` | The same as a pre-release, without `:latest` |
+| Any other name, like `dev` | Only a multi-arch image with that tag; its version is `dev-<sha>` |
+
+Pushing a `v*` tag does the same. A version tag can't move to another
+commit, and `latest` can't be typed by hand. Other tags such as `dev` do
+move, so pin them by digest. Everything is built on GitHub-hosted runners,
+with an SBOM and provenance on the image and a signed build attestation on
+both the image and the binaries:
+
+```sh
+gh attestation verify keydrop-linux-amd64 --repo Minituff/keydrop
+gh attestation verify oci://ghcr.io/minituff/keydrop:v1.2.3 --repo Minituff/keydrop
+```
+
+Every image includes the CLI for all six platforms (about 24 MB compressed);
+CI installs it from a running image with `install.sh` and checks the version.
+Nothing is published unless the tests passed on that commit, and no publishing
+job reads the Actions cache. Workflow actions are pinned to commit SHAs and
+base images to digests.
 
 ## Updates and releases
 
@@ -40,8 +56,9 @@ and Renovate merges it only when the checks are green.
 
 Renovate marks the commits that change what ships with `[bump version]`.
 `bump-version.yml` sees that on `main`, tags the next patch version and starts
-`release.yml`, which runs the tests and e2e again before publishing. Feature
-releases are tagged by hand (`v1.2.0`) and later patches count up from there.
+`release.yml`, which runs the tests and e2e again before publishing. This is
+the only release that starts by itself. Feature releases are started by hand
+(`v1.2.0`) and later patches count up from there.
 Anything merged to `main` since the last tag goes out with the next patch, so
 tag feature work as soon as it reaches `main`.
 

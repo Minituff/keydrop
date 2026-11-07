@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/minituff/keydrop/internal/client"
@@ -629,7 +630,7 @@ func cmdWait(args []string) error {
 			return err
 		}
 		if err == nil && s.HasValue && !s.Pending {
-			fmt.Println(s.Ref, "is ready.")
+			fmt.Println(clean(s.Ref, false), "is ready.")
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -1041,7 +1042,7 @@ func parseEnvFile(r io.Reader) ([]envEntry, error) {
 	var comment []string
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
+	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
 		switch {
 		case line == "":
@@ -1058,6 +1059,11 @@ func parseEnvFile(r io.Reader) ([]envEntry, error) {
 			continue
 		}
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		// A quote that doesn't close means a multi-line value, such as a
+		// PEM key. Its other lines would read as entries of their own.
+		if v != "" && (v[0] == '"' || v[0] == '\'') && !strings.Contains(v[1:], v[:1]) {
+			return nil, fmt.Errorf("line %d: a quoted value doesn't close on its line; multi-line values can't be imported, so nothing was. Use keydrop put for this one", n)
+		}
 		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
 			v = v[1 : len(v)-1]
 		}
@@ -1101,11 +1107,13 @@ func cmdImport(args []string) error {
 		*ns = w.Namespaces[0]
 	}
 	var done, skipped int
-	for _, e := range entries {
+	for i, e := range entries {
 		ref := *ns + "/" + e.key
 		switch {
 		case !store.ValidSecretName(e.key):
-			fmt.Printf("skip %s: secret names are capital letters, digits and '_'\n", e.key)
+			// By position, not name: this may not be a name at all, and
+			// what's before a "=" can be part of a value.
+			fmt.Printf("skip entry %d: secret names are capital letters, digits and '_'\n", i+1)
 			skipped++
 			continue
 		case e.value == "":
@@ -1182,11 +1190,9 @@ func saveLogin(u, tok, pin string) (string, error) {
 		os.Remove(filepath.Join(dir, "pin"))
 	}
 	for name, v := range files {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(v+"\n"), 0o600); err != nil {
-			return "", err
-		}
-		if err := os.Chmod(path, 0o600); err != nil { // WriteFile keeps an existing file's mode
+		// Atomic: it can't follow a symlink, write through a loose mode or
+		// leave half a token behind.
+		if err := client.WriteFileAtomic(filepath.Join(dir, name), []byte(v+"\n")); err != nil {
 			return "", err
 		}
 	}
@@ -1312,7 +1318,7 @@ func clean(s string, multiline bool) string {
 			b.WriteByte(' ')
 		case r < 0x80 && !strconv.IsPrint(r):
 			fmt.Fprintf(&b, "\\x%02x", r)
-		case !strconv.IsPrint(r):
+		case !strconv.IsPrint(r) || unicode.In(r, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
 			fmt.Fprintf(&b, "\\u%04x", r)
 		default:
 			b.WriteRune(r)
