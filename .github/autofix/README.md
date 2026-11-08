@@ -28,7 +28,7 @@ f3bc13e6c3b074bb0d06aa600b8931dd2d784220413c8ab194b887795e22a5c4  prompt.md
 | Connectors | None. Remove every connector it adds by default. |
 | Trigger | API. Its URL and token go in the two secrets above. |
 | Auto-fix pull requests | Off: anyone can comment on a public repo's PR |
-| Branch pushes | The default, `claude/*` only |
+| Branch pushes | `claude/*` is only Claude's default and its prompt: the proxy lets a push update any branch |
 
 The workflow sends only fixed text: the mode, the failed run's metadata and a
 marker for the duplicate check, or a test message when started by hand.

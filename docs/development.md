@@ -101,8 +101,11 @@ branches at the same moment can both get through), and only a run's first
 attempt.
 
 **What's enforced and what's only asked.** GitHub's proxy in Claude's cloud
-lets the routine push only to its own `claude/*` branches and never a tag.
-Everything else is only its instructions: open PRs into `dev` and issues,
+refuses to push tags or delete branches, and `main` takes changes only
+through a pull request. That's all. Pushing only to `claude/*` branches is
+Claude's default, not a limit: the proxy lets a push update any branch, and
+`dev` has no rule against a direct push. Everything else is only its
+instructions: push only to its own branch, open PRs into `dev` and issues,
 and never merge, approve, start or re-run workflows, release, or change
 settings. The routine acts on GitHub with the repository owner's rights, and
 `main` needs no approving review, so a run that ignored its instructions
