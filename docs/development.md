@@ -31,12 +31,21 @@ Pushing a `v*` tag does the same as running the workflow. A version tag can't mo
 commit, and `latest` can't be typed by hand. Other tags such as `dev` do
 move, so pin them by digest. Everything is built on GitHub-hosted runners,
 with an SBOM and provenance on the image and a signed build attestation on
-both the image and the binaries:
+both the image and the binaries. Check that `release.yml` signed it, built
+from the release's tag:
 
 ```sh
-gh attestation verify keydrop-linux-amd64 --repo Minituff/keydrop
-gh attestation verify oci://ghcr.io/minituff/keydrop:1.2.3 --repo Minituff/keydrop
+gh attestation verify keydrop-linux-amd64 --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3
+gh attestation verify oci://ghcr.io/minituff/keydrop:1.2.3 --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3
 ```
+
+A release started from **Run workflow** is built from the branch you picked,
+not the tag, so for one of those use `--source-ref refs/heads/main`. Pushed tags
+and Renovate's patch releases are built from the tag.
 
 Every image includes the CLI for all six platforms (about 24 MB compressed);
 CI installs it from a running image with `install.sh` and checks the version.
