@@ -63,10 +63,13 @@
       "commitBody": "[bump version]"
     },
     {
-      "description": "GitHub Actions: one PR, minimum two days old",
+      // Actions run in release.yml with the rights to publish and attest, and
+      // they don't ship, so nothing is lost by waiting. A week gives upstream
+      // time to notice and pull a compromised release before it gets here.
+      "description": "GitHub Actions: one PR, minimum seven days old",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions",
-      "minimumReleaseAge": "2 days"
+      "minimumReleaseAge": "7 days"
     },
     {
       // Workflows aren't in the image, so these never cut a release.
