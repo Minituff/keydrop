@@ -31,12 +31,23 @@ Pushing a `v*` tag does the same as running the workflow. A version tag can't mo
 commit, and `latest` can't be typed by hand. Other tags such as `dev` do
 move, so pin them by digest. Everything is built on GitHub-hosted runners,
 with an SBOM and provenance on the image and a signed build attestation on
-both the image and the binaries:
+both the image and the binaries. Check that `release.yml` signed it, built
+from the release's tag:
 
 ```sh
-gh attestation verify keydrop-linux-amd64 --repo Minituff/keydrop
-gh attestation verify oci://ghcr.io/minituff/keydrop:1.2.3 --repo Minituff/keydrop
+gh attestation verify keydrop-linux-amd64 --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3
+gh attestation verify oci://ghcr.io/minituff/keydrop:1.2.3 --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3
 ```
+
+A release started from **Run workflow** is built from the branch you picked,
+not the tag. For one of those, `--source-ref refs/heads/main` only shows it was
+built from `main`, not from the tag's commit, so also pin the commit:
+`--source-ref refs/heads/main --source-digest "$(git rev-parse 'v1.2.3^{commit}')"`.
+Pushed tags and Renovate's patch releases are built from the tag.
 
 Every image includes the CLI for all six platforms (about 24 MB compressed);
 CI installs it from a running image with `install.sh` and checks the version.
@@ -77,20 +88,36 @@ tag feature work as soon as it reaches `main`.
 
 `autofix.yml` hands a failure nobody is watching to a Claude Code routine:
 a check on a Renovate PR, a push Renovate merged to `main`, or a release
-`bump-version.yml` started. It sends only the run's link, workflow, branch and
-commit. For a Renovate PR the routine may open a fix PR into `dev`; for the
-others it only opens an issue with its diagnosis.
+`bump-version.yml` started. It sends only fixed text: the run's link, workflow,
+branch and commit, and for a Renovate PR its number. For a Renovate PR the
+routine may open a fix PR into `dev`; for the others it only opens an issue
+with its diagnosis.
 
-**Nothing Claude writes is merged or released without the maintainer's
-review.** Its instructions forbid merging, tagging and starting workflows,
-and its GitHub access enforces part of that: it can push only to its own
-`claude/*` branches and can't push tags. The only changes that merge and
-release by themselves are Renovate's, in the table above, and only with every
-check green.
+Before sending, the workflow checks the PR is Renovate's, still at the failed
+commit and aimed at `main`, and skips a branch that already has an open
+`autofix` issue or PR from the owner, or a hand-off earlier that day. It
+hands off at most about five failures a day (a soft cap: failures on two
+branches at the same moment can both get through), and only a run's first
+attempt.
+
+**What's enforced and what's only asked.** GitHub's proxy in Claude's cloud
+lets the routine push only to its own `claude/*` branches and never a tag.
+Everything else is only its instructions: open PRs into `dev` and issues,
+and never merge, approve, start or re-run workflows, release, or change
+settings. The routine acts on GitHub with the repository owner's rights, and
+`main` needs no approving review, so a run that ignored its instructions
+could do what the owner can, merging and releasing included, until it gets
+an identity of its own. The only changes meant to merge and release by
+themselves are Renovate's, in the table above, and only with every check
+green.
 
 Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
-secrets; without them it does nothing.
+secrets; without them it does nothing. Its prompt and setup are in
+`.github/autofix/`, with the sha256 of the version recorded as live:
+`scripts/autofix-check.sh` fails CI while a file and its recorded sum differ,
+as a reminder to paste the new version into the routine. It can't see the
+routine itself, so updating the sum without pasting also passes.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in

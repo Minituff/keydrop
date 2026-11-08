@@ -21,6 +21,8 @@ jobs:
         run: sh scripts/leak-check-test.sh
       - name: Release tags publish what they should
         run: sh scripts/release-version-test.sh
+      - name: The autofix routine runs this prompt and setup
+        run: sh scripts/autofix-check.sh
       - name: go.mod and the Dockerfile use the same Go
         run: sh scripts/go-version-check.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
