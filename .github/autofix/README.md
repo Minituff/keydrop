@@ -4,7 +4,8 @@
 routine on claude.ai (see "When an unattended run fails" in
 `docs/development.md`). The routine itself lives on claude.ai, so its setup is
 recorded here to rebuild it. Nothing here is secret: the trigger URL and token
-are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN` repository secrets.
+are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN` secrets in the
+repository's `autofix` environment, which only `main` may use.
 
 ## The live version
 

@@ -116,7 +116,9 @@ green.
 
 Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
-secrets; without them it does nothing. Its prompt and setup are in
+secrets in the `autofix` environment, which only `main` may use, so a
+workflow pushed on another branch can't read them; without them it does
+nothing. Its prompt and setup are in
 `.github/autofix/`, with the sha256 of the version recorded as live:
 `scripts/autofix-check.sh` fails CI while a file and its recorded sum differ,
 as a reminder to paste the new version into the routine. It can't see the

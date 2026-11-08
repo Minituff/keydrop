@@ -6,6 +6,7 @@ permissions: {}
 jobs:
   history:
     runs-on: ubuntu-latest
+    environment: leak-check # main and dev only; see ci.yml
     permissions:
       contents: read
     steps:

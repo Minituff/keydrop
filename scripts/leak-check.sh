@@ -1,8 +1,9 @@
 #!/bin/sh
 # Fails if the tree contains anything from $KEYDROP_LEAK_PATTERNS: one
 # case-insensitive extended regex per line, for the maintainer's own
-# addresses, domains and host names. The list is a repository secret so
-# this file doesn't publish it. Matches are reported by location only.
+# addresses, domains and host names. The list is a secret in the
+# leak-check environment (main and dev only) so this file doesn't publish
+# it. Matches are reported by location only.
 #
 # --history checks every commit, commit message and author too; run it
 # before making the repository public.
