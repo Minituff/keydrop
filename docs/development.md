@@ -86,21 +86,33 @@ tag feature work as soon as it reaches `main`.
 
 `autofix.yml` hands a failure nobody is watching to a Claude Code routine:
 a check on a Renovate PR, a push Renovate merged to `main`, or a release
-`bump-version.yml` started. It sends only the run's link, workflow, branch and
-commit. For a Renovate PR the routine may open a fix PR into `dev`; for the
-others it only opens an issue with its diagnosis.
+`bump-version.yml` started. It sends only fixed text: the run's link, workflow,
+branch and commit, and for a Renovate PR its number. For a Renovate PR the
+routine may open a fix PR into `dev`; for the others it only opens an issue
+with its diagnosis.
 
-**Nothing Claude writes is merged or released without the maintainer's
-review.** Its instructions forbid merging, tagging and starting workflows,
-and its GitHub access enforces part of that: it can push only to its own
-`claude/*` branches and can't push tags. The only changes that merge and
-release by themselves are Renovate's, in the table above, and only with every
-check green.
+Before sending, the workflow checks the PR is Renovate's, still at the failed
+commit and aimed at `main`, and skips a branch that already has an open
+`autofix` issue or PR from the owner, or a hand-off earlier that day. It
+hands off at most five failures a day, and only a run's first attempt.
+
+**What's enforced and what's only asked.** GitHub's proxy in Claude's cloud
+lets the routine push only to its own `claude/*` branches and never a tag.
+Everything else is only its instructions: open PRs into `dev` and issues,
+and never merge, approve, start or re-run workflows, release, or change
+settings. The routine acts on GitHub with the repository owner's rights, and
+`main` needs no approving review, so a run that ignored its instructions
+could do what the owner can, merging and releasing included, until it gets
+an identity of its own. The only changes meant to merge and release by
+themselves are Renovate's, in the table above, and only with every check
+green.
 
 Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
 secrets; without them it does nothing. Its prompt and setup are in
-`.github/autofix/`.
+`.github/autofix/`, with the sha256 of the version the routine runs:
+`scripts/autofix-check.sh` fails CI when they change until the new version is
+pasted into the routine and its sum recorded.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in

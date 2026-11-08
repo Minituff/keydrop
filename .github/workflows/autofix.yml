@@ -1,25 +1,31 @@
 # Hands a failed run that nobody is watching to a Claude Code routine:
 # a check on one of Renovate's PRs, a push Renovate merged to main, or a
 # release bump-version started. Failures on the maintainer's own pushes and
-# PRs are left to them. The routine only opens PRs and issues; it never
-# merges, tags or releases (its prompt and setup are in .github/autofix/).
+# PRs are left to them. Its prompt and setup are in .github/autofix/.
 # Setting the repository variable AUTOFIX to "off" pauses it.
 #
+# What holds the routine back: GitHub's proxy lets it push only to claude/*
+# branches and never a tag. Everything else (opening only PRs and issues,
+# never merging, dispatching workflows or releasing) is only its prompt. It
+# acts on GitHub with the repo owner's rights, so a run that ignored the
+# prompt could do what the owner can.
+#
 # Only run metadata is sent, never logs or PR text: the routine reads those
-# itself, as untrusted data. workflow_run always runs this file as it is on
-# main, so a PR can't change what it sends or read the secrets.
+# itself, as untrusted data. For workflow_run, GitHub runs this file as it is
+# on main, so a PR can't change what it sends or read the secrets. A manual
+# run uses the file from whichever branch it's started on, but starting one
+# needs write access to the repository. The
+# checks below run before anything is sent: they decide whether this failure
+# is one the routine should see, and keep it to one hand-off per branch and a
+# few a day.
 name: autofix
+run-name: "autofix: ${{ github.event.workflow_run.head_branch || 'test' }}"
 on:
   workflow_run:
     workflows: [ci, docs, release, bump-version]
     types: [completed]
-  # Sends the given text instead of a failed run, to check the hand-off.
+  # Sends a fixed test message instead of a failed run, to check the hand-off.
   workflow_dispatch:
-    inputs:
-      text:
-        description: Text to send
-        type: string
-        required: true
 permissions: {}
 jobs:
   hand-off:
@@ -27,45 +33,132 @@ jobs:
       vars.AUTOFIX != 'off' && (
         github.event_name == 'workflow_dispatch' || (
           github.event.workflow_run.conclusion == 'failure' &&
+          github.event.workflow_run.run_attempt == 1 &&
           github.event.workflow_run.head_repository.full_name == github.repository && (
             (github.event.workflow_run.event == 'pull_request' &&
+              github.event.workflow_run.actor.login == 'renovate[bot]' &&
               startsWith(github.event.workflow_run.head_branch, 'renovate/')) ||
             (github.event.workflow_run.event == 'push' &&
-              github.event.workflow_run.actor.login == 'renovate[bot]') ||
+              github.event.workflow_run.actor.login == 'renovate[bot]' &&
+              github.event.workflow_run.head_branch == 'main') ||
             (github.event.workflow_run.event == 'workflow_dispatch' &&
+              github.event.workflow_run.name == 'release' &&
               github.event.workflow_run.triggering_actor.login == 'github-actions[bot]')
           )
         )
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 2
-    permissions: {}
+    timeout-minutes: 3
+    # One at a time per branch, so the duplicate check sees the one before.
+    concurrency:
+      group: autofix-${{ github.event.workflow_run.head_branch || 'test' }}
+      cancel-in-progress: false
+    # Read only, and only in the step that checks; the routine's token is
+    # only in the step that sends.
+    permissions:
+      actions: read # count earlier hand-offs
+      issues: read # find the routine's open issue for this branch
+      pull-requests: read # check the Renovate PR
     steps:
+      - name: Check
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          DAILY_CAP: 5
+          HAVE_SECRETS: ${{ secrets.CLAUDE_AUTOFIX_URL != '' && secrets.CLAUDE_AUTOFIX_TOKEN != '' }}
+        run: |
+          stop() {
+            echo "::warning::Not handed off: $1"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          pr=
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            mode=test workflow=test branch=test
+          else
+            workflow=$RUN_WORKFLOW branch=$RUN_BRANCH
+            case $EVENT in
+            pull_request)
+              # A Renovate PR may be fixed; anything else is only diagnosed.
+              mode=fix
+              n=$(jq length <<<"$PRS")
+              [ "$n" = 1 ] || stop "the run belongs to $n pull requests, not one"
+              pr=$(jq -r '.[0].number' <<<"$PRS")
+              case $pr in '' | *[!0-9]*) stop "no PR number" ;; esac
+              info=$(gh api "repos/$REPO/pulls/$pr" \
+                --jq '[.user.login, .head.sha, .head.repo.full_name, .head.ref, .base.ref, .state] | @tsv')
+              IFS=$'\t' read -r author head_sha head_repo head_ref base state <<<"$info"
+              [ "$author" = 'renovate[bot]' ] || stop "PR #$pr isn't Renovate's"
+              [ "$head_sha" = "$SHA" ] || stop "PR #$pr is no longer at the failed commit"
+              [ "$head_repo" = "$REPO" ] || stop "PR #$pr comes from another repository"
+              [ "$head_ref" = "$RUN_BRANCH" ] || stop "PR #$pr isn't from $RUN_BRANCH"
+              [ "$base" = main ] || stop "PR #$pr doesn't target main"
+              [ "$state" = open ] || stop "PR #$pr isn't open"
+              ;;
+            *) mode=report ;;
+            esac
+          fi
+
+          # The routine marks everything it opens with the autofix label and
+          # this marker. Only the owner's items count (the routine acts as the
+          # owner), so nobody else can open one to make it stand down.
+          dup=$(gh api -X GET "repos/$REPO/issues" -f state=open -f labels=autofix \
+            -f creator="$OWNER" -f per_page=100 |
+            jq -r --arg b "$branch" '[.[] | select([(.body // "") |
+              scan("<!-- autofix: [^/ ]+/([^ ]+) -->") | .[0]] | any(. == $b)) | .html_url] | first // empty')
+          [ -z "$dup" ] || stop "$dup is already open for $branch"
+
+          # Earlier hand-offs today: at most one per branch, DAILY_CAP in all.
+          # Any API error fails the job, so nothing is sent uncounted.
+          runs=$(gh api -X GET "repos/$REPO/actions/workflows/autofix.yml/runs" \
+            -f created=">=$(date -u +%F)" -f status=success -f per_page=100 \
+            --jq '.workflow_runs[] | [.id, .display_title] | @tsv')
+          count=0
+          while IFS=$'\t' read -r id title; do
+            [ -n "$id" ] || continue
+            sent=$(gh api "repos/$REPO/actions/runs/$id/jobs" \
+              --jq '[.jobs[].steps[]? | select(.name == "Hand it off" and .conclusion == "success")] | length')
+            [ "$sent" -gt 0 ] || continue
+            [ "$title" != "autofix: $branch" ] || stop "$branch was already handed off today"
+            count=$((count + 1))
+          done <<<"$runs"
+          [ "$count" -lt "$DAILY_CAP" ] || stop "already $count hand-offs today (the cap is $DAILY_CAP)"
+
+          [ "$HAVE_SECRETS" = true ] || stop "CLAUDE_AUTOFIX_URL or CLAUDE_AUTOFIX_TOKEN isn't set"
+
+          # Only known text: the mode, the run's metadata and the marker.
+          marker="<!-- autofix: $workflow/$branch -->"
+          if [ "$mode" = test ]; then
+            text=$(printf 'Mode: test\nMarker: %s' "$marker")
+          else
+            text=$(printf 'Mode: %s\nFailed run: %s\nWorkflow: %s (run %s, %s)\nBranch: %s\nCommit: %s' \
+              "$mode" "$RUN_URL" "$RUN_WORKFLOW" "$RUN_ID" "$EVENT" "$RUN_BRANCH" "$SHA")
+            if [ -n "$pr" ]; then text=$(printf '%s\nRenovate PR: #%s' "$text" "$pr"); fi
+            text=$(printf '%s\nMarker: %s' "$text" "$marker")
+          fi
+          {
+            echo "go=true"
+            echo "text<<AUTOFIX_EOF"
+            echo "$text"
+            echo "AUTOFIX_EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Hand it off
+        if: steps.check.outputs.go == 'true'
         env:
           URL: ${{ secrets.CLAUDE_AUTOFIX_URL }}
           TOKEN: ${{ secrets.CLAUDE_AUTOFIX_TOKEN }}
-          TEXT: ${{ inputs.text }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          WORKFLOW: ${{ github.event.workflow_run.name }}
-          EVENT: ${{ github.event.workflow_run.event }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          TEXT: ${{ steps.check.outputs.text }}
         run: |
-          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
-            echo "::warning::CLAUDE_AUTOFIX_URL or CLAUDE_AUTOFIX_TOKEN isn't set; nothing handed off"
-            exit 0
-          fi
-          # A Renovate PR may be fixed; anything else is only diagnosed.
-          case $EVENT in
-          pull_request) mode=fix ;;
-          *) mode=report ;;
-          esac
-          if [ -z "$TEXT" ]; then
-            TEXT=$(printf 'Mode: %s\nFailed run: %s\nWorkflow: %s (run %s, %s)\nBranch: %s\nCommit: %s' \
-              "$mode" "$RUN_URL" "$WORKFLOW" "$RUN_ID" "$EVENT" "$BRANCH" "$SHA")
-          fi
           # Only the status is printed: the reply links a private session.
           status=$(jq -n --arg text "$TEXT" '{text: $text}' | curl -sS -o /dev/null -w '%{http_code}' -X POST "$URL" \
             -H "Authorization: Bearer $TOKEN" \
