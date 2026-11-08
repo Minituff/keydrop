@@ -112,22 +112,25 @@ jobs:
           # The routine marks everything it opens with the autofix label and
           # this marker. Only the owner's items count (the routine acts as the
           # owner), so nobody else can open one to make it stand down.
-          dup=$(gh api -X GET "repos/$REPO/issues" -f state=open -f labels=autofix \
+          dup=$(gh api --paginate --slurp -X GET "repos/$REPO/issues" -f state=open -f labels=autofix \
             -f creator="$OWNER" -f per_page=100 |
-            jq -r --arg b "$branch" '[.[] | select([(.body // "") |
+            jq -r --arg b "$branch" '[.[][] | select([(.body // "") |
               scan("<!-- autofix: [^/ ]+/([^ ]+) -->") | .[0]] | any(. == $b)) | .html_url] | first // empty')
           [ -z "$dup" ] || stop "$dup is already open for $branch"
 
           # Earlier hand-offs today: at most one per branch, DAILY_CAP in all.
-          # Any API error fails the job, so nothing is sent uncounted.
-          runs=$(gh api -X GET "repos/$REPO/actions/workflows/autofix.yml/runs" \
-            -f created=">=$(date -u +%F)" -f status=success -f per_page=100 \
-            --jq '.workflow_runs[] | [.id, .display_title] | @tsv')
+          # A send that failed or timed out still counts: it may have started
+          # a session. Any API error fails the job, so nothing is sent
+          # uncounted. Runs on other branches can check at the same moment,
+          # so this is a soft cap, not a budget.
+          runs=$(gh api --paginate -X GET "repos/$REPO/actions/workflows/autofix.yml/runs" \
+            -f created=">=$(date -u +%F)" -f per_page=100 \
+            --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | [.id, .display_title] | @tsv")
           count=0
           while IFS=$'\t' read -r id title; do
             [ -n "$id" ] || continue
             sent=$(gh api "repos/$REPO/actions/runs/$id/jobs" \
-              --jq '[.jobs[].steps[]? | select(.name == "Hand it off" and .conclusion == "success")] | length')
+              --jq '[.jobs[].steps[]? | select(.name == "Hand it off" and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "cancelled"))] | length')
             [ "$sent" -gt 0 ] || continue
             [ "$title" != "autofix: $branch" ] || stop "$branch was already handed off today"
             count=$((count + 1))

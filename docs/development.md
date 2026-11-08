@@ -44,8 +44,10 @@ gh attestation verify oci://ghcr.io/minituff/keydrop:1.2.3 --repo Minituff/keydr
 ```
 
 A release started from **Run workflow** is built from the branch you picked,
-not the tag, so for one of those use `--source-ref refs/heads/main`. Pushed tags
-and Renovate's patch releases are built from the tag.
+not the tag. For one of those, `--source-ref refs/heads/main` only shows it was
+built from `main`, not from the tag's commit, so also pin the commit:
+`--source-ref refs/heads/main --source-digest "$(git rev-parse 'v1.2.3^{commit}')"`.
+Pushed tags and Renovate's patch releases are built from the tag.
 
 Every image includes the CLI for all six platforms (about 24 MB compressed);
 CI installs it from a running image with `install.sh` and checks the version.
@@ -94,7 +96,9 @@ with its diagnosis.
 Before sending, the workflow checks the PR is Renovate's, still at the failed
 commit and aimed at `main`, and skips a branch that already has an open
 `autofix` issue or PR from the owner, or a hand-off earlier that day. It
-hands off at most five failures a day, and only a run's first attempt.
+hands off at most about five failures a day (a soft cap: failures on two
+branches at the same moment can both get through), and only a run's first
+attempt.
 
 **What's enforced and what's only asked.** GitHub's proxy in Claude's cloud
 lets the routine push only to its own `claude/*` branches and never a tag.
@@ -110,9 +114,10 @@ green.
 Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
 secrets; without them it does nothing. Its prompt and setup are in
-`.github/autofix/`, with the sha256 of the version the routine runs:
-`scripts/autofix-check.sh` fails CI when they change until the new version is
-pasted into the routine and its sum recorded.
+`.github/autofix/`, with the sha256 of the version recorded as live:
+`scripts/autofix-check.sh` fails CI while a file and its recorded sum differ,
+as a reminder to paste the new version into the routine. It can't see the
+routine itself, so updating the sum without pasting also passes.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in
