@@ -50,6 +50,10 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    # The routine's URL and token live in the autofix environment, which
+    # only main may use: a workflow pushed on any other branch can't read
+    # them. workflow_run always runs on main.
+    environment: autofix
     # One at a time per branch, so the duplicate check sees the one before.
     concurrency:
       group: autofix-${{ github.event.workflow_run.head_branch || 'test' }}

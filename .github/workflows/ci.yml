@@ -5,6 +5,24 @@ on:
   pull_request:
 permissions: {}
 jobs:
+  # The patterns are the maintainer's own host names, so they live in the
+  # leak-check environment, which only main and dev may use: a workflow
+  # pushed on any other branch can't read them. Pull requests skip this job;
+  # the push to dev or main runs it.
+  leak-check:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: leak-check
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No private details
+        env:
+          KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+        run: sh scripts/leak-check.sh
   test:
     runs-on: ubuntu-latest
     permissions:
@@ -13,10 +31,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # Codecov's action runs in this job
-      - name: No private details
-        env:
-          KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
-        run: sh scripts/leak-check.sh
       - name: Leak check fails closed
         run: sh scripts/leak-check-test.sh
       - name: Release tags publish what they should
