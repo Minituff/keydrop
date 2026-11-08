@@ -2,7 +2,7 @@
 # a check on one of Renovate's PRs, a push Renovate merged to main, or a
 # release bump-version started. Failures on the maintainer's own pushes and
 # PRs are left to them. The routine only opens PRs and issues; it never
-# merges, tags or releases (its instructions are in docs/development.md).
+# merges, tags or releases (its prompt and setup are in .github/autofix/).
 # Setting the repository variable AUTOFIX to "off" pauses it.
 #
 # Only run metadata is sent, never logs or PR text: the routine reads those

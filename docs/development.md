@@ -90,7 +90,8 @@ check green.
 
 Set the repository variable `AUTOFIX` to `off` to pause
 it. The routine's URL and token are the `CLAUDE_AUTOFIX_URL` and `CLAUDE_AUTOFIX_TOKEN`
-secrets; without them it does nothing.
+secrets; without them it does nothing. Its prompt and setup are in
+`.github/autofix/`.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in
