@@ -4,9 +4,10 @@
 # PRs are left to them. Its prompt and setup are in .github/autofix/.
 # Setting the repository variable AUTOFIX to "off" pauses it.
 #
-# What holds the routine back: GitHub's proxy lets it push only to claude/*
-# branches and never a tag. Everything else (opening only PRs and issues,
-# never merging, dispatching workflows or releasing) is only its prompt. It
+# What holds the routine back: GitHub's proxy refuses tag pushes and branch
+# deletions, and main needs a PR. Everything else (pushing only to its own
+# claude/* branch, opening only PRs and issues, never merging, dispatching
+# workflows or releasing) is only its prompt. It
 # acts on GitHub with the repo owner's rights, so a run that ignored the
 # prompt could do what the owner can.
 #
