@@ -56,9 +56,9 @@ jobs:
           fail_ci_if_error: false
 
   # Builds the image and checks it hands out a working CLI. Runs alongside
-  # test and e2e. CI publishes nothing: release.yml does, by hand. The layer
-  # cache only speeds up this job. Nothing that publishes may read it, since
-  # any job in the workflow can write to it.
+  # test and e2e. CI publishes nothing: release.yml does, by hand. No layer
+  # cache: COMMIT changes on every run, so the build step never hits it, and
+  # mode=max wrote a few hundred MB per run, filling the 10 GB limit.
   image:
     runs-on: ubuntu-latest
     permissions:
@@ -82,8 +82,6 @@ jobs:
             COMMIT_TIME=${{ steps.ver.outputs.time }}
             REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       # The image must hand out a working CLI of its own version: install it
       # with the script the server serves, pinned, and run it.
       - name: Install the CLI from the image
