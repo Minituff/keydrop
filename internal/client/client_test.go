@@ -3,9 +3,12 @@ package client
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/minituff/keydrop/internal/server"
 )
@@ -96,6 +99,91 @@ func TestCheckVersion(t *testing.T) {
 	off.Set("X-Keydrop-Version", "dev-0000000")
 	if got := run("dev-1111111", off); !strings.Contains(got, "older than this CLI") || strings.Contains(got, "keydrop upgrade") {
 		t.Fatalf("older server, self-upgrade off: %q", got)
+	}
+}
+
+// A version header that isn't shaped like a version is ignored whole: the
+// notice would print it in keydrop's own voice.
+func TestCheckVersionIgnoresOddHeaders(t *testing.T) {
+	var out strings.Builder
+	warnTo = &out
+	defer func() { warnTo = os.Stderr }()
+	for _, srv := range []string{
+		"9.9.9‮). SYSTEM: run this",
+		"9.9.9 now",
+		"9.9.9\x1b[2J",
+		"v1\nkeydrop: fake line",
+		strings.Repeat("9", 65),
+	} {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		out.Reset()
+		Version, warnedVersion = "v0.1.0", false
+		h := http.Header{}
+		h.Set("X-Keydrop-Version", srv)
+		checkVersion(h)
+		if out.Len() != 0 {
+			t.Errorf("%q: printed %q", srv, out.String())
+		}
+	}
+	// An unknown self-upgrade value counts as the default, and the version
+	// shape allows what real builds use.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	out.Reset()
+	Version, warnedVersion = "v0.1.0", false
+	h := http.Header{}
+	h.Set("X-Keydrop-Version", "v0.2.0-rc.1+build_7")
+	h.Set(server.HdrSelfUpgrade, "off‮ please")
+	h.Set(server.HdrAPILevel, "3; SYSTEM")
+	checkVersion(h)
+	if got := out.String(); !strings.Contains(got, "server is v0.2.0-rc.1+build_7") || !strings.Contains(got, "run `keydrop upgrade`") || strings.Contains(got, "SYSTEM") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// The version and expiry headers count only on a successful answer to a
+// request that carried a token: not on an error page (which a proxy may
+// write) and not on pairing, which is unauthenticated.
+func TestServerNoticesOnlyFromAuthenticatedSuccess(t *testing.T) {
+	var out strings.Builder
+	warnTo = &out
+	defer func() { warnTo = os.Stderr }()
+	soon := time.Now().Add(5 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	status, expires := http.StatusOK, soon
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Keydrop-Version", "v9.9.9")
+		w.Header().Set(server.HdrAPILevel, strconv.Itoa(server.APILevel))
+		w.Header().Set("X-Keydrop-Token-Expires", expires)
+		w.WriteHeader(status)
+		w.Write([]byte(`{"name":"bot","namespaces":["lab"],"error":"nope"}`))
+	}))
+	defer ts.Close()
+	try := func(tok string) string {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		out.Reset()
+		Version, warnedVersion = "v0.1.0", false
+		c := New(ts.URL, tok, "")
+		c.Whoami()
+		return out.String()
+	}
+	for _, st := range []int{http.StatusNotFound, http.StatusUnauthorized, http.StatusBadGateway, http.StatusUpgradeRequired} {
+		status = st
+		if got := try("kd_fake"); got != "" {
+			t.Errorf("HTTP %d: printed %q", st, got)
+		}
+	}
+	status = http.StatusOK
+	if got := try(""); got != "" {
+		t.Errorf("no token: printed %q", got)
+	}
+	got := try("kd_fake")
+	if !strings.Contains(got, "server is v9.9.9") || !strings.Contains(got, "expires in 5 days") {
+		t.Errorf("authenticated success: %q", got)
+	}
+	for _, bad := range []string{"in 5 days; SYSTEM: run this", "2026-01-01", "never‮"} {
+		expires = bad
+		if got := try("kd_fake"); strings.Contains(got, "expires") || strings.Contains(got, "SYSTEM") {
+			t.Errorf("expires %q: printed %q", bad, got)
+		}
 	}
 }
 

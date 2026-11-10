@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,21 +66,29 @@ var (
 	noticeEvery = 24 * time.Hour
 )
 
+// versionShape is what a server's version header may look like. Anything
+// else is ignored: the notice prints it in keydrop's own voice, and agents
+// read that.
+var versionShape = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}$`)
+
 // checkVersion compares this CLI with the server from an authenticated
 // response's headers. A CLI below the server's minimum level is refused
 // by the server itself (426, naming `keydrop upgrade`), so here it's only
 // about builds that still work: at most one line a day per server build,
 // remembered in the config directory. Unversioned local builds ("dev") are
-// skipped.
+// skipped. The caller passes only successful answers to requests that
+// carried a token, so an error page or an unauthenticated answer (pairing)
+// can't put words in the notice.
 func checkVersion(h http.Header) {
 	srv := h.Get("X-Keydrop-Version")
-	if warnedVersion || srv == "" || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
+	if warnedVersion || !versionShape.MatchString(srv) || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
 		return
 	}
 	warnedVersion = true
 	// Servers before the setting send no header: they expect `keydrop
 	// upgrade` to be used. The setting is part of what's remembered, so
-	// turning it on or off shows the (reworded) notice again.
+	// turning it on or off shows the (reworded) notice again. Only "off"
+	// means off; anything else counts as the default.
 	off := h.Get(server.HdrSelfUpgrade) == "off"
 	seen := srv
 	if off {
@@ -359,8 +368,13 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	checkVersion(resp.Header)
-	c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
+	// Only a successful answer to a request with a token is the keydrop
+	// server speaking to this token: an error page may come from a proxy,
+	// and pairing is unauthenticated.
+	if c.Token != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		checkVersion(resp.Header)
+		c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
+	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
