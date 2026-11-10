@@ -150,8 +150,12 @@ which are the places keydrop exists to keep secrets out of. So a machine
 - **Unauthenticated, so bounded.** Anyone who can reach keydrop can ask to
   pair, so requests are capped (3 waiting per address, 8 per IPv6 /64,
   50 overall). When the list is full, the oldest unapproved request from
-  the busiest address (or /64) makes way, so one noisy host can't keep
-  everyone else from pairing. Requests
+  the busiest address (or /64) makes way, if it has more waiting than the
+  newcomer's address plus one, so one noisy host can't keep everyone else
+  from pairing. When no address is busier (say 50 addresses with one
+  request each), the oldest unapproved request overall makes way, so a
+  full list never shuts pairing off. An approved request is never
+  dropped. Requests
   expire after 10 minutes. They're held in memory only: a restart drops
   them, and the agent asks again. Polls are limited too: 300 a minute per
   address (IPv6: /64), then 429.
