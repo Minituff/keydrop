@@ -246,7 +246,7 @@ which are the places keydrop exists to keep secrets out of. So a machine
   same list entries, the same responses and errors, the same work per
   call, and no field, header or timing that differs.
 - A touch is any agent call on the canary, refused ones included: a
-  reveal or `run`, a write, a status, a flag or a note (a write that turns it into a variable
+  reveal or `run`, an ack, a write, a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
@@ -529,8 +529,9 @@ limited to what it needs:
   refused and the admin sees the new one. Once approved, the description
   stays marked as written by that agent until the admin changes its text
   (saving it unchanged keeps the mark).
-- Flags, statuses and notes share a per-token rate limit, 60 an hour, and
-  puts and requests another, 200 an hour (both in memory, so a restart
+- Flags, statuses and notes share a per-token rate limit, 60 an hour,
+  puts and requests another, 200 an hour, and reveals and acks a third,
+  1200 an hour (see [Audit log](#audit-log); all in memory, so a restart
   resets them), then 429. All agent text (descriptions, usage, flag
   reasons and links, notes) is refused if it has control characters or
   invisible formatting characters (Unicode Cf, such as bidi overrides and
@@ -550,8 +551,17 @@ limited to what it needs:
   action, 60 a minute in all, and the next recorded one carries the count
   of those left out. So a flood shows up in the log without filling the
   disk. Events that need a token or a session are all logged, except
-  `token.denied`, which has the same limit so a refused token can't rotate
-  the log.
+  `token.denied` and `token.ratelimited`, which have the same limit so a
+  refused token can't rotate the log.
+- Reveals and acks, which each write an entry to the main log, are
+  limited to 1200 an hour per token, together (in memory, so a restart
+  resets it), then 429 with no value. Without that, a token could read in
+  a loop until the record of what it read had left the Log page and, in
+  time, every rotated file. The limit is the same for secrets, variables
+  and canaries; it's checked after the namespace (so an ungranted one
+  still gets its 404), and a refused call on a canary is a touch. The
+  refusals are logged as `token.ratelimited` through the same throttle as
+  `token.denied`.
 - Every field is cut at 200 bytes (an agent's `?purpose=` included),
   except a flag's reason and link, kept whole (up to 1100 bytes) in their
   own field and shown on the audit page as agent-written text; and

@@ -297,6 +297,9 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 	if !ok {
 		return
 	}
+	if !s.revealAllowed(w, r, t, sec, "reveal") {
+		return
+	}
 	// Reading the value is what makes it no longer new to this token.
 	val, variable, hit, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name, s.clientIP(r))
 	switch {
@@ -340,6 +343,9 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
 	sec, ok := s.lookup(w, r, t)
 	if !ok {
+		return
+	}
+	if !s.revealAllowed(w, r, t, sec, "ack") {
 		return
 	}
 	hit, err := s.store.AgentAck(sec.Namespace, sec.Name, s.agentCtx(r, t))
@@ -757,6 +763,21 @@ func (s *Server) apiNote(w http.ResponseWriter, r *http.Request, t store.Token) 
 		s.canaryTouched(r, *hit)
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref(), "url": s.secretURL(sec.Namespace, sec.Name)})
+}
+
+// revealAllowed applies the per-token limit on reveals and acks, after the
+// namespace check (so an ungranted namespace still gets its 404). Secrets,
+// variables and canaries are counted and refused alike, and a refusal on a
+// canary is a touch. The refusals go to the main log throttled, so they
+// can't flood it either.
+func (s *Server) revealAllowed(w http.ResponseWriter, r *http.Request, t store.Token, sec store.Secret, action string) bool {
+	if s.reveals.allow(t.Name, s.now()) {
+		return true
+	}
+	s.touchRefused(r, t, sec.Namespace, sec.Name, action)
+	s.throttledEvent(r, actor(t), "token.ratelimited", "", "reveals and acks over "+strconv.Itoa(revealsPerHour)+" an hour", false)
+	apiError(w, http.StatusTooManyRequests, "too many reveals and acks from this token (the limit is "+strconv.Itoa(revealsPerHour)+" an hour); try again later")
+	return false
 }
 
 // writeAllowed applies the per-token limit on puts and requests, which

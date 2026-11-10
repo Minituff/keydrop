@@ -127,6 +127,7 @@ So one agent can't flood you or the server:
 | Open requests | 20 per token |
 | Flags, statuses and notes | 60 per token an hour |
 | Puts and requests | 200 per token an hour |
+| Reveals (including `run` and `get`) and acks | 1,200 per token an hour, so a token can't flood the audit log |
 | Stored values | 500 keys and 8 MiB per token, not counting keys you've saved yourself |
 
 Agent text can't contain control or invisible formatting characters. The

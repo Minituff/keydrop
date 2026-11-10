@@ -113,6 +113,8 @@ type Server struct {
 	annotations *rateLimit
 	// writes rate-limits puts and requests per token.
 	writes *rateLimit
+	// reveals rate-limits reveals and acks per token, together.
+	reveals *rateLimit
 	// renewals rate-limits renewal requests and status checks, collects
 	// collecting a renewed token, each per token and address.
 	renewals *rateLimit
@@ -145,6 +147,15 @@ const annotationsPerHour = 60
 // send an hour: plenty for provisioning, too few to churn the history.
 const writesPerHour = 200
 
+// revealsPerHour is how many reveals and acks (together) one token may send
+// an hour. Each one writes an entry to the main audit log, so without a
+// limit a token could push the record of what it read out of the Log page
+// and, in time, off the disk. 1200 is 20 a minute: far more than an agent
+// using its keys needs, and few enough that the log's rotated files keep
+// days of it. Acks count against the same budget because they write to the
+// same log; one budget for both means no mix of the two gets past it.
+const revealsPerHour = 1200
+
 // pollsPerMinute is how many pairing polls an address group may send a
 // minute: the CLI sends 30, and a group can have 8 requests waiting.
 const pollsPerMinute = 300
@@ -164,6 +175,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
 		annotations: newRateLimit(annotationsPerHour, time.Hour),
 		writes:      newRateLimit(writesPerHour, time.Hour),
+		reveals:     newRateLimit(revealsPerHour, time.Hour),
 		renewals:    newRateLimit(renewalsPerHour, time.Hour),
 		collects:    newRateLimit(collectsPerHour, time.Hour),
 		polls:       newRateLimit(pollsPerMinute, time.Minute),

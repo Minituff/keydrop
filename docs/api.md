@@ -4,7 +4,8 @@ All endpoints except pairing take `Authorization: Bearer kd_…`, and an
 optional `X-Keydrop-Agent: label`. A namespace the token isn't granted
 returns 404, exactly like a missing secret. A token used from outside its
 allowed sources gets 403. Flags, statuses and notes past their hourly limit
-get 429, as do puts and requests past theirs, a request past a token's
+get 429, as do puts and requests past theirs, reveals and acks past
+1200 an hour per token (together; no value is returned), a request past a token's
 20 open ones, and renewal calls past their own limits (240 asks and status
 checks, and 30 collects, an hour). An expired or replaced token gets 401
 `invalid token`, like an unknown one, except on the renewal endpoints.
@@ -17,7 +18,7 @@ checks, and 30 collects, an hour). An expired or replaced token gets 401
 | `POST /api/v1/token/collect` | With the old token, once approved: `{"token","name","namespaces","expires_at"}`. Only from the address that asked (403 otherwise, logged and alerted); repeatable until the new token is first used; 401 after 7 days |
 | `GET /api/v1/secrets?new=1&pending=1&namespace=x` | Metadata list (`kind` is `secret` or `variable`; a variable an agent wrote has `value_by`, naming that agent, and is untrusted text; variables include their `value`; `group` is `{"slug","name","color","auto"}` when the key is in one) |
 | `GET /api/v1/secrets/{ns}/{name}` | Metadata, including `status`, open `flags` (who and when), approved `notes`, `pending_notes` and `description_pending`. `last_read_at`/`last_read_by` only when this token read it last |
-| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged; 500 if a secret's read can't be logged); adds `"status"` when the key isn't ok. Marks the value as no longer new to this token |
+| `POST /api/v1/secrets/{ns}/{name}/reveal?purpose=…` | `{"value": …}`, the only endpoint that returns a value (logged; 500 if a secret's read can't be logged); adds `"status"` when the key isn't ok. Marks the value as no longer new to this token. 429, with no value, past 1200 reveals and acks an hour per token |
 | `GET /api/v1/history?namespace=x&name=Y&limit=50` | Changes to the keys this token can see, newest first (at most 1000; 500 kept per namespace). Flag reasons aren't included |
 | `POST /api/v1/secrets/{ns}/{name}/status` | `{"status","replaced_by"}`; `ok` clears it. 403 if the admin set the current status; `replaced_by` must exist in the namespace |
 | `POST /api/v1/secrets/{ns}/{name}/flag` | `{"reason","link"}`. 409 if this token already has an open flag on the key. Flags in `GET` carry `token_revoked` when their token has since been revoked |
