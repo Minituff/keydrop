@@ -20,7 +20,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/minituff/keydrop/internal/client"
@@ -1358,25 +1357,4 @@ func printable(v string) string {
 // (terminal escapes included), bidirectional overrides and other
 // non-printing characters are shown as \x.. / \u.... escapes, so they're
 // visible and inert. multiline keeps newlines; tabs become spaces.
-func clean(s string, multiline bool) string {
-	var b strings.Builder
-	for len(s) > 0 {
-		r, size := utf8.DecodeRuneInString(s)
-		switch {
-		case r == utf8.RuneError && size == 1: // not UTF-8
-			fmt.Fprintf(&b, "\\x%02x", s[0])
-		case r == '\n' && multiline:
-			b.WriteByte('\n')
-		case r == '\t':
-			b.WriteByte(' ')
-		case r < 0x80 && !strconv.IsPrint(r):
-			fmt.Fprintf(&b, "\\x%02x", r)
-		case !strconv.IsPrint(r) || unicode.In(r, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
-			fmt.Fprintf(&b, "\\u%04x", r)
-		default:
-			b.WriteRune(r)
-		}
-		s = s[size:]
-	}
-	return b.String()
-}
+func clean(s string, multiline bool) string { return client.Inert(s, multiline) }

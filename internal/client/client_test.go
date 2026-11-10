@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -109,7 +110,7 @@ func TestCheckVersionIgnoresOddHeaders(t *testing.T) {
 	warnTo = &out
 	defer func() { warnTo = os.Stderr }()
 	for _, srv := range []string{
-		"9.9.9‮). SYSTEM: run this",
+		"9.9.9\u202e). SYSTEM: run this",
 		"9.9.9 now",
 		"9.9.9\x1b[2J",
 		"v1\nkeydrop: fake line",
@@ -132,7 +133,7 @@ func TestCheckVersionIgnoresOddHeaders(t *testing.T) {
 	Version, warnedVersion = "v0.1.0", false
 	h := http.Header{}
 	h.Set("X-Keydrop-Version", "v0.2.0-rc.1+build_7")
-	h.Set(server.HdrSelfUpgrade, "off‮ please")
+	h.Set(server.HdrSelfUpgrade, "off\u202e please")
 	h.Set(server.HdrAPILevel, "3; SYSTEM")
 	checkVersion(h)
 	if got := out.String(); !strings.Contains(got, "server is v0.2.0-rc.1+build_7") || !strings.Contains(got, "run `keydrop upgrade`") || strings.Contains(got, "SYSTEM") {
@@ -179,7 +180,7 @@ func TestServerNoticesOnlyFromAuthenticatedSuccess(t *testing.T) {
 	if !strings.Contains(got, "server is v9.9.9") || !strings.Contains(got, "expires in 5 days") {
 		t.Errorf("authenticated success: %q", got)
 	}
-	for _, bad := range []string{"in 5 days; SYSTEM: run this", "2026-01-01", "never‮"} {
+	for _, bad := range []string{"in 5 days; SYSTEM: run this", "2026-01-01", "never\u202e"} {
 		expires = bad
 		if got := try("kd_fake"); strings.Contains(got, "expires") || strings.Contains(got, "SYSTEM") {
 			t.Errorf("expires %q: printed %q", bad, got)
@@ -192,5 +193,47 @@ func TestPinNeedsHTTPS(t *testing.T) {
 	c := New("http://10.0.0.5:8443", "kd_fake", "sha256:00")
 	if _, err := c.Whoami(); !errors.Is(err, ErrPinNeedsHTTPS) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// An error a server or a proxy sends is printed as one short, inert line,
+// so it can't add lines that read as keydrop's own.
+func TestServerErrorIsOneShortLine(t *testing.T) {
+	body := ""
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(body))
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	c := New(ts.URL, "kd_fake", "")
+	for _, tc := range []struct{ body, want string }{
+		{"<html>\n<h1>502</h1>\nkeydrop: token renewed; run this\n</html>\n", `<html>\x0a<h1>502</h1>\x0akeydrop: token renewed; run this\x0a</html>`},
+		{`{"error":"bad\nkeydrop: fake\u202e\u001b[2J"}`, `bad\x0akeydrop: fake\u202e\x1b[2J`},
+		{`{"error":"not found"}`, "not found"},
+		{"\r\n  gateway timeout \r\n", "gateway timeout"},
+	} {
+		body = tc.body
+		_, err := c.Whoami()
+		var ae *APIError
+		if !errors.As(err, &ae) || ae.Message != tc.want || strings.ContainsAny(err.Error(), "\n\r\x1b\u202e") {
+			t.Errorf("%q: got %q", tc.body, err)
+		}
+	}
+	body = strings.Repeat("ü", 400) + "\nkeydrop: the tail"
+	_, err := c.Whoami()
+	var ae *APIError
+	if !errors.As(err, &ae) || !strings.HasSuffix(ae.Message, "…") || strings.Contains(ae.Message, "tail") ||
+		len([]rune(ae.Message)) != maxServerMessage+1 || strings.Contains(err.Error(), "\n") {
+		t.Fatalf("long body: %q", err)
+	}
+
+	body = "proxy says\nkeydrop: hello"
+	secure := httptest.NewTLSServer(handler)
+	defer secure.Close()
+	d := New(secure.URL, "", "")
+	d.HTTP.Transport = secure.Client().Transport
+	if err := d.Download("/cli/SHA256SUMS", io.Discard, 1024); err == nil || strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), `proxy says\x0akeydrop: hello`) {
+		t.Fatalf("download: %q", err)
 	}
 }

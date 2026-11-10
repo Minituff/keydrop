@@ -242,7 +242,7 @@ func (c *Client) Download(path string, w io.Writer, limit int64) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+		return &APIError{Status: resp.StatusCode, Message: serverMessage(string(msg))}
 	}
 	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
@@ -379,9 +379,9 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
 		if json.Unmarshal(data, &e) != nil || e.Error == "" {
-			e.Error = strings.TrimSpace(string(data))
+			e.Error = string(data)
 		}
-		return &APIError{Status: resp.StatusCode, Message: e.Error}
+		return &APIError{Status: resp.StatusCode, Message: serverMessage(e.Error)}
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)
@@ -448,17 +448,6 @@ func (c *Client) Get(ref string) (*Secret, error) {
 	}
 	var s Secret
 	return &s, c.do("GET", secretPath(ns, name), nil, &s)
-}
-
-// printableOnly drops what could fake or hide output in a terminal from
-// text a server sent.
-func printableOnly(s string) string {
-	return strings.Map(func(r rune) rune {
-		if !strconv.IsPrint(r) {
-			return -1
-		}
-		return r
-	}, strings.ToValidUTF8(s, ""))
 }
 
 // TooOpen says whether a file's mode lets other users read it. Windows has

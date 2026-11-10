@@ -357,7 +357,10 @@ log, not for access control.
   usage, variable values on a terminal, names, error messages) has control
   characters, terminal escapes and bidirectional overrides shown as
   visible escapes. Descriptions are written by other people and agents,
-  and agents read this output.
+  and agents read this output. An error the server (or a proxy in front of
+  it) sends is also kept to one line of at most 300 characters, newlines
+  shown as `\x0a`, so an error page can't print lines that look like
+  keydrop's own.
 - `put` takes text up to 60 KiB from stdin, and refuses anything that
   isn't valid UTF-8 rather than letting JSON mangle it: base64 a binary
   value first.
