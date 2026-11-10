@@ -734,7 +734,9 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   there's no public CA or DNS dependency, and a proxy in the middle can't
   read tokens or values.
 - `KEYDROP_TLS=files` uses your own certificate. `off` is only for running
-  behind a TLS-terminating proxy on a private network.
+  behind a TLS-terminating proxy on a private network. So the CLI accepts
+  an `http://` URL, but `pair` and `login` warn when it points at another
+  machine: the token and values would cross the network in the clear.
 - `KEYDROP_TRUSTED_PROXIES` limits who may set `X-Forwarded-For`, so the
   login limiter, allowed sources and pairing see real client IPs. List
   only the proxy's own address: any host in a trusted range can claim to

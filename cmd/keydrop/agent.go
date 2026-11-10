@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1211,6 +1212,7 @@ func cmdLogin(args []string) error {
 	if *u == "" {
 		return errors.New("usage: keydrop login --url URL [--pin sha256:…], then paste the token")
 	}
+	warnPlainHTTP(os.Stderr, *u)
 	tok, err := readSecretLine("Token: ")
 	if err != nil {
 		return err
@@ -1254,6 +1256,22 @@ func saveLogin(u, tok, pin string) (string, error) {
 	return dir, nil
 }
 
+// warnPlainHTTP says on w when u is plain http to another machine: every
+// later command sends the token and gets values over it in the clear. It
+// doesn't refuse, since a TLS-terminating proxy on a private network is a
+// supported setup. On this machine (loopback) nothing crosses a network.
+func warnPlainHTTP(w io.Writer, u string) {
+	p, err := url.Parse(u)
+	if err != nil || !strings.EqualFold(p.Scheme, "http") {
+		return
+	}
+	h := p.Hostname()
+	if ip := net.ParseIP(h); strings.EqualFold(h, "localhost") || (ip != nil && ip.IsLoopback()) {
+		return
+	}
+	fmt.Fprintln(w, "keydrop: warning: plain http, so the token and every value cross the network unencrypted; use the https:// URL unless a TLS-terminating proxy on a private network is in front of keydrop")
+}
+
 // pendingPair is a pairing request in progress, kept so that running
 // `keydrop pair` again carries on waiting instead of asking again.
 type pendingPair struct {
@@ -1287,9 +1305,7 @@ func cmdPair(args []string) error {
 		return errors.New("usage: keydrop pair --url URL [--pin sha256:…]")
 	}
 	if p.Poll == "" {
-		if strings.HasPrefix(*u, "http://") {
-			fmt.Fprintln(os.Stderr, "warning: plain http, so the token crosses the network unencrypted")
-		}
+		warnPlainHTTP(os.Stderr, *u)
 		c := client.New(*u, "", *pin)
 		host, _ := os.Hostname()
 		name := ""
