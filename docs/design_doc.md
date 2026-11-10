@@ -344,7 +344,10 @@ log, not for access control.
   output, or anything the command sends to a file or the network.
 - `run` removes every `KEYDROP_*` variable (token, token file, URL, pin)
   from the child's environment, forwards signals, and exits with the
-  child's exit code. That keeps the token out of the child's way, not out
+  child's exit code. The child gets only stdin, stdout and stderr: on Unix
+  any other descriptor keydrop itself inherited (a shell's `3>&1`) is
+  marked close-on-exec first, since output written there would skip the
+  masking. That keeps the token out of the child's way, not out
   of its reach: the child runs as the same user and can read
   `~/.config/keydrop/token`. `run` isn't a sandbox. `run --no-mask` is
   recorded in the audit log.
@@ -793,7 +796,8 @@ so breaking it without raising the minimum fails CI.
 
 **Self-upgrade.** `keydrop upgrade` is install.sh in Go: the same
 download from the paired server, over the configured pin, checked against
-`SHA256SUMS`, run once before it replaces anything, the old binary kept
+`SHA256SUMS`, run once (`version`, without any `KEYDROP_*` variable, so
+not with the token) before it replaces anything, the old binary kept
 as `.bak`. It refuses plain http, since what it downloads gets run. The
 checksum file comes from the same server, so it catches a broken download,
 not a hostile server; the pin is what vouches for the server.

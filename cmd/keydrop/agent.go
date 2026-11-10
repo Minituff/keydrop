@@ -810,6 +810,7 @@ func cmdRun(args []string) (int, error) {
 		cmd.Stdout, cmd.Stderr = ow, ew
 		flushers = append(flushers, ow, ew)
 	}
+	closeInheritedFDs()
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}

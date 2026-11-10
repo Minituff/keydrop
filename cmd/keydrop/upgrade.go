@@ -94,12 +94,10 @@ func cmdUpgrade(args []string) error {
 	if err := os.Chmod(tmp.Name(), fi.Mode().Perm()|0o700); err != nil {
 		return err
 	}
-	out, err := exec.Command(tmp.Name(), "version").Output()
-	newVersion, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "keydrop ")
-	if err != nil || !ok || newVersion == "" {
-		return fmt.Errorf("the downloaded build doesn't run here (%v); nothing was replaced", err)
+	newVersion, err := probeVersion(tmp.Name())
+	if err != nil {
+		return err
 	}
-	newVersion = clean(newVersion, false)
 	if newVersion == version && !*force {
 		fmt.Printf("keydrop is already %s, the server's build.\n", version)
 		return nil
@@ -117,6 +115,20 @@ func cmdUpgrade(args []string) error {
 	}
 	fmt.Printf("Upgraded keydrop %s → %s. The old binary is at %s.\n", version, newVersion, bak)
 	return nil
+}
+
+// probeVersion runs a downloaded build's `version` and returns the version
+// it reports. The build isn't trusted yet, so it runs without the token
+// and the other KEYDROP_* settings, as run's commands do.
+func probeVersion(path string) (string, error) {
+	probe := exec.Command(path, "version")
+	probe.Env = childEnv(os.Environ(), nil, nil)
+	out, err := probe.Output()
+	v, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "keydrop ")
+	if err != nil || !ok || v == "" {
+		return "", fmt.Errorf("the downloaded build doesn't run here (%v); nothing was replaced", err)
+	}
+	return clean(v, false), nil
 }
 
 var bakSafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)

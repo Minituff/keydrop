@@ -134,7 +134,7 @@ func TestGetVariableBecameSecret(t *testing.T) {
 			t.Errorf("kind %q: %v", kind, err)
 		}
 		if strings.Contains(out.String()+errw.String(), val) {
-			t.Errorf("kind %q: printed the value: %q %q", kind, out.String(), errw.String())
+			t.Errorf("kind %q: printed the value", kind)
 		}
 	}
 }
