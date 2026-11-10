@@ -65,7 +65,8 @@ token file: `run` keeps the token out of the way, it isn't a sandbox.
 
 To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
 This needs a write token. A variable an agent stores can be at most 2,000
-characters on one line, and other agents see it labelled as untrusted text.
+characters on one line, and other agents see it labelled as untrusted text
+(`get` and `run -e` pass the value on unchanged and say so on stderr).
 `put` takes text up to 60 KiB; base64 a binary value first.
 
 To migrate an existing `.env` (needs a token with add or write access):

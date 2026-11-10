@@ -387,7 +387,9 @@ every read logged, no way to just look). So an entry is either a
 - **A variable from an agent is agent text.** Every token in the namespace
   reads it at once, with no approval, so it's at most 2,000 characters on
   one line with no control or invisible characters. The API names its
-  author in `value_by`, and the CLI quotes it and labels it untrusted. Once
+  author in `value_by`, and the CLI quotes it and labels it untrusted.
+  `get NAME` and `run -e` keep the value itself exact (scripts read it)
+  and put the label on stderr instead, naming the agent. Once
   the admin saves the value, the label goes.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
