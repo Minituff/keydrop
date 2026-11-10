@@ -26,9 +26,15 @@
    that address), how often it gets a new token, and whether it may upgrade
    its own CLI. Approve.
 3. `keydrop pair` picks up the token within a few seconds and writes
-   `~/.config/keydrop/{url,token,pin}` with mode 600. The token never
+   `~/.config/keydrop/{url,token,pin}` with mode 600 (or under
+   `$XDG_CONFIG_HOME/keydrop`). The token never
    passes through the chat or the page. If it was interrupted, running
-   `keydrop pair` again carries on waiting.
+   `keydrop pair` again carries on waiting. keydrop refuses to use that
+   directory if another user owns it or can write to it (`chmod 700`
+   fixes the second), and the `url` and `pin` files likewise, since they
+   decide where the token goes. With no home directory and no
+   `XDG_CONFIG_HOME` it stops rather than guess: set one, or give
+   everything as `KEYDROP_*` variables.
 4. Use it:
    ```sh
    keydrop history                                 # what changed lately?

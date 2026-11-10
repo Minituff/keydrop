@@ -94,10 +94,15 @@ func checkVersion(h http.Header) {
 	if off {
 		seen += " self-upgrade off"
 	}
-	stamp := filepath.Join(ConfigDir(), "version-notice")
-	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
-		if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == seen {
-			return
+	// Without a usable config directory there's no stamp: the line just
+	// shows every run.
+	dir, dirErr := ConfigDir()
+	stamp := filepath.Join(dir, "version-notice")
+	if dirErr == nil {
+		if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
+			if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == seen {
+				return
+			}
 		}
 	}
 	older := false
@@ -115,7 +120,7 @@ func checkVersion(h http.Header) {
 		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it: it fetches the server's build, checks it, and keeps the old binary as a .bak.\n", srv, Version)
 	}
 	// Best effort: without the stamp the line just shows again next run.
-	if os.MkdirAll(ConfigDir(), 0o700) == nil {
+	if dirErr == nil && os.MkdirAll(dir, 0o700) == nil {
 		os.WriteFile(stamp, []byte(seen+"\n"), 0o600)
 	}
 }
@@ -142,21 +147,55 @@ type Client struct {
 	warnedExp  bool
 }
 
-// ConfigDir is ~/.config/keydrop (or $XDG_CONFIG_HOME/keydrop).
-func ConfigDir() string {
-	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "keydrop")
+// ErrNoConfigDir: there's neither a home directory nor XDG_CONFIG_HOME, so
+// there's nowhere safe to keep the URL, pin and token. Falling back to a
+// path relative to the working directory would let a checkout choose the
+// server the token goes to, or receive a token.
+var ErrNoConfigDir = errors.New("can't find keydrop's config directory: set HOME (or XDG_CONFIG_HOME) to an absolute path, or set KEYDROP_URL and KEYDROP_TOKEN")
+
+// ConfigDir is ~/.config/keydrop (or $XDG_CONFIG_HOME/keydrop). It fails
+// without an absolute home or XDG_CONFIG_HOME (a relative one is ignored,
+// as the XDG spec says), and refuses an existing directory that other
+// users could have written to, since the URL and pin in it decide where
+// the token goes.
+func ConfigDir() (string, error) {
+	dir := ""
+	if d := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(d) {
+		dir = filepath.Join(d, "keydrop")
+	} else if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		dir = filepath.Join(home, ".config", "keydrop")
+	} else {
+		return "", ErrNoConfigDir
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "keydrop")
+	if err := checkConfigDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
-func readConfigFile(name string) string {
-	b, err := os.ReadFile(filepath.Join(ConfigDir(), name))
+// readConfigFile reads one of the files `keydrop login` writes: "" when
+// it doesn't exist, and an error when others could have written it.
+func readConfigFile(name string) (string, error) {
+	dir, err := ConfigDir()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(b))
+	path := filepath.Join(dir, name)
+	fi, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := checkConfigFile(path, fi); err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // FromEnv builds a client from KEYDROP_URL, KEYDROP_TOKEN(_FILE) and
@@ -166,11 +205,19 @@ func FromEnv() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	pin, err := serverPin()
+	if err != nil {
+		return nil, err
+	}
 	tok, tokenPath := os.Getenv("KEYDROP_TOKEN"), ""
 	if tok == "" {
 		path := os.Getenv("KEYDROP_TOKEN_FILE")
 		if path == "" {
-			path = filepath.Join(ConfigDir(), "token")
+			dir, err := ConfigDir()
+			if err != nil {
+				return nil, err
+			}
+			path = filepath.Join(dir, "token")
 		}
 		fi, err := os.Stat(path)
 		if err != nil {
@@ -186,16 +233,19 @@ func FromEnv() (*Client, error) {
 		tok = strings.TrimSpace(string(b))
 		tokenPath = path
 	}
-	c := New(u, tok, serverPin())
+	c := New(u, tok, pin)
 	c.TokenPath = tokenPath
 	c.Label = os.Getenv("KEYDROP_AGENT")
 	return c, nil
 }
 
 func serverURL() (string, error) {
-	u := os.Getenv("KEYDROP_URL")
-	if u == "" {
-		u = readConfigFile("url")
+	if u := os.Getenv("KEYDROP_URL"); u != "" {
+		return u, nil
+	}
+	u, err := readConfigFile("url")
+	if err != nil {
+		return "", err
 	}
 	if u == "" {
 		return "", errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
@@ -203,11 +253,17 @@ func serverURL() (string, error) {
 	return u, nil
 }
 
-func serverPin() string {
+func serverPin() (string, error) {
 	if pin := os.Getenv("KEYDROP_TLS_PIN"); pin != "" {
-		return pin
+		return pin, nil
 	}
-	return readConfigFile("pin")
+	pin, err := readConfigFile("pin")
+	if errors.Is(err, ErrNoConfigDir) {
+		// Everything came from the environment: no directory, no pin
+		// file, and without a pin the certificate must chain to a CA.
+		return "", nil
+	}
+	return pin, err
 }
 
 // AskUpgrade asks the server whether this agent may upgrade its own CLI

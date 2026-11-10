@@ -1231,7 +1231,10 @@ func cmdLogin(args []string) error {
 
 // saveLogin writes the url, token and pin files (mode 600).
 func saveLogin(u, tok, pin string) (string, error) {
-	dir := client.ConfigDir()
+	dir, err := client.ConfigDir()
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -1265,7 +1268,10 @@ func cmdPair(args []string) error {
 	wait := fs.Duration("timeout", 10*time.Minute, "how long to wait for approval")
 	fresh := fs.Bool("new", false, "start a new request even if one is waiting")
 	parse(fs, args)
-	dir := client.ConfigDir()
+	dir, err := client.ConfigDir()
+	if err != nil {
+		return err
+	}
 	statePath := filepath.Join(dir, "pairing")
 
 	var p pendingPair

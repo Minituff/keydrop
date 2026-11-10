@@ -367,6 +367,13 @@ log, not for access control.
 - A pin with an `http://` URL is an error, not silently unchecked, and the
   client won't follow a redirect from https to plain http, pinned or not:
   the token or a build would go in the clear.
+- The config directory (`~/.config/keydrop`, or under `$XDG_CONFIG_HOME`)
+  holds the URL and pin, which decide where the token goes and which
+  certificate is trusted. On Unix the CLI refuses it, and the `url` and
+  `pin` files, when another user owns them or can write to them; the token
+  file must not be readable by others either. With no absolute home and
+  no `XDG_CONFIG_HOME` the CLI fails instead of using a directory relative
+  to where it runs, where a checkout could have planted a URL.
 
 ### Variables
 Not everything an agent needs is secret: an API base URL, an account ID, a
