@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,30 +66,43 @@ var (
 	noticeEvery = 24 * time.Hour
 )
 
+// versionShape is what a server's version header may look like. Anything
+// else is ignored: the notice prints it in keydrop's own voice, and agents
+// read that.
+var versionShape = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}$`)
+
 // checkVersion compares this CLI with the server from an authenticated
 // response's headers. A CLI below the server's minimum level is refused
 // by the server itself (426, naming `keydrop upgrade`), so here it's only
 // about builds that still work: at most one line a day per server build,
 // remembered in the config directory. Unversioned local builds ("dev") are
-// skipped.
+// skipped. The caller passes only successful answers to requests that
+// carried a token, so an error page or an unauthenticated answer (pairing)
+// can't put words in the notice.
 func checkVersion(h http.Header) {
 	srv := h.Get("X-Keydrop-Version")
-	if warnedVersion || srv == "" || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
+	if warnedVersion || !versionShape.MatchString(srv) || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
 		return
 	}
 	warnedVersion = true
 	// Servers before the setting send no header: they expect `keydrop
 	// upgrade` to be used. The setting is part of what's remembered, so
-	// turning it on or off shows the (reworded) notice again.
+	// turning it on or off shows the (reworded) notice again. Only "off"
+	// means off; anything else counts as the default.
 	off := h.Get(server.HdrSelfUpgrade) == "off"
 	seen := srv
 	if off {
 		seen += " self-upgrade off"
 	}
-	stamp := filepath.Join(ConfigDir(), "version-notice")
-	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
-		if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == seen {
-			return
+	// Without a usable config directory there's no stamp: the line just
+	// shows every run.
+	dir, dirErr := ConfigDir()
+	stamp := filepath.Join(dir, "version-notice")
+	if dirErr == nil {
+		if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < noticeEvery {
+			if b, _ := os.ReadFile(stamp); strings.TrimSpace(string(b)) == seen {
+				return
+			}
 		}
 	}
 	older := false
@@ -106,7 +120,7 @@ func checkVersion(h http.Header) {
 		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it: it fetches the server's build, checks it, and keeps the old binary as a .bak.\n", srv, Version)
 	}
 	// Best effort: without the stamp the line just shows again next run.
-	if os.MkdirAll(ConfigDir(), 0o700) == nil {
+	if dirErr == nil && os.MkdirAll(dir, 0o700) == nil {
 		os.WriteFile(stamp, []byte(seen+"\n"), 0o600)
 	}
 }
@@ -133,21 +147,55 @@ type Client struct {
 	warnedExp  bool
 }
 
-// ConfigDir is ~/.config/keydrop (or $XDG_CONFIG_HOME/keydrop).
-func ConfigDir() string {
-	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "keydrop")
+// ErrNoConfigDir: there's neither a home directory nor XDG_CONFIG_HOME, so
+// there's nowhere safe to keep the URL, pin and token. Falling back to a
+// path relative to the working directory would let a checkout choose the
+// server the token goes to, or receive a token.
+var ErrNoConfigDir = errors.New("can't find keydrop's config directory: set HOME (or XDG_CONFIG_HOME) to an absolute path, or set KEYDROP_URL and KEYDROP_TOKEN")
+
+// ConfigDir is ~/.config/keydrop (or $XDG_CONFIG_HOME/keydrop). It fails
+// without an absolute home or XDG_CONFIG_HOME (a relative one is ignored,
+// as the XDG spec says), and refuses an existing directory that other
+// users could have written to, since the URL and pin in it decide where
+// the token goes.
+func ConfigDir() (string, error) {
+	dir := ""
+	if d := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(d) {
+		dir = filepath.Join(d, "keydrop")
+	} else if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+		dir = filepath.Join(home, ".config", "keydrop")
+	} else {
+		return "", ErrNoConfigDir
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "keydrop")
+	if err := checkConfigDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
-func readConfigFile(name string) string {
-	b, err := os.ReadFile(filepath.Join(ConfigDir(), name))
+// readConfigFile reads one of the files `keydrop login` writes: "" when
+// it doesn't exist, and an error when others could have written it.
+func readConfigFile(name string) (string, error) {
+	dir, err := ConfigDir()
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(b))
+	path := filepath.Join(dir, name)
+	fi, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := checkConfigFile(path, fi); err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // FromEnv builds a client from KEYDROP_URL, KEYDROP_TOKEN(_FILE) and
@@ -157,11 +205,19 @@ func FromEnv() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	pin, err := serverPin()
+	if err != nil {
+		return nil, err
+	}
 	tok, tokenPath := os.Getenv("KEYDROP_TOKEN"), ""
 	if tok == "" {
 		path := os.Getenv("KEYDROP_TOKEN_FILE")
 		if path == "" {
-			path = filepath.Join(ConfigDir(), "token")
+			dir, err := ConfigDir()
+			if err != nil {
+				return nil, err
+			}
+			path = filepath.Join(dir, "token")
 		}
 		fi, err := os.Stat(path)
 		if err != nil {
@@ -177,16 +233,19 @@ func FromEnv() (*Client, error) {
 		tok = strings.TrimSpace(string(b))
 		tokenPath = path
 	}
-	c := New(u, tok, serverPin())
+	c := New(u, tok, pin)
 	c.TokenPath = tokenPath
 	c.Label = os.Getenv("KEYDROP_AGENT")
 	return c, nil
 }
 
 func serverURL() (string, error) {
-	u := os.Getenv("KEYDROP_URL")
-	if u == "" {
-		u = readConfigFile("url")
+	if u := os.Getenv("KEYDROP_URL"); u != "" {
+		return u, nil
+	}
+	u, err := readConfigFile("url")
+	if err != nil {
+		return "", err
 	}
 	if u == "" {
 		return "", errors.New("no server configured: run `keydrop pair --url https://…` or set KEYDROP_URL")
@@ -194,11 +253,17 @@ func serverURL() (string, error) {
 	return u, nil
 }
 
-func serverPin() string {
+func serverPin() (string, error) {
 	if pin := os.Getenv("KEYDROP_TLS_PIN"); pin != "" {
-		return pin
+		return pin, nil
 	}
-	return readConfigFile("pin")
+	pin, err := readConfigFile("pin")
+	if errors.Is(err, ErrNoConfigDir) {
+		// Everything came from the environment: no directory, no pin
+		// file, and without a pin the certificate must chain to a CA.
+		return "", nil
+	}
+	return pin, err
 }
 
 // AskUpgrade asks the server whether this agent may upgrade its own CLI
@@ -233,7 +298,7 @@ func (c *Client) Download(path string, w io.Writer, limit int64) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+		return &APIError{Status: resp.StatusCode, Message: serverMessage(string(msg))}
 	}
 	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
@@ -359,15 +424,20 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	checkVersion(resp.Header)
-	c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
+	// Only a successful answer to a request with a token is the keydrop
+	// server speaking to this token: an error page may come from a proxy,
+	// and pairing is unauthenticated.
+	if c.Token != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		checkVersion(resp.Header)
+		c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
+	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		var e struct{ Error string }
 		if json.Unmarshal(data, &e) != nil || e.Error == "" {
-			e.Error = strings.TrimSpace(string(data))
+			e.Error = string(data)
 		}
-		return &APIError{Status: resp.StatusCode, Message: e.Error}
+		return &APIError{Status: resp.StatusCode, Message: serverMessage(e.Error)}
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)
@@ -434,17 +504,6 @@ func (c *Client) Get(ref string) (*Secret, error) {
 	}
 	var s Secret
 	return &s, c.do("GET", secretPath(ns, name), nil, &s)
-}
-
-// printableOnly drops what could fake or hide output in a terminal from
-// text a server sent.
-func printableOnly(s string) string {
-	return strings.Map(func(r rune) rune {
-		if !strconv.IsPrint(r) {
-			return -1
-		}
-		return r
-	}, strings.ToValidUTF8(s, ""))
 }
 
 // TooOpen says whether a file's mode lets other users read it. Windows has

@@ -260,7 +260,10 @@ func TestCleanShowsHiddenCharacters(t *testing.T) {
 func TestSaveLoginDoesntFollowSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	cfg := client.ConfigDir()
+	cfg, err := client.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfg, 0o700); err != nil {
 		t.Fatal(err)
 	}

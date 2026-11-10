@@ -113,6 +113,8 @@ type Server struct {
 	annotations *rateLimit
 	// writes rate-limits puts and requests per token.
 	writes *rateLimit
+	// reveals rate-limits reveals and acks per token, together.
+	reveals *rateLimit
 	// renewals rate-limits renewal requests and status checks, collects
 	// collecting a renewed token, each per token and address.
 	renewals *rateLimit
@@ -145,6 +147,15 @@ const annotationsPerHour = 60
 // send an hour: plenty for provisioning, too few to churn the history.
 const writesPerHour = 200
 
+// revealsPerHour is how many reveals and acks (together) one token may send
+// an hour. Each one writes an entry to the main audit log, so without a
+// limit a token could push the record of what it read out of the Log page
+// and, in time, off the disk. 1200 is 20 a minute: far more than an agent
+// using its keys needs, and few enough that the log's rotated files keep
+// days of it. Acks count against the same budget because they write to the
+// same log; one budget for both means no mix of the two gets past it.
+const revealsPerHour = 1200
+
 // pollsPerMinute is how many pairing polls an address group may send a
 // minute: the CLI sends 30, and a group can have 8 requests waiting.
 const pollsPerMinute = 300
@@ -152,6 +163,9 @@ const pollsPerMinute = 300
 const (
 	noisyPerKey    = time.Minute // one recorded event per address and action
 	noisyPerMinute = 60          // and at most this many overall
+	// maxNoisyKeys is how many address-and-action keys noisyEvents holds
+	// before it drops the idle ones.
+	maxNoisyKeys = 10000
 )
 
 // New builds a Server. If no admin exists yet (or ResetAdmin is set) it
@@ -164,6 +178,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		pairings: map[string]*pairing{}, deviceKey: st.DeriveKey("device cookie"),
 		annotations: newRateLimit(annotationsPerHour, time.Hour),
 		writes:      newRateLimit(writesPerHour, time.Hour),
+		reveals:     newRateLimit(revealsPerHour, time.Hour),
 		renewals:    newRateLimit(renewalsPerHour, time.Hour),
 		collects:    newRateLimit(collectsPerHour, time.Hour),
 		polls:       newRateLimit(pollsPerMinute, time.Minute),
@@ -185,6 +200,11 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		go s.alerts.destination(false) // so Settings needn't wait for it
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
+		if st.AdminConfigured() {
+			// Left set, this reopens setup on every restart, so anyone who
+			// can read this log could replace the admin login.
+			log.Printf("WARNING: admin setup is open although an admin exists, because KEYDROP_RESET_ADMIN is set. Anyone who can read this log can use the code below to replace the admin login. Remove KEYDROP_RESET_ADMIN as soon as setup is done, and restart.")
+		}
 		s.setupCode = newSetupCode()
 		s.setupSeed = auth.NewTOTPSecret()
 		base := strings.TrimRight(cfg.PublicURL, "/")
@@ -372,9 +392,14 @@ func (s *Server) throttledEvent(r *http.Request, actor, action, target, detail s
 		s.noisyMu.Unlock()
 		return
 	}
-	if len(n.byKey) > 10000 {
+	if len(n.byKey) > maxNoisyKeys {
+		// Drop every key idle past its window, even one with events left
+		// out: otherwise a client cycling addresses, two requests each,
+		// grows the map without bound. Its count moves to the global one,
+		// so the next recorded event still says how many weren't logged.
 		for kk, v := range n.byKey {
-			if now.Sub(v.last) >= noisyPerKey && v.suppressed == 0 {
+			if now.Sub(v.last) >= noisyPerKey {
+				n.suppressedGl += v.suppressed
 				delete(n.byKey, kk)
 			}
 		}

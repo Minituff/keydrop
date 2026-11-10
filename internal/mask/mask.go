@@ -43,11 +43,17 @@ type Masker struct {
 	starts []int32
 	order  []int32
 	first  [256]bool // some pattern starts with this byte
+	// keys has a bit set for each first two bytes some pattern starts
+	// with: 8 KiB, so most positions are ruled out without touching the
+	// much larger starts table.
+	keys [1 << 16 / 64]uint64
+	seen map[string]bool
 }
 
 // Add registers value under label. It also masks common encodings of the
-// value (base64, URL-encoded), which is how secrets often reappear in debug
-// output such as Basic auth headers. It returns false if value, or value
+// value (base64, line-wrapped base64, URL-encoded), which is how secrets
+// often reappear in debug output such as Basic auth headers. It returns
+// false if value, or value
 // without its surrounding whitespace, is too short to mask, so the caller
 // can warn.
 func (m *Masker) Add(label string, value []byte) bool {
@@ -66,18 +72,25 @@ func (m *Masker) Add(label string, value []byte) bool {
 		[]byte(base64.RawStdEncoding.EncodeToString(value)),
 		[]byte(base64.URLEncoding.EncodeToString(value)),
 		[]byte(base64.RawURLEncoding.EncodeToString(value)),
-		[]byte(url.QueryEscape(string(value))),
-		[]byte(url.PathEscape(string(value))),
 	}
+	variants = append(variants, urlEncodings(value)...)
 	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding} {
 		for offset := 0; offset < 3; offset++ {
-			variants = append(variants, base64Core(enc, value, offset))
+			core := base64Core(enc, value, offset)
+			variants = append(variants, core)
+			if enc == base64.StdEncoding && len(value) <= maxWrapped {
+				variants = append(variants, wrapped(core)...)
+			}
 		}
 	}
+	if m.seen == nil {
+		m.seen = map[string]bool{}
+	}
 	for _, v := range variants {
-		if len(v) < MinLength || m.has(v) {
+		if len(v) < MinLength || m.seen[string(v)] {
 			continue
 		}
+		m.seen[string(v)] = true
 		m.patterns = append(m.patterns, pattern{match: v, label: label})
 	}
 	// Longest first, so a longer match wins over one of its substrings.
@@ -86,14 +99,148 @@ func (m *Masker) Add(label string, value []byte) bool {
 	return masked
 }
 
+// urlEncodings are value percent-encoded the ways common tools do it.
+// Encoders differ in which characters they leave alone, in how they write
+// a space and in the case of the hex digits, and any of them can print a
+// secret in a URL or a form body: Go's QueryEscape and PathEscape,
+// Python's quote (leaves "/"), JS's encodeURIComponent (leaves "!'()*"),
+// encodeURI (leaves the reserved characters too: the minimal escaping) and
+// URLSearchParams, and an encoder that escapes all but letters and digits
+// (the maximal one), each with upper- and lower-case hex. Ones equal to
+// value itself, or to each other, are dropped by Add.
+func urlEncodings(value []byte) [][]byte {
+	s := string(value)
+	out := [][]byte{[]byte(url.QueryEscape(s)), []byte(url.PathEscape(s))}
+	for _, enc := range []struct {
+		safe string
+		plus bool // a space is "+"
+	}{
+		{"-_.~", false},                 // RFC 3986 unreserved (PHP rawurlencode, strict encoders)
+		{"-_.~/", false},                // Python urllib.parse.quote
+		{"-_.~!'()*", false},            // JS encodeURIComponent
+		{"-_.~!'()*;,/?:@&=+$#", false}, // JS encodeURI: the minimal escaping
+		{"-_.*", true},                  // HTML forms, JS URLSearchParams
+		{"", false},                     // maximal: only letters and digits stay
+	} {
+		out = append(out, percentEncode(value, enc.safe, enc.plus, upperHex), percentEncode(value, enc.safe, enc.plus, lowerHex))
+	}
+	for _, v := range out[:2] {
+		out = append(out, lowerEscapes(v))
+	}
+	return out
+}
+
+const (
+	upperHex = "0123456789ABCDEF"
+	lowerHex = "0123456789abcdef"
+)
+
+// percentEncode escapes every byte of v except ASCII letters, digits and
+// the characters in safe, as %XX with the given hex digits. With plus a
+// space is written "+".
+func percentEncode(v []byte, safe string, plus bool, hex string) []byte {
+	out := make([]byte, 0, len(v)*3)
+	for _, c := range v {
+		switch {
+		case 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c < 0x80 && strings.IndexByte(safe, c) >= 0:
+			out = append(out, c)
+		case c == ' ' && plus:
+			out = append(out, '+')
+		default:
+			out = append(out, '%', hex[c>>4], hex[c&15])
+		}
+	}
+	return out
+}
+
+// lowerEscapes is v with the hex digits of its %XX escapes in lower case.
+func lowerEscapes(v []byte) []byte {
+	out := slices.Clone(v)
+	for i := 0; i+2 < len(out); i++ {
+		if out[i] == '%' {
+			out[i+1] = toLowerHex(out[i+1])
+			out[i+2] = toLowerHex(out[i+2])
+			i += 2
+		}
+	}
+	return out
+}
+
+func toLowerHex(c byte) byte {
+	if 'A' <= c && c <= 'F' {
+		return c + 'a' - 'A'
+	}
+	return c
+}
+
+// wrapWidths are the line lengths base64 is usually wrapped at: 76
+// (coreutils base64, MIME) and 64 (PEM, openssl base64).
+var wrapWidths = []int{64, 76}
+
+// maxWrapped is the longest value whose line-wrapped base64 is masked.
+// Each first-break position is a pattern as long as the encoding (some
+// 280 for each of three alignments), so they take over a thousand times
+// the value's size: about 5 MB at this size, which covers an RSA-4096
+// private key in PEM. Longer values are masked unwrapped only.
+const maxWrapped = 4 << 10
+
+// wrapMinLead is how many of a core's characters must come before the
+// first line break for the wrapped form to start at the core's start.
+// Otherwise every line that ended in the first character or two of an
+// encoding would be held back until more output came, which would delay
+// interactive output. With fewer, the pattern starts wrapMinLead
+// characters into the core, after the break, so at most wrapMinLead
+// characters of the encoding stay visible, like the edge characters
+// base64Core already leaves. (Starting all of those at one place, not
+// just after the break, keeps the number of distinct pattern starts, and
+// so the cost per output byte, low.)
+const wrapMinLead = 4
+
+// wrapped is core as it appears in line-wrapped base64: a break ("\n" or
+// "\r\n") after its first j characters, for every j a line width allows,
+// and every width characters after that. Where the core starts in the
+// encoded text isn't known, so each first break is a pattern. They're
+// plain byte strings like every other pattern, so the Writer's promises
+// (same output however the stream is split, bounded hold-back) hold for
+// them unchanged.
+func wrapped(core []byte) [][]byte {
+	if len(core) < 3*wrapMinLead {
+		return nil // short enough to mask anywhere it isn't split
+	}
+	var out [][]byte
+	for _, width := range wrapWidths {
+		for _, nl := range []string{"\n", "\r\n"} {
+			for j := 1; j < len(core) && j <= width; j++ {
+				start := 0
+				if j < wrapMinLead {
+					start = wrapMinLead
+				}
+				var b []byte
+				prev := start
+				for k := j; k < len(core); k += width {
+					if k > start {
+						b = append(b, core[prev:k]...)
+						b = append(b, nl...)
+						prev = k
+					}
+				}
+				out = append(out, append(b, core[prev:]...))
+			}
+		}
+	}
+	return out
+}
+
 func key2(b []byte) int { return int(b[0])<<8 | int(b[1]) }
 
 // index rebuilds the first-two-bytes index.
 func (m *Masker) index() {
 	m.starts = make([]int32, 1<<16+1)
 	for _, p := range m.patterns {
-		m.starts[key2(p.match)+1]++
+		k := key2(p.match)
+		m.starts[k+1]++
 		m.first[p.match[0]] = true
+		m.keys[k>>6] |= 1 << (k & 63)
 	}
 	for k := 1; k < len(m.starts); k++ {
 		m.starts[k] += m.starts[k-1]
@@ -119,6 +266,9 @@ func (m *Masker) at(rest []byte, final bool) (match *pattern, maybe bool) {
 		return nil, !final // every pattern is longer than one byte
 	}
 	k := key2(rest)
+	if m.keys[k>>6]&(1<<(k&63)) == 0 {
+		return nil, false
+	}
 	for _, i := range m.order[m.starts[k]:m.starts[k+1]] {
 		p := &m.patterns[i]
 		if len(rest) < len(p.match) {
@@ -156,15 +306,6 @@ func base64Core(enc *base64.Encoding, value []byte, offset int) []byte {
 		return nil
 	}
 	return out[skip:]
-}
-
-func (m *Masker) has(v []byte) bool {
-	for _, p := range m.patterns {
-		if bytes.Equal(p.match, v) {
-			return true
-		}
-	}
-	return false
 }
 
 // String masks a complete string in one go.

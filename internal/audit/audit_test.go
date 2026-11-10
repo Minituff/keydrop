@@ -152,3 +152,39 @@ func TestTextKeptToMaxText(t *testing.T) {
 		t.Fatalf("text kept %v, long text clipped %v", kept, clipped)
 	}
 }
+
+// Record, used before showing a value, waits for the disk and fails if it
+// can't; Add, used for everything else, doesn't wait.
+func TestRecordSyncs(t *testing.T) {
+	l, err := Open(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	syncs, fail := 0, false
+	syncFile = func(f *os.File) error {
+		syncs++
+		if fail {
+			return fmt.Errorf("disk gone")
+		}
+		return f.Sync()
+	}
+	defer func() { syncFile = (*os.File).Sync }()
+
+	l.Add(Event{Actor: "unknown", Action: "api.badtoken"})
+	l.Add(Event{Actor: "unknown", Action: "api.badtoken", Unauthenticated: true})
+	if syncs != 0 {
+		t.Fatalf("Add synced %d times", syncs)
+	}
+	if err := l.Record(Event{Actor: "token:x", Action: "secret.read"}); err != nil || syncs != 1 {
+		t.Fatalf("Record: %v, %d syncs", err, syncs)
+	}
+	fail = true
+	if err := l.Record(Event{Actor: "token:x", Action: "secret.read"}); err == nil {
+		t.Fatal("Record succeeded although the sync failed")
+	}
+	fail = false
+	if err := l.Record(Event{Actor: "token:x", Action: "secret.read"}); err != nil {
+		t.Fatalf("after the disk came back: %v", err)
+	}
+}

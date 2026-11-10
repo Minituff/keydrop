@@ -91,4 +91,7 @@ func TestEarlyRefusalsTouchCanary(t *testing.T) {
 	h.srv.annotations = newRateLimit(0, time.Hour)
 	check("rate-limited write", "PUT", "", `{"value":"x"}`)
 	check("rate-limited flag", "POST", "/flag", `{"reason":"x"}`)
+	h.srv.reveals = newRateLimit(0, time.Hour)
+	check("rate-limited reveal", "POST", "/reveal", "")
+	check("rate-limited ack", "POST", "/ack", "")
 }

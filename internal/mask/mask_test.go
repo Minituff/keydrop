@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -233,41 +234,188 @@ func TestMaskMatchesReference(t *testing.T) {
 			secrets = append(secrets, s)
 			m.Add(fmt.Sprintf("S%d", k), s)
 		}
-		in := word(rng.IntN(60))
-		covered := make([]bool, len(in))
-		for _, p := range m.patterns {
-			for i := 0; i+len(p.match) <= len(in); i++ {
-				if bytes.HasPrefix(in[i:], p.match) {
-					for j := i; j < i+len(p.match); j++ {
-						covered[j] = true
+		checkReference(t, rng, &m, secrets, word(rng.IntN(60)))
+	}
+}
+
+// checkReference checks m's output for in against a plain reference: the
+// bytes outside every occurrence of a pattern pass through, each run of
+// overlapping occurrences becomes one placeholder, and the result is the
+// same for several random splits into writes. It returns the output.
+func checkReference(t *testing.T, rng *rand.Rand, m *Masker, secrets [][]byte, in []byte) string {
+	t.Helper()
+	covered := make([]bool, len(in))
+	for _, p := range m.patterns {
+		for i := 0; i+len(p.match) <= len(in); i++ {
+			if bytes.HasPrefix(in[i:], p.match) {
+				for j := i; j < i+len(p.match); j++ {
+					covered[j] = true
+				}
+			}
+		}
+	}
+	whole := m.String(string(in))
+	// Strip placeholders: what's left must be exactly the uncovered bytes.
+	var visible []byte
+	for i, c := range in {
+		if !covered[i] {
+			visible = append(visible, c)
+		}
+	}
+	stripped := placeholderRE.ReplaceAllString(whole, "")
+	if stripped != string(visible) {
+		t.Fatalf("secrets %q input %q: got %q, visible should be %q", secrets, in, whole, visible)
+	}
+	for try := 0; try < 5; try++ {
+		var buf bytes.Buffer
+		w := m.Writer(&buf)
+		for i := 0; i < len(in); {
+			n := 1 + rng.IntN(6)
+			if try == 4 {
+				n = 1 + rng.IntN(100)
+			}
+			w.Write(in[i:min(i+n, len(in))])
+			i += n
+		}
+		w.Flush()
+		if buf.String() != whole {
+			t.Fatalf("secrets %q input %q: split gave %q, whole %q", secrets, in, buf.String(), whole)
+		}
+	}
+	return whole
+}
+
+var placeholderRE = regexp.MustCompile(`\[keydrop:[^\]]*\]`)
+
+// wrapBase64 encodes b as base64 wrapped at width with nl, the way
+// coreutils base64 (76), openssl and PEM (64) and MIME (76, CRLF) do.
+func wrapBase64(b []byte, width int, nl string) string {
+	enc := base64.StdEncoding.EncodeToString(b)
+	var lines []string
+	for len(enc) > width {
+		lines = append(lines, enc[:width])
+		enc = enc[width:]
+	}
+	return strings.Join(append(lines, enc), nl) + nl
+}
+
+// Secrets in line-wrapped base64, wherever the line breaks fall: the
+// randomised reference check with wrapped encodings in the input (secrets
+// over a small alphabet, so they and their encodings overlap a lot), and
+// no run of the secret's encoding left visible.
+func TestMaskWrappedBase64MatchesReference(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	word := func(n int, alphabet string) []byte {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = alphabet[rng.IntN(len(alphabet))]
+		}
+		return b
+	}
+	for round := 0; round < 300; round++ {
+		var m Masker
+		var secrets [][]byte
+		alphabet := "abc"
+		if round%2 == 1 {
+			alphabet = "abcdefghijklmnopqrstuvwxyz0123456789/+=-_!@#$%^&*()"
+		}
+		for k := 0; k < 1+rng.IntN(3); k++ {
+			s := word(9+rng.IntN(100), alphabet)
+			secrets = append(secrets, s)
+			m.Add(fmt.Sprintf("S%d", k), s)
+		}
+		s := secrets[rng.IntN(len(secrets))]
+		data := append(append(word(rng.IntN(150), alphabet), s...), word(rng.IntN(40), alphabet)...)
+		width := []int{64, 76}[rng.IntN(2)]
+		nl := []string{"\n", "\r\n"}[rng.IntN(2)]
+		in := string(word(rng.IntN(20), alphabet)) + "\n" + wrapBase64(data, width, nl) + string(word(rng.IntN(20), alphabet))
+		out := checkReference(t, rng, &m, secrets, []byte(in))
+		if alphabet == "abc" {
+			continue // the data around it encodes to the same runs
+		}
+		// What's left of the secret's encoding is at most a few characters
+		// at each edge: no 8 characters in a row survive.
+		flat := strings.NewReplacer("\r", "", "\n", "").Replace(placeholderRE.ReplaceAllString(out, "|"))
+		for offset := 0; offset < 3; offset++ {
+			core := string(base64Core(base64.StdEncoding, s, offset))
+			for i := 0; i+8 <= len(core); i++ {
+				if strings.Contains(flat, core[i:i+8]) {
+					t.Fatalf("round %d (width %d): %q of the secret's encoding left visible in %q", round, width, core[i:i+8], out)
+				}
+			}
+		}
+	}
+}
+
+// Real tools' wrapped output: base64 at 76 and 64 columns, and MIME's CRLF,
+// with the secret starting at every column.
+func TestMaskWrappedBase64EveryColumn(t *testing.T) {
+	secret := []byte("fake-api-key-0123456789abcdef-ghijklmnop-0123456789abcdef-qrstuvwxyz")
+	var m Masker
+	m.Add("k", secret)
+	for _, width := range []int{64, 76} {
+		for _, nl := range []string{"\n", "\r\n"} {
+			for lead := 0; lead < 3*width; lead++ {
+				data := append(bytes.Repeat([]byte{'.'}, lead), secret...)
+				out := m.String(wrapBase64(append(data, "tail"...), width, nl))
+				flat := strings.NewReplacer("\r", "", "\n", "").Replace(strings.ReplaceAll(out, "[keydrop:k]", "|"))
+				if !strings.Contains(out, "[keydrop:k]") {
+					t.Fatalf("width %d lead %d: not masked: %q", width, lead, out)
+				}
+				for offset := 0; offset < 3; offset++ {
+					core := string(base64Core(base64.StdEncoding, secret, offset))
+					for i := 0; i+8 <= len(core); i++ {
+						if strings.Contains(flat, core[i:i+8]) {
+							t.Fatalf("width %d lead %d: %q left visible in %q", width, lead, core[i:i+8], out)
+						}
 					}
 				}
 			}
 		}
-		whole := m.String(string(in))
-		// Strip placeholders: what's left must be exactly the uncovered bytes.
-		var visible []byte
-		for i, c := range in {
-			if !covered[i] {
-				visible = append(visible, c)
-			}
+	}
+}
+
+// A line that ends in the first few characters of a secret's encoding
+// isn't held back waiting for the next line.
+func TestMaskWrappedDoesntHoldLines(t *testing.T) {
+	secret := []byte("fake-api-key-0123456789abcdef")
+	var m Masker
+	m.Add("k", secret)
+	core := base64Core(base64.StdEncoding, secret, 0)
+	for n := 1; n < wrapMinLead; n++ {
+		var buf bytes.Buffer
+		w := m.Writer(&buf)
+		line := "data: " + string(core[:n]) + "\n"
+		w.Write([]byte(line))
+		if buf.String() != line {
+			t.Fatalf("%d characters: held back, wrote %q", n, buf.String())
 		}
-		stripped := regexp.MustCompile(`\[keydrop:[^\]]*\]`).ReplaceAllString(whole, "")
-		if stripped != string(visible) {
-			t.Fatalf("secrets %q input %q: got %q, visible should be %q", secrets, in, whole, visible)
-		}
-		for try := 0; try < 5; try++ {
-			var buf bytes.Buffer
-			w := m.Writer(&buf)
-			for i := 0; i < len(in); {
-				n := 1 + rng.IntN(6)
-				w.Write(in[i:min(i+n, len(in))])
-				i += n
-			}
-			w.Flush()
-			if buf.String() != whole {
-				t.Fatalf("secrets %q input %q: split gave %q, whole %q", secrets, in, buf.String(), whole)
-			}
+	}
+}
+
+// Percent-encoding as other tools write it: lower-case hex, and the
+// different sets of characters encoders leave alone.
+func TestMaskURLEncodings(t *testing.T) {
+	secret := "fake/s3cr3t+val~ue!'()* with=&?:@,;$#"
+	var m Masker
+	m.Add("k", []byte(secret))
+	pyQuote := func(s, safe string) string { // urllib.parse.quote
+		return string(percentEncode([]byte(s), "-_.~"+safe, false, upperHex))
+	}
+	for name, enc := range map[string]string{
+		"QueryEscape":            url.QueryEscape(secret),
+		"PathEscape":             url.PathEscape(secret),
+		"lower-case QueryEscape": regexp.MustCompile(`%[0-9A-F]{2}`).ReplaceAllStringFunc(url.QueryEscape(secret), strings.ToLower),
+		"Python quote":           pyQuote(secret, "/"),
+		"Python quote safe=''":   pyQuote(secret, ""),
+		"encodeURIComponent":     "fake%2Fs3cr3t%2Bval~ue!'()*%20with%3D%26%3F%3A%40%2C%3B%24%23",
+		"encodeURI":              "fake/s3cr3t+val~ue!'()*%20with=&?:@,;$#",
+		"URLSearchParams":        "fake%2Fs3cr3t%2Bval%7Eue%21%27%28%29*+with%3D%26%3F%3A%40%2C%3B%24%23",
+		"maximal, lower":         strings.ToLower(string(percentEncode([]byte(secret), "", false, upperHex))),
+	} {
+		out := m.String("GET /x?token=" + enc + " HTTP/1.1")
+		if out != "GET /x?token=[keydrop:k] HTTP/1.1" {
+			t.Errorf("%s: %q", name, out)
 		}
 	}
 }

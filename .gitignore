@@ -2,3 +2,5 @@
 /data/
 master.key
 *.token
+/.claude/worktrees/
+/.claude/settings.local.json

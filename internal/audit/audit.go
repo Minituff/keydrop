@@ -167,10 +167,14 @@ func (lf *file) push(e Event) {
 	}
 }
 
+// syncFile flushes a file to disk; a test replaces it to make that fail.
+var syncFile = (*os.File).Sync
+
 // write appends e, reopening the file if an earlier failure closed it, so
-// logging comes back by itself once the disk does.
-func (lf *file) write(e Event, maxBytes int64) error {
-	err := lf.tryWrite(e, maxBytes)
+// logging comes back by itself once the disk does. With sync, e is on
+// disk (fsync) before write returns nil.
+func (lf *file) write(e Event, maxBytes int64, sync bool) error {
+	err := lf.tryWrite(e, maxBytes, sync)
 	if err != nil && !lf.failing {
 		log.Printf("audit: can't write to %s: %v", lf.path, err)
 	} else if err == nil && lf.failing {
@@ -180,7 +184,7 @@ func (lf *file) write(e Event, maxBytes int64) error {
 	return err
 }
 
-func (lf *file) tryWrite(e Event, maxBytes int64) error {
+func (lf *file) tryWrite(e Event, maxBytes int64, sync bool) error {
 	if lf.f == nil {
 		if err := lf.open(); err != nil {
 			return err
@@ -197,6 +201,9 @@ func (lf *file) tryWrite(e Event, maxBytes int64) error {
 	}
 	n, err := lf.f.Write(append(b, '\n'))
 	lf.size += int64(n)
+	if err == nil && sync {
+		err = syncFile(lf.f)
+	}
 	return err
 }
 
@@ -216,13 +223,18 @@ func clipTo(s string, n int) string {
 
 // Add records an event. A write error doesn't stop the caller: auditing
 // must not take the service down, the event is still kept in memory, and
-// keydrop's log says so. Use Record for what must not happen unlogged.
-func (l *Log) Add(e Event) { _ = l.Record(e) }
+// keydrop's log says so. It doesn't wait for the disk (no fsync), so a
+// flood of events can't slow the server down. Use Record for what must not
+// happen unlogged.
+func (l *Log) Add(e Event) { _ = l.add(e, false) }
 
-// Record is Add that returns the write error, for a caller that must not go
-// on without a record on disk: showing a secret. An event with
-// Unauthenticated set goes to the unauthenticated log.
-func (l *Log) Record(e Event) error {
+// Record is Add that waits until the event is on disk (fsync) and returns
+// the error if it isn't, for a caller that must not go on without a record:
+// showing a secret. An event with Unauthenticated set goes to the
+// unauthenticated log.
+func (l *Log) Record(e Event) error { return l.add(e, true) }
+
+func (l *Log) add(e Event, sync bool) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
@@ -235,7 +247,7 @@ func (l *Log) Record(e Event) error {
 		lf = l.noise
 	}
 	lf.push(e)
-	return lf.write(e, l.MaxBytes)
+	return lf.write(e, l.MaxBytes, sync)
 }
 
 // Recent returns up to n events from both logs, newest first.

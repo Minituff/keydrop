@@ -155,7 +155,9 @@ func suggestName(host string) string {
 // address and /64 has its own cap. When the whole list is full, the oldest
 // waiting request from the busiest group makes way, as long as that group
 // has more than ip's own: so one noisy neighbour can't keep everyone else
-// out, and filling the list takes many addresses. Needs s.pairMu.
+// out. When no group is busier (many addresses with one request each), the
+// oldest waiting request overall makes way, so a full list never shuts
+// pairing off. An approved request is never dropped. Needs s.pairMu.
 func (s *Server) makePairingRoomLocked(ip string) bool {
 	group := sourceGroup(ip)
 	fromIP, perGroup := 0, map[string]int{}
@@ -171,10 +173,16 @@ func (s *Server) makePairingRoomLocked(ip string) bool {
 	if len(s.pairings) < maxPairings {
 		return true
 	}
-	var victim *pairing
+	var victim, oldest *pairing
 	for _, p := range s.pairings {
+		if p.approved {
+			continue
+		}
+		if oldest == nil || p.Created.Before(oldest.Created) {
+			oldest = p
+		}
 		g := sourceGroup(p.IP)
-		if p.approved || perGroup[g] <= perGroup[group]+1 {
+		if perGroup[g] <= perGroup[group]+1 {
 			continue
 		}
 		if victim == nil || perGroup[g] > perGroup[sourceGroup(victim.IP)] ||
@@ -183,6 +191,9 @@ func (s *Server) makePairingRoomLocked(ip string) bool {
 		}
 	}
 	if victim == nil {
+		victim = oldest
+	}
+	if victim == nil { // every waiting request is approved
 		return false
 	}
 	delete(s.pairings, victim.ID)

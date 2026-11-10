@@ -150,8 +150,12 @@ which are the places keydrop exists to keep secrets out of. So a machine
 - **Unauthenticated, so bounded.** Anyone who can reach keydrop can ask to
   pair, so requests are capped (3 waiting per address, 8 per IPv6 /64,
   50 overall). When the list is full, the oldest unapproved request from
-  the busiest address (or /64) makes way, so one noisy host can't keep
-  everyone else from pairing. Requests
+  the busiest address (or /64) makes way, if it has more waiting than the
+  newcomer's address plus one, so one noisy host can't keep everyone else
+  from pairing. When no address is busier (say 50 addresses with one
+  request each), the oldest unapproved request overall makes way, so a
+  full list never shuts pairing off. An approved request is never
+  dropped. Requests
   expire after 10 minutes. They're held in memory only: a restart drops
   them, and the agent asks again. Polls are limited too: 300 a minute per
   address (IPv6: /64), then 429.
@@ -246,7 +250,7 @@ which are the places keydrop exists to keep secrets out of. So a machine
   same list entries, the same responses and errors, the same work per
   call, and no field, header or timing that differs.
 - A touch is any agent call on the canary, refused ones included: a
-  reveal or `run`, a write, a status, a flag or a note (a write that turns it into a variable
+  reveal or `run`, an ack, a write, a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
@@ -322,7 +326,16 @@ log, not for access control.
   Basic-auth header encodes `user:secret` in one piece and the secret's
   own encoding only appears when `len(user)+1` is a multiple of 3; the one
   or two characters at each edge that mix in the neighbouring bytes stay
-  visible. It's a streaming masker that holds back bytes only while they
+  visible. Line-wrapped base64 is matched too, at the widths tools use
+  (76 for coreutils `base64` and MIME, 64 for PEM and `openssl base64`;
+  `\n` or `\r\n`), for values up to 4 KiB: each place the first line break
+  can fall is a pattern of its own. When a break falls within the first 4
+  characters, those stay visible (matching from the start would hold back
+  every line that ends in one of an encoding's first characters). URL
+  encoding covers the escaping of Go's `QueryEscape` and `PathEscape`,
+  Python's `quote`, JavaScript's `encodeURIComponent`, `encodeURI` and
+  `URLSearchParams`, and an encoder that escapes everything but letters
+  and digits, each with upper- or lower-case hex. It's a streaming masker that holds back bytes only while they
   could still be the start of a secret, so interactive output isn't
   delayed. Every byte of every occurrence is masked: occurrences that
   overlap (one secret a prefix of another, or the end of one the start of
@@ -336,11 +349,20 @@ log, not for access control.
   Values shorter than 4 characters aren't masked, since that would mangle
   normal output.
 - **What masking can promise:** accident prevention for honest tools. It
-  doesn't catch hex, JSON-escaped, case-changed, truncated or split
-  output, or anything the command sends to a file or the network.
+  catches the value as is, its base64 (standard and URL-safe, any
+  alignment, unwrapped, or wrapped at 64 or 76 columns for values up to
+  4 KiB) and the percent-encodings above. It doesn't catch hex,
+  JSON-escaped, case-changed, truncated or split output, base64 wrapped at
+  other widths or of a longer value, other encodings, or one encoding
+  inside another. And it only sees the command's stdout and stderr:
+  anything the command writes to `/dev/tty`, a file, a socket or the
+  network isn't masked.
 - `run` removes every `KEYDROP_*` variable (token, token file, URL, pin)
   from the child's environment, forwards signals, and exits with the
-  child's exit code. That keeps the token out of the child's way, not out
+  child's exit code. The child gets only stdin, stdout and stderr: on Unix
+  any other descriptor keydrop itself inherited (a shell's `3>&1`) is
+  marked close-on-exec first, since output written there would skip the
+  masking. That keeps the token out of the child's way, not out
   of its reach: the child runs as the same user and can read
   `~/.config/keydrop/token`. `run` isn't a sandbox. `run --no-mask` is
   recorded in the audit log.
@@ -353,13 +375,23 @@ log, not for access control.
   usage, variable values on a terminal, names, error messages) has control
   characters, terminal escapes and bidirectional overrides shown as
   visible escapes. Descriptions are written by other people and agents,
-  and agents read this output.
+  and agents read this output. An error the server (or a proxy in front of
+  it) sends is also kept to one line of at most 300 characters, newlines
+  shown as `\x0a`, so an error page can't print lines that look like
+  keydrop's own.
 - `put` takes text up to 60 KiB from stdin, and refuses anything that
   isn't valid UTF-8 rather than letting JSON mangle it: base64 a binary
   value first.
 - A pin with an `http://` URL is an error, not silently unchecked, and the
   client won't follow a redirect from https to plain http, pinned or not:
   the token or a build would go in the clear.
+- The config directory (`~/.config/keydrop`, or under `$XDG_CONFIG_HOME`)
+  holds the URL and pin, which decide where the token goes and which
+  certificate is trusted. On Unix the CLI refuses it, and the `url` and
+  `pin` files, when another user owns them or can write to them; the token
+  file must not be readable by others either. With no absolute home and
+  no `XDG_CONFIG_HOME` the CLI fails instead of using a directory relative
+  to where it runs, where a checkout could have planted a URL.
 
 ### Variables
 Not everything an agent needs is secret: an API base URL, an account ID, a
@@ -383,7 +415,9 @@ every read logged, no way to just look). So an entry is either a
 - **A variable from an agent is agent text.** Every token in the namespace
   reads it at once, with no approval, so it's at most 2,000 characters on
   one line with no control or invisible characters. The API names its
-  author in `value_by`, and the CLI quotes it and labels it untrusted. Once
+  author in `value_by`, and the CLI quotes it and labels it untrusted.
+  `get NAME` and `run -e` keep the value itself exact (scripts read it)
+  and put the label on stderr instead, naming the agent. Once
   the admin saves the value, the label goes.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
@@ -529,8 +563,9 @@ limited to what it needs:
   refused and the admin sees the new one. Once approved, the description
   stays marked as written by that agent until the admin changes its text
   (saving it unchanged keeps the mark).
-- Flags, statuses and notes share a per-token rate limit, 60 an hour, and
-  puts and requests another, 200 an hour (both in memory, so a restart
+- Flags, statuses and notes share a per-token rate limit, 60 an hour,
+  puts and requests another, 200 an hour, and reveals and acks a third,
+  1200 an hour (see [Audit log](#audit-log); all in memory, so a restart
   resets them), then 429. All agent text (descriptions, usage, flag
   reasons and links, notes) is refused if it has control characters or
   invisible formatting characters (Unicode Cf, such as bidi overrides and
@@ -548,10 +583,26 @@ limited to what it needs:
   credential (`api.badtoken`, `token.expired`, `token.replaced`,
   `pair.request`, `pair.wrongaddr`, `login.locked`). Those go through `noisyEvent`: one per minute per address (IPv6: /64) and
   action, 60 a minute in all, and the next recorded one carries the count
-  of those left out. So a flood shows up in the log without filling the
-  disk. Events that need a token or a session are all logged, except
-  `token.denied`, which has the same limit so a refused token can't rotate
-  the log.
+  of those left out. Past 10,000 tracked address-and-action pairs, those
+  idle for a minute are forgotten, their left-out counts moving to the
+  overall one, so cycling addresses can't grow memory without bound. So
+  a flood shows up in the log without filling the disk or memory. Events that need a token or a session are all logged, except
+  `token.denied` and `token.ratelimited`, which have the same limit so a
+  refused token can't rotate the log.
+- Reveals and acks, which each write an entry to the main log, are
+  limited to 1200 an hour per token, together (in memory, so a restart
+  resets it), then 429 with no value. Without that, a token could read in
+  a loop until the record of what it read had left the Log page and, in
+  time, every rotated file. The limit is the same for secrets, variables
+  and canaries; it's checked after the namespace (so an ungranted one
+  still gets its 404), and a refused call on a canary is a touch. The
+  refusals are logged as `token.ratelimited` through the same throttle as
+  `token.denied`.
+- A view of a secret's value (an agent's reveal, the admin's "Show
+  value") is written and fsynced before the value is returned; if either
+  fails, the value isn't returned (`audit.Record`). Other events are
+  written without waiting for the disk (`audit.Add`), so a flood of them
+  doesn't cost an fsync each.
 - Every field is cut at 200 bytes (an agent's `?purpose=` included),
   except a flag's reason and link, kept whole (up to 1100 bytes) in their
   own field and shown on the audit page as agent-written text; and
@@ -690,6 +741,9 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   `internal/qr` is a small stdlib-only encoder), an `otpauth://` link (on
   a phone, tapping it opens the authenticator app) and the key as text.
   `KEYDROP_RESET_ADMIN=true` reopens setup without touching secrets.
+  Left set, it reopens setup on every restart, so with an admin already
+  there keydrop logs a warning above the setup code, and once setup is
+  done a line saying to remove it and restart.
 - Sessions and headers are listed in [Security](security.md#security-design).
 
 ### Transport
@@ -698,7 +752,9 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   there's no public CA or DNS dependency, and a proxy in the middle can't
   read tokens or values.
 - `KEYDROP_TLS=files` uses your own certificate. `off` is only for running
-  behind a TLS-terminating proxy on a private network.
+  behind a TLS-terminating proxy on a private network. So the CLI accepts
+  an `http://` URL, but `pair` and `login` warn when it points at another
+  machine: the token and values would cross the network in the clear.
 - `KEYDROP_TRUSTED_PROXIES` limits who may set `X-Forwarded-For`, so the
   login limiter, allowed sources and pairing see real client IPs. List
   only the proxy's own address: any host in a trusted range can claim to
@@ -755,7 +811,8 @@ so breaking it without raising the minimum fails CI.
 
 **Self-upgrade.** `keydrop upgrade` is install.sh in Go: the same
 download from the paired server, over the configured pin, checked against
-`SHA256SUMS`, run once before it replaces anything, the old binary kept
+`SHA256SUMS`, run once (`version`, without any `KEYDROP_*` variable, so
+not with the token) before it replaces anything, the old binary kept
 as `.bak`. It refuses plain http, since what it downloads gets run. The
 checksum file comes from the same server, so it catches a broken download,
 not a hostile server; the pin is what vouches for the server.

@@ -59,3 +59,15 @@ Limitations, by design for now:
   re-entering the values.
 - **One server per data directory.** There's no lock file: two instances
   on one volume would overwrite each other's changes. Run one.
+
+## What masking catches
+
+`keydrop run` masks a secret in the command's stdout and stderr: the value
+itself, its base64 (including line-wrapped at 64 or 76 columns, for values
+up to 4 KiB) and its common URL encodings. It's there to catch accidents by
+honest tools, not a determined program: hex, JSON escaping, a changed case,
+a value cut short or broken up, and other encodings pass through, and
+anything the command writes to the terminal directly (`/dev/tty`), a file
+or the network isn't masked at all. The
+[design notes](design_doc.md#using-a-secret-without-seeing-it) have the
+details.
