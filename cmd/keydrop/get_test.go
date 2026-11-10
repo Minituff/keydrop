@@ -118,6 +118,27 @@ func TestGetVariableChangedWhileRead(t *testing.T) {
 	}
 }
 
+// A variable that became a secret between the metadata and the reveal is
+// refused like any secret, and its value isn't printed anywhere.
+func TestGetVariableBecameSecret(t *testing.T) {
+	const val = "fake-secret-value-1234"
+	for _, kind := range []string{"secret", "", "Variable"} {
+		ts := fakeKeydrop(t, map[string]*fakeEntry{
+			"TURNED": {meta: always(variable("TURNED", "old-setting", "", true)),
+				reveal: client.Revealed{Ref: "lab/TURNED", Kind: kind, Value: val}},
+		})
+		c := client.New(ts.URL, "kd_fake", "")
+		var out, errw strings.Builder
+		err := getVariable(c, "lab/TURNED", &out, &errw, false)
+		if err == nil || !strings.Contains(err.Error(), "is a secret, so it isn't printed") || strings.Contains(err.Error(), val) {
+			t.Errorf("kind %q: %v", kind, err)
+		}
+		if strings.Contains(out.String()+errw.String(), val) {
+			t.Errorf("kind %q: printed the value: %q %q", kind, out.String(), errw.String())
+		}
+	}
+}
+
 // captureStd runs f with os.Stdout and os.Stderr going to files, and
 // returns what was written to each.
 func captureStd(t *testing.T, f func()) (stdout, stderr string) {

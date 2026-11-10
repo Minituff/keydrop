@@ -902,6 +902,11 @@ func getVariable(c *client.Client, ref string, out, errw io.Writer, term bool) e
 		if err != nil {
 			return err
 		}
+		// It may have become a secret since the metadata was read: then
+		// the value must not be printed.
+		if rv.Kind != "variable" {
+			return notVariable
+		}
 		if rv.Value != v {
 			by = variableAuthor(c, sec.Ref, rv.Value)
 		}
