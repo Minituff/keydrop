@@ -163,6 +163,9 @@ const pollsPerMinute = 300
 const (
 	noisyPerKey    = time.Minute // one recorded event per address and action
 	noisyPerMinute = 60          // and at most this many overall
+	// maxNoisyKeys is how many address-and-action keys noisyEvents holds
+	// before it drops the idle ones.
+	maxNoisyKeys = 10000
 )
 
 // New builds a Server. If no admin exists yet (or ResetAdmin is set) it
@@ -384,9 +387,14 @@ func (s *Server) throttledEvent(r *http.Request, actor, action, target, detail s
 		s.noisyMu.Unlock()
 		return
 	}
-	if len(n.byKey) > 10000 {
+	if len(n.byKey) > maxNoisyKeys {
+		// Drop every key idle past its window, even one with events left
+		// out: otherwise a client cycling addresses, two requests each,
+		// grows the map without bound. Its count moves to the global one,
+		// so the next recorded event still says how many weren't logged.
 		for kk, v := range n.byKey {
-			if now.Sub(v.last) >= noisyPerKey && v.suppressed == 0 {
+			if now.Sub(v.last) >= noisyPerKey {
+				n.suppressedGl += v.suppressed
 				delete(n.byKey, kk)
 			}
 		}

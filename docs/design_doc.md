@@ -549,8 +549,10 @@ limited to what it needs:
   credential (`api.badtoken`, `token.expired`, `token.replaced`,
   `pair.request`, `pair.wrongaddr`, `login.locked`). Those go through `noisyEvent`: one per minute per address (IPv6: /64) and
   action, 60 a minute in all, and the next recorded one carries the count
-  of those left out. So a flood shows up in the log without filling the
-  disk. Events that need a token or a session are all logged, except
+  of those left out. Past 10,000 tracked address-and-action pairs, those
+  idle for a minute are forgotten, their left-out counts moving to the
+  overall one, so cycling addresses can't grow memory without bound. So
+  a flood shows up in the log without filling the disk or memory. Events that need a token or a session are all logged, except
   `token.denied` and `token.ratelimited`, which have the same limit so a
   refused token can't rotate the log.
 - Reveals and acks, which each write an entry to the main log, are
