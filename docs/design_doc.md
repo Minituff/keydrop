@@ -326,7 +326,16 @@ log, not for access control.
   Basic-auth header encodes `user:secret` in one piece and the secret's
   own encoding only appears when `len(user)+1` is a multiple of 3; the one
   or two characters at each edge that mix in the neighbouring bytes stay
-  visible. It's a streaming masker that holds back bytes only while they
+  visible. Line-wrapped base64 is matched too, at the widths tools use
+  (76 for coreutils `base64` and MIME, 64 for PEM and `openssl base64`;
+  `\n` or `\r\n`), for values up to 4 KiB: each place the first line break
+  can fall is a pattern of its own. When a break falls within the first 4
+  characters, those stay visible (matching from the start would hold back
+  every line that ends in one of an encoding's first characters). URL
+  encoding covers the escaping of Go's `QueryEscape` and `PathEscape`,
+  Python's `quote`, JavaScript's `encodeURIComponent`, `encodeURI` and
+  `URLSearchParams`, and an encoder that escapes everything but letters
+  and digits, each with upper- or lower-case hex. It's a streaming masker that holds back bytes only while they
   could still be the start of a secret, so interactive output isn't
   delayed. Every byte of every occurrence is masked: occurrences that
   overlap (one secret a prefix of another, or the end of one the start of
@@ -340,8 +349,14 @@ log, not for access control.
   Values shorter than 4 characters aren't masked, since that would mangle
   normal output.
 - **What masking can promise:** accident prevention for honest tools. It
-  doesn't catch hex, JSON-escaped, case-changed, truncated or split
-  output, or anything the command sends to a file or the network.
+  catches the value as is, its base64 (standard and URL-safe, any
+  alignment, unwrapped, or wrapped at 64 or 76 columns for values up to
+  4 KiB) and the percent-encodings above. It doesn't catch hex,
+  JSON-escaped, case-changed, truncated or split output, base64 wrapped at
+  other widths or of a longer value, other encodings, or one encoding
+  inside another. And it only sees the command's stdout and stderr:
+  anything the command writes to `/dev/tty`, a file, a socket or the
+  network isn't masked.
 - `run` removes every `KEYDROP_*` variable (token, token file, URL, pin)
   from the child's environment, forwards signals, and exits with the
   child's exit code. The child gets only stdin, stdout and stderr: on Unix
