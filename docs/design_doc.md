@@ -562,6 +562,11 @@ limited to what it needs:
   still gets its 404), and a refused call on a canary is a touch. The
   refusals are logged as `token.ratelimited` through the same throttle as
   `token.denied`.
+- A view of a secret's value (an agent's reveal, the admin's "Show
+  value") is written and fsynced before the value is returned; if either
+  fails, the value isn't returned (`audit.Record`). Other events are
+  written without waiting for the disk (`audit.Add`), so a flood of them
+  doesn't cost an fsync each.
 - Every field is cut at 200 bytes (an agent's `?purpose=` included),
   except a flag's reason and link, kept whole (up to 1100 bytes) in their
   own field and shown on the audit page as agent-written text; and
