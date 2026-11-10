@@ -375,6 +375,9 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		detail = "password only"
 	}
 	s.event(r, "admin", "admin.setup", "", detail)
+	if s.cfg.ResetAdmin {
+		log.Printf("admin setup is done. Now remove KEYDROP_RESET_ADMIN and restart keydrop: while it's set, every restart reopens setup and logs a new setup code")
+	}
 	s.setDeviceCookie(w)
 	s.newSession(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)

@@ -76,7 +76,7 @@ More on [what it protects](security.md#what-the-master-key-protects).
 | `KEYDROP_TLS_HOSTS` | — | Extra DNS names/IPs for the self-signed certificate. |
 | `KEYDROP_COOKIE_SECURE` | `true` | Set `false` only if the page is reached over plain HTTP. |
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
-| `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. |
+| `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. **Remove it once setup is done, and restart:** while it's set, every restart reopens setup and logs a new setup code, so anyone who can read the log could replace the admin login. keydrop logs a warning while it's set. |
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
 | `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
 

@@ -62,7 +62,10 @@ agent works, delete them.
 ## Lost the admin password or authenticator
 
 Restart with `KEYDROP_RESET_ADMIN=true`, use the new setup code, then remove
-the variable. Secrets and tokens are kept. To change the password while
+the variable and restart again. Secrets and tokens are kept. Don't leave it
+set: every restart would reopen setup and log a new setup code, and anyone
+who can read the log could then replace the admin login. keydrop logs a
+warning at start while it's set, and a reminder once setup is done. To change the password while
 logged in, use **Settings → Password**; that logs out every other browser.
 
 ## Upgrading from a development build

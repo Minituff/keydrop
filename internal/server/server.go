@@ -200,6 +200,11 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		go s.alerts.destination(false) // so Settings needn't wait for it
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
+		if st.AdminConfigured() {
+			// Left set, this reopens setup on every restart, so anyone who
+			// can read this log could replace the admin login.
+			log.Printf("WARNING: admin setup is open although an admin exists, because KEYDROP_RESET_ADMIN is set. Anyone who can read this log can use the code below to replace the admin login. Remove KEYDROP_RESET_ADMIN as soon as setup is done, and restart.")
+		}
 		s.setupCode = newSetupCode()
 		s.setupSeed = auth.NewTOTPSecret()
 		base := strings.TrimRight(cfg.PublicURL, "/")

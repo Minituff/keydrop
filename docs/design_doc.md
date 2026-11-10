@@ -707,6 +707,9 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   `internal/qr` is a small stdlib-only encoder), an `otpauth://` link (on
   a phone, tapping it opens the authenticator app) and the key as text.
   `KEYDROP_RESET_ADMIN=true` reopens setup without touching secrets.
+  Left set, it reopens setup on every restart, so with an admin already
+  there keydrop logs a warning above the setup code, and once setup is
+  done a line saying to remove it and restart.
 - Sessions and headers are listed in [Security](security.md#security-design).
 
 ### Transport
