@@ -144,8 +144,21 @@ jobs:
             gh release create "$TAG" dist/* --generate-notes --target "$GITHUB_SHA" --prerelease="$PRERELEASE" --latest="$LATEST"
             ;;
           esac
+  # A version's image waits for its release: if binaries fails (a tag that
+  # is already published, moved or pushed again), its tags aren't
+  # overwritten. Other names skip binaries, and a skipped need would skip
+  # this job too, hence the explicit if. If only this job failed, re-run
+  # failed jobs: re-running all of them stops at the published release.
   image:
-    needs: [version, test, e2e]
+    needs: [version, test, e2e, binaries]
+    if: >-
+      !cancelled() &&
+      needs.version.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.e2e.result == 'success' && (
+        (needs.version.outputs.semver == 'true' && needs.binaries.result == 'success') ||
+        (needs.version.outputs.semver == 'false' && needs.binaries.result == 'skipped')
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read

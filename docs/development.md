@@ -27,9 +27,16 @@ Publish. Then run the workflow with the same tag. It attaches the binaries and
 publishes the draft. Releases are immutable once published, so one published
 straight from that page can never get its binaries: use a new tag instead.
 
-Pushing a `v*` tag does the same as running the workflow. A version tag can't move to another
-commit, and `latest` can't be typed by hand. Other tags such as `dev` do
-move, so pin them by digest. Everything is built on GitHub-hosted runners,
+Pushing a `v*` tag does the same as running the workflow. Once a version's
+release is published, a run for that tag publishes nothing new: **Run
+workflow** refuses a tag that's on another commit, a published release can't
+take new files, and the image waits for the release, so a tag that was moved
+or pushed again leaves both as they were. Until then (no release yet, or only
+a draft) a version tag can still be moved, and the next run publishes from
+where it points. If a release went out but its image failed, use **Re-run
+failed jobs**: re-running all jobs stops at the published release and
+builds no image. `latest` can't be typed by hand. Other tags such as `dev`
+do move, so pin them by digest. Everything is built on GitHub-hosted runners,
 with an SBOM and provenance on the image and a signed build attestation on
 both the image and the binaries. Check that `release.yml` signed it, built
 from the release's tag:
