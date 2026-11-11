@@ -167,7 +167,11 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # BuildKit by digest, not the moving buildx-stable-1 the action would
+      # pull. Renovate tracks it (customManagers in .github/renovate.json5).
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -206,7 +210,8 @@ jobs:
             COMMIT_TIME=${{ steps.ctime.outputs.time }}
             REPO_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: true
-          sbom: true
+          # The SBOM scanner by digest, not the moving stable-1 tag.
+          sbom: generator=docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
       # Signed by this workflow's identity: gh attestation verify.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

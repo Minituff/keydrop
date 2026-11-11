@@ -260,7 +260,9 @@ with a GitHub noreply address.
 
 - Actions are pinned to a full commit SHA with the version as a comment
   (`uses: actions/checkout@<sha> # v7.0.1`); base images in the
-  `Dockerfile` by digest, tag kept for readers. To update, resolve the new
+  `Dockerfile`, and the BuildKit and SBOM scanner images the workflows
+  name (`driver-opts`, `sbom: generator=`), by digest, tag kept for
+  readers. To update, resolve the new
   tag (`git ls-remote --tags`, or the registry's manifest digest for the
   multi-arch index) and change SHA and comment together. Never go back to
   a bare tag.

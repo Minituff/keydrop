@@ -59,8 +59,8 @@ Pushed tags and Renovate's patch releases are built from the tag.
 Every image includes the CLI for all six platforms (about 24 MB compressed);
 CI installs it from a running image with `install.sh` and checks the version.
 Nothing is published unless the tests passed on that commit, and no publishing
-job reads the Actions cache. Workflow actions are pinned to commit SHAs and
-base images to digests. Images built by CI link the version in Settings to
+job reads the Actions cache. Workflow actions are pinned to commit SHAs, and
+base images, BuildKit and the SBOM scanner to digests. Images built by CI link the version in Settings to
 its commit (build args `COMMIT`, `COMMIT_TIME`, `REPO_URL`).
 
 CI also uploads unit test coverage to Codecov. The e2e suite isn't counted,
@@ -82,6 +82,7 @@ and Renovate merges it only when the checks are green.
 | GitHub Actions minor, patch | Yes, after seven days | No |
 | GitHub Actions digest, same version | No: the version's tag moved upstream, so the maintainer checks why | No |
 | GitHub Actions major | No | No |
+| BuildKit, SBOM scanner (release builder) | No, the maintainer reviews it, after seven days | No |
 
 Renovate marks the commits that change what ships with `[bump version]`.
 `bump-version.yml` sees that on `main`, tags the next patch version and starts

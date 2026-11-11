@@ -20,6 +20,21 @@
   "platformAutomerge": false,
   "ignoreTests": false,
   "separateMinorPatch": true,
+  // BuildKit and the SBOM scanner are images named in action inputs
+  // (driver-opts, sbom), which no default manager reads. Version and digest
+  // move together, like the base images in the Dockerfile.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "BuildKit and SBOM scanner images in the workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "image=(?<depName>moby/buildkit):(?<currentValue>v[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "generator=(?<depName>docker/buildkit-syft-scanner):(?<currentValue>[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       // go.mod and the Dockerfile must move together: scripts/go-version-check.sh
@@ -85,6 +100,16 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
+    },
+    {
+      // These run in the job that publishes and signs the image, so a person
+      // looks at every update, after the same week's wait as the actions.
+      "description": "BuildKit and SBOM scanner: reviewed by hand, minimum seven days old",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["moby/buildkit", "docker/buildkit-syft-scanner"],
+      "groupName": "buildkit",
+      "minimumReleaseAge": "7 days",
+      "automerge": false
     }
   ]
 }
