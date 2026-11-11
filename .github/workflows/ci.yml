@@ -4,6 +4,11 @@ on:
     branches: [main, dev]
   pull_request:
 permissions: {}
+# shell: bash is bash -eo pipefail; a run: step without it has no
+# pipefail, so a pipeline's status would be only its last command's.
+defaults:
+  run:
+    shell: bash
 jobs:
   # The patterns are the maintainer's own host names, so they live in the
   # leak-check environment, which only main and dev may use: a workflow

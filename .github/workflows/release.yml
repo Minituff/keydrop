@@ -25,6 +25,11 @@ on:
         type: string
 # Nothing by default; each job asks for only what it needs.
 permissions: {}
+# shell: bash is bash -eo pipefail; a run: step without it has no
+# pipefail, so a pipeline's status would be only its last command's.
+defaults:
+  run:
+    shell: bash
 jobs:
   version:
     runs-on: ubuntu-latest

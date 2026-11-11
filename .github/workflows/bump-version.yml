@@ -12,6 +12,11 @@ permissions: {}
 concurrency:
   group: bump-version
   cancel-in-progress: false
+# shell: bash is bash -eo pipefail; a run: step without it has no
+# pipefail, so a pipeline's status would be only its last command's.
+defaults:
+  run:
+    shell: bash
 jobs:
   bump:
     # Only a push Renovate made: it merges its own PRs (automergeType pr,
