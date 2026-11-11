@@ -77,8 +77,11 @@ and Renovate merges it only when the checks are green.
 
 Renovate marks the commits that change what ships with `[bump version]`.
 `bump-version.yml` sees that on `main`, tags the next patch version and starts
-`release.yml`, which runs the tests and e2e again before publishing. This is
-the only release that starts by itself. Feature releases are started by hand
+`release.yml`, which runs the tests and e2e again before publishing. It acts
+only on a push made by Renovate itself (`renovate[bot]`, which merges its own
+PRs): the marker in a commit someone else pushes, or a Renovate PR merged by
+hand, releases nothing. For those, run **release** by hand with the next
+patch tag. This is the only release that starts by itself. Feature releases are started by hand
 (`v1.2.0`) and later patches count up from there, so `bump-version.yml` stops
 with an error until the first version tag exists.
 Anything merged to `main` since the last tag goes out with the next patch, so
