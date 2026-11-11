@@ -249,7 +249,9 @@ branch can't read it: one extended regex per line, surrounding whitespace
 trimmed, blank lines ignored). Pull requests skip the check; the push to
 `dev` or `main` runs it. It fails closed: a pattern grep can't compile, or a grep/git error, fails the
 check (`scripts/leak-check-test.sh` tests that). Without the secret (local
-runs) it skips with a warning that nothing was checked. The
+runs, forks) it skips with a warning that nothing was checked; in this
+repository's workflows `KEYDROP_LEAK_REQUIRED=1` makes a missing or empty
+secret fail the check instead. The
 `leak-history` workflow, run by hand, checks every commit the same way. Use
 generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
 with a GitHub noreply address.

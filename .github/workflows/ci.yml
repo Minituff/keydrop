@@ -13,7 +13,8 @@ jobs:
   # The patterns are the maintainer's own host names, so they live in the
   # leak-check environment, which only main and dev may use: a workflow
   # pushed on any other branch can't read them. Pull requests skip this job;
-  # the push to dev or main runs it.
+  # the push to dev or main runs it. In this repository the secret must be
+  # there (KEYDROP_LEAK_REQUIRED); a fork's push skips with a warning.
   leak-check:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -27,6 +28,7 @@ jobs:
       - name: No private details
         env:
           KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+          KEYDROP_LEAK_REQUIRED: ${{ github.repository == 'Minituff/keydrop' && '1' || '' }}
         run: sh scripts/leak-check.sh
   test:
     runs-on: ubuntu-latest

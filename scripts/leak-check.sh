@@ -10,8 +10,17 @@
 #
 # It fails closed: a pattern grep can't compile, or a grep/git error
 # (exit 2 or more), fails the check instead of reading as "no matches".
+#
+# Without patterns it skips, for forks and local runs. KEYDROP_LEAK_REQUIRED=1
+# (set by the workflows in the upstream repository, where the secret should
+# exist) turns that into a failure, so a deleted or renamed secret can't
+# leave CI green while nothing is checked.
 set -eu
 if [ -z "${KEYDROP_LEAK_PATTERNS:-}" ]; then
+  if [ "${KEYDROP_LEAK_REQUIRED:-}" = 1 ]; then
+    echo "::error::KEYDROP_LEAK_PATTERNS isn't set, and this run requires it (KEYDROP_LEAK_REQUIRED=1): check the secret in the leak-check environment"
+    exit 2
+  fi
   # Forks and local runs have no secret. Say loudly that nothing was checked.
   echo "::warning::KEYDROP_LEAK_PATTERNS isn't set: the leak check did NOT run"
   echo "WARNING: KEYDROP_LEAK_PATTERNS isn't set; nothing was checked." >&2
