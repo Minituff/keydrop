@@ -35,6 +35,12 @@
       "datasourceTemplate": "docker"
     }
   ],
+  // The docs site's tools: docs-requirements.in names them, and
+  // docs-requirements.txt pins them and their dependencies with hashes.
+  // Renovate updates the .in and reruns the command at the top of the .txt.
+  "pip-compile": {
+    "managerFilePatterns": ["/^\\.github/docs-requirements\\.txt$/"]
+  },
   "packageRules": [
     {
       // go.mod and the Dockerfile must move together: scripts/go-version-check.sh
@@ -108,6 +114,22 @@
       "matchManagers": ["custom.regex"],
       "matchPackageNames": ["moby/buildkit", "docker/buildkit-syft-scanner"],
       "groupName": "buildkit",
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      // The output file is pip-compile's; reading it as a plain requirements
+      // file too would open a second PR for every pin in it.
+      "description": "Docs tools: only through pip-compile",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": [".github/docs-requirements.txt"],
+      "enabled": false
+    },
+    {
+      // The built site is published, install commands included, so a
+      // person reviews these, after the same week's wait as the actions.
+      "description": "Docs site tools: reviewed by hand, minimum seven days old",
+      "matchManagers": ["pip-compile"],
       "minimumReleaseAge": "7 days",
       "automerge": false
     }

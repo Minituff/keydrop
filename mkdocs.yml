@@ -1,5 +1,6 @@
 # The docs site, for people deciding whether to run keydrop and setting it up.
-# Preview: pip install mkdocs-material==9.8.0 && mkdocs serve (the version docs.yml uses)
+# Preview: pip install --require-hashes -r .github/docs-requirements.txt && mkdocs serve
+# (the versions docs.yml uses)
 # docs/index.md is generated from README.md (scripts/docs-index.sh).
 site_name: keydrop
 site_description: A secret drop for AI agents. Paste an API key on your phone; your agent uses it without ever seeing it.

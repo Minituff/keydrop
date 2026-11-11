@@ -1,0 +1,3 @@
+# The docs site's build tools. docs-requirements.txt pins these and every
+# dependency with hashes; regenerate it with the command at its top.
+mkdocs-material==9.8.0
