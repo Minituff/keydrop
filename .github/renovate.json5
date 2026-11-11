@@ -23,12 +23,16 @@
   "packageRules": [
     {
       // go.mod and the Dockerfile must move together: scripts/go-version-check.sh
-      // fails CI while they differ, which also holds the merge if the
-      // official image is published after the Go release.
-      "description": "Go itself: one PR for go.mod and the build image",
+      // fails CI while they differ. The two halves become available at
+      // different times (the official image follows the Go release, and each
+      // waits out its own minimumReleaseAge), so no PR is opened until both
+      // are in it. Without that, Renovate opens the PR with one half and CI
+      // fails on it until the other arrives.
+      "description": "Go itself: one PR for go.mod and the build image, never half",
       "matchPackageNames": ["go", "golang"],
       "matchUpdateTypes": ["patch", "minor", "major"],
-      "groupName": "go"
+      "groupName": "go",
+      "minimumGroupSize": 2
     },
     {
       // Standard library security fixes arrive only this way. A short wait,

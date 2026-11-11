@@ -126,7 +126,9 @@ routine itself, so updating the sum without pasting also passes.
 
 The Go version lives in two places, and `scripts/go-version-check.sh` fails CI
 while they differ: `toolchain` in `go.mod` (CI reads it) and the `golang` tag in
-the `Dockerfile` (what ships). Renovate changes both in one PR. It doesn't
+the `Dockerfile` (what ships). Renovate changes both in one PR, and opens it
+only when both updates are available (`minimumGroupSize`), so a Go release
+whose image isn't out yet waits instead of failing CI. It doesn't
 change the `go` line, so raise that by hand with a new Go minor. The distroless
 image name carries the Debian release, so moving to a newer Debian is a manual
 change too.
