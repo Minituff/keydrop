@@ -119,8 +119,9 @@ will be told first, in [docs/agent-setup.md](agent-setup.md).
 Already running keydrop? **Agents → Set up an agent** gives a shorter prompt
 with your server's address and certificate pins filled in.
 
-**By hand:** it's one container. Generate a master key, start
-[`compose.example.yml`](https://github.com/Minituff/keydrop/blob/main/compose.example.yml), and open the link in the log.
+**By hand:** it's one container. Check the image of a release, generate a
+master key, start [`compose.example.yml`](https://github.com/Minituff/keydrop/blob/main/compose.example.yml) with that
+image pinned, and open the link in the log.
 Step by step: [Installing the server](install.md), then
 [Pairing an agent](pairing.md).
 

@@ -27,9 +27,16 @@ Publish. Then run the workflow with the same tag. It attaches the binaries and
 publishes the draft. Releases are immutable once published, so one published
 straight from that page can never get its binaries: use a new tag instead.
 
-Pushing a `v*` tag does the same as running the workflow. A version tag can't move to another
-commit, and `latest` can't be typed by hand. Other tags such as `dev` do
-move, so pin them by digest. Everything is built on GitHub-hosted runners,
+Pushing a `v*` tag does the same as running the workflow. Once a version's
+release is published, a run for that tag publishes nothing new: **Run
+workflow** refuses a tag that's on another commit, a published release can't
+take new files, and the image waits for the release, so a tag that was moved
+or pushed again leaves both as they were. Until then (no release yet, or only
+a draft) a version tag can still be moved, and the next run publishes from
+where it points. If a release went out but its image failed, use **Re-run
+failed jobs**: re-running all jobs stops at the published release and
+builds no image. `latest` can't be typed by hand. Other tags such as `dev`
+do move, so pin them by digest. Everything is built on GitHub-hosted runners,
 with an SBOM and provenance on the image and a signed build attestation on
 both the image and the binaries. Check that `release.yml` signed it, built
 from the release's tag:
@@ -52,8 +59,8 @@ Pushed tags and Renovate's patch releases are built from the tag.
 Every image includes the CLI for all six platforms (about 24 MB compressed);
 CI installs it from a running image with `install.sh` and checks the version.
 Nothing is published unless the tests passed on that commit, and no publishing
-job reads the Actions cache. Workflow actions are pinned to commit SHAs and
-base images to digests. Images built by CI link the version in Settings to
+job reads the Actions cache. Workflow actions are pinned to commit SHAs, and
+base images, BuildKit and the SBOM scanner to digests. Images built by CI link the version in Settings to
 its commit (build args `COMMIT`, `COMMIT_TIME`, `REPO_URL`).
 
 CI also uploads unit test coverage to Codecov. The e2e suite isn't counted,
@@ -72,13 +79,18 @@ and Renovate merges it only when the checks are green.
 | Go minor or major (1.27 → 1.28) | No, the maintainer reviews it | No |
 | Runtime image digest (distroless) | Yes, Mondays | Yes |
 | Build image digest, same Go | Yes, Mondays | No, nothing that ships changes |
-| GitHub Actions minor, patch, digest | Yes, after seven days | No |
+| GitHub Actions minor, patch | Yes, after seven days | No |
+| GitHub Actions digest, same version | No: the version's tag moved upstream, so the maintainer checks why | No |
 | GitHub Actions major | No | No |
+| BuildKit, SBOM scanner (release builder) | No, the maintainer reviews it, after seven days | No |
 
 Renovate marks the commits that change what ships with `[bump version]`.
 `bump-version.yml` sees that on `main`, tags the next patch version and starts
-`release.yml`, which runs the tests and e2e again before publishing. This is
-the only release that starts by itself. Feature releases are started by hand
+`release.yml`, which runs the tests and e2e again before publishing. It acts
+only on a push made by Renovate itself (`renovate[bot]`, which merges its own
+PRs): the marker in a commit someone else pushes, or a Renovate PR merged by
+hand, releases nothing. For those, run **release** by hand with the next
+patch tag. This is the only release that starts by itself. Feature releases are started by hand
 (`v1.2.0`) and later patches count up from there, so `bump-version.yml` stops
 with an error until the first version tag exists.
 Anything merged to `main` since the last tag goes out with the next patch, so

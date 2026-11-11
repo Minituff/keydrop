@@ -249,7 +249,9 @@ branch can't read it: one extended regex per line, surrounding whitespace
 trimmed, blank lines ignored). Pull requests skip the check; the push to
 `dev` or `main` runs it. It fails closed: a pattern grep can't compile, or a grep/git error, fails the
 check (`scripts/leak-check-test.sh` tests that). Without the secret (local
-runs) it skips with a warning that nothing was checked. The
+runs, forks) it skips with a warning that nothing was checked; in this
+repository's workflows `KEYDROP_LEAK_REQUIRED=1` makes a missing or empty
+secret fail the check instead. The
 `leak-history` workflow, run by hand, checks every commit the same way. Use
 generic examples: `10.0.0.x`, `192.168.1.50`, `secrets.example.com`. Commit
 with a GitHub noreply address.
@@ -258,7 +260,9 @@ with a GitHub noreply address.
 
 - Actions are pinned to a full commit SHA with the version as a comment
   (`uses: actions/checkout@<sha> # v7.0.1`); base images in the
-  `Dockerfile` by digest, tag kept for readers. To update, resolve the new
+  `Dockerfile`, and the BuildKit and SBOM scanner images the workflows
+  name (`driver-opts`, `sbom: generator=`), by digest, tag kept for
+  readers. To update, resolve the new
   tag (`git ls-remote --tags`, or the registry's manifest digest for the
   multi-arch index) and change SHA and comment together. Never go back to
   a bare tag.

@@ -2,11 +2,36 @@
 
 The [agent setup guide](agent-setup.md) does all of this for you. These are the same steps, done by hand.
 
+## Verify the image
+
+Use a released version, not `latest`, and check that the image is the one
+keydrop's release workflow built before you run it. Pick the newest version
+on the [releases page](https://github.com/Minituff/keydrop/releases) and put
+it in `version` (without the `v`). The check needs the
+[GitHub CLI](https://cli.github.com/), signed in with `gh auth login`.
+
+```sh
+version=1.2.3
+docker pull "ghcr.io/minituff/keydrop:$version"
+image=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/minituff/keydrop:$version")
+gh attestation verify "oci://$image" --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+echo "$image"
+```
+
+If `gh attestation verify` fails, **stop**: don't run that image. If it
+passes, `$image` is that exact image, pinned by its digest
+(`ghcr.io/minituff/keydrop@sha256:…`). The steps below use it, so run them
+in the same terminal.
+
+## Start the server
+
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
 # Generate a key only for a new installation.
-if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+if ( umask 077; set -C; docker run --rm "$image" genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
   echo "Key generation failed or master.key already exists. Stop and investigate."
@@ -22,10 +47,22 @@ Once the key is ready:
 
 ```sh
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
-# edit KEYDROP_PUBLIC_URL and KEYDROP_TLS_HOSTS, then:
+# set image: to the $image you checked, edit KEYDROP_PUBLIC_URL and
+# KEYDROP_TLS_HOSTS, then:
 docker compose -f compose.example.yml up -d
 docker logs keydrop
 ```
+
+Pin the image by its digest in the compose file, so a restart always runs
+the image you checked:
+
+```yaml
+    image: ghcr.io/minituff/keydrop:1.2.3@sha256:…
+```
+
+The version before `@` is only for you to read; Docker uses the digest. To
+upgrade, check the new version the same way and put its digest there (see
+[Upgrading and rolling back](upgrading.md)).
 
 The log prints two things:
 

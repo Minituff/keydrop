@@ -16,4 +16,6 @@ jobs:
       - name: No private details in history
         env:
           KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+          # Required here, like the same check in ci.yml; forks skip.
+          KEYDROP_LEAK_REQUIRED: ${{ github.repository == 'Minituff/keydrop' && '1' || '' }}
         run: sh scripts/leak-check.sh --history

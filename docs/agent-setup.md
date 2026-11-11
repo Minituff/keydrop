@@ -90,12 +90,33 @@ the LAN or a VPN. Never expose keydrop to the internet. Ask which address
 agents will use to reach it (an IP such as `192.168.1.50`, and a DNS name
 if there is one).
 
-On that machine:
+Install a released version, never `latest`: the newest on
+https://github.com/Minituff/keydrop/releases unless the person wants
+another. Put it in `version` (without the `v`). On that machine, check the
+image before running it:
+
+```sh
+version=1.2.3
+docker pull "ghcr.io/minituff/keydrop:$version"
+image=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/minituff/keydrop:$version")
+gh attestation verify "oci://$image" --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+echo "$image"
+```
+
+`gh attestation verify` checks that keydrop's release workflow built this
+exact image. If it fails, stop and tell the person. If `gh` isn't installed
+or signed in, give the person these commands to run instead; don't skip
+the check. `$image` is the image pinned by its digest
+(`ghcr.io/minituff/keydrop@sha256:…`), and the commands below use it; if
+your shell doesn't keep variables between commands, put the printed value
+in its place.
 
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+if ( umask 077; set -C; docker run --rm "$image" genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
   echo "key generation failed or master.key already exists: STOP"
@@ -111,7 +132,8 @@ command failed, stop and tell the person; don't remove or replace the file
 yourself. Don't open or print that file (see step 3). keydrop runs as uid
 65532, so the file and `data/` belong to it.
 
-In `compose.example.yml`, set `KEYDROP_PUBLIC_URL` to the address the
+In `compose.example.yml`, set `image:` to `$image`, so every start runs
+the image you checked. Set `KEYDROP_PUBLIC_URL` to the address the
 person's browser will use (for example `https://192.168.1.50:8443`) and
 `KEYDROP_TLS_HOSTS` to every name and IP agents will use (for example
 `192.168.1.50`). Then:

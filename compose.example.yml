@@ -1,6 +1,7 @@
-# Example deployment. Before the first start:
+# Example deployment. docs/install.md has the steps, starting with checking
+# the image ("Verify the image"), which sets $image. Before the first start:
 #   mkdir -p data && sudo chown 65532:65532 data
-#   (umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key)
+#   (umask 077; set -C; docker run --rm "$image" genkey > master.key)
 #   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 # (set -C refuses to replace an existing key. Run this once, not per deploy.)
 # (Compose mounts the secret file with its host owner and mode, and keydrop
@@ -9,7 +10,10 @@
 # Back up master.key somewhere other than ./data: without it the data is unreadable.
 services:
   keydrop:
-    # Pin a digest in production (image@sha256:…) and update on purpose.
+    # Put the digest you checked here, so every start runs that image, and
+    # update on purpose (docs/upgrading.md). The version before @ is only
+    # for reading. Replace this :latest:
+    #   image: ghcr.io/minituff/keydrop:1.2.3@sha256:…
     image: ghcr.io/minituff/keydrop:latest
     container_name: keydrop
     restart: unless-stopped
