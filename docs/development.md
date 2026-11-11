@@ -72,7 +72,8 @@ and Renovate merges it only when the checks are green.
 | Go minor or major (1.27 → 1.28) | No, the maintainer reviews it | No |
 | Runtime image digest (distroless) | Yes, Mondays | Yes |
 | Build image digest, same Go | Yes, Mondays | No, nothing that ships changes |
-| GitHub Actions minor, patch, digest | Yes, after seven days | No |
+| GitHub Actions minor, patch | Yes, after seven days | No |
+| GitHub Actions digest, same version | No: the version's tag moved upstream, so the maintainer checks why | No |
 | GitHub Actions major | No | No |
 
 Renovate marks the commits that change what ships with `[bump version]`.

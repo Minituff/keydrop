@@ -76,10 +76,14 @@
       "minimumReleaseAge": "7 days"
     },
     {
-      // Workflows aren't in the image, so these never cut a release.
-      "description": "GitHub Actions: low-risk updates merge by themselves",
+      // Workflows aren't in the image, so these never cut a release. Not
+      // digest: actions are pinned by SHA to a version tag, so a new digest
+      // for the same version means upstream moved the tag. A person checks
+      // that before it runs with the release job's rights. The actions share
+      // one PR, and it automerges only if every update in it may.
+      "description": "GitHub Actions: minor and patch merge by themselves; a moved tag (digest only) waits for review",
       "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
     }
   ]
