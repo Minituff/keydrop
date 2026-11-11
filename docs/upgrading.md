@@ -10,7 +10,9 @@ With Compose (data in `./data`, as in `compose.example.yml`):
    docker compose stop keydrop
    sudo cp -a data data.bak-$(date +%F)
    ```
-3. Point `image:` at the new version, then `docker compose pull keydrop`.
+3. Check the new version's image as in
+   [Verify the image](install.md#verify-the-image), point `image:` at the
+   digest it printed, then `docker compose pull keydrop`.
 4. Start it with `docker compose up -d keydrop`. `docker logs keydrop` should
    show the same `KEYDROP_TLS_PIN=sha256:…` as before.
 5. On an agent, `keydrop whoami` should work without changes.
