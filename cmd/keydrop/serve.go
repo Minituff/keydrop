@@ -341,9 +341,14 @@ func cmdServer(args []string) error {
 	if webhook != "" {
 		log.Printf("canary alerts: webhook configured")
 	}
+	alertFormat := env("KEYDROP_ALERT_FORMAT", "auto")
+	if err := server.CheckAlertFormat(alertFormat); err != nil {
+		return err
+	}
 
 	cfg := server.Config{
 		AlertWebhook:   webhook,
+		AlertFormat:    alertFormat,
 		AlertInbox:     envBool("KEYDROP_ALERT_INBOX", false),
 		Now:            testClock,
 		PublicURL:      publicURL,

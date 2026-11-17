@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -58,12 +57,13 @@ const (
 type alerter struct {
 	client *http.Client
 	now    func() time.Time
-	queue  chan []byte
+	queue  chan string // alert texts; the body is built when posted
 	once   sync.Once
 	wg     sync.WaitGroup // alerts queued and not yet sent, for tests
 
 	mu         sync.Mutex
 	url        string               // set with setURL; read with webhook
+	format     string               // KEYDROP_ALERT_FORMAT; "" is auto
 	dest       alertDest            // where url posts, for Settings
 	last       map[string]time.Time // canary ref + token -> last alert
 	lastNotice map[string]time.Time // kind + token or address -> last notice
@@ -105,7 +105,7 @@ func newAlerter(webhook string) *alerter {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		now:        time.Now,
-		queue:      make(chan []byte, alertQueue),
+		queue:      make(chan string, alertQueue),
 		last:       map[string]time.Time{},
 		lastNotice: map[string]time.Time{},
 		budget:     bucket{burst: alertBurst, refill: alertRefill, tokens: alertBurst},
@@ -135,7 +135,8 @@ func (a *alerter) webhook() string {
 	return a.url
 }
 
-// setURL changes where alerts go, including those already queued. The
+// setURL changes where alerts go, including those already queued: their
+// body is built when posted, so it has the new URL's format. The
 // destination is looked up again (describe).
 func (a *alerter) setURL(u string) {
 	a.mu.Lock()
@@ -209,12 +210,9 @@ func (a *alerter) noticeRoom() bool { return len(a.queue) < alertQueue/2 }
 
 // enqueue queues one message without blocking. Needs a.mu.
 func (a *alerter) enqueue(content string) bool {
-	// No mentions: the content names tokens and secrets, which mustn't
-	// ping anyone.
-	body, _ := json.Marshal(map[string]any{"content": content, "allowed_mentions": map[string]any{"parse": []string{}}})
 	a.wg.Add(1)
 	select {
-	case a.queue <- body:
+	case a.queue <- content:
 		return true
 	default:
 		a.wg.Done()
@@ -229,8 +227,8 @@ func (a *alerter) run() {
 	defer tick.Stop()
 	for {
 		select {
-		case body := <-a.queue:
-			if err := a.post(body); err != nil {
+		case content := <-a.queue:
+			if err := a.post(content); err != nil {
 				log.Printf("alert webhook: %v", err)
 			}
 			a.wg.Done()
@@ -260,9 +258,9 @@ func (a *alerter) flushHeld() {
 	}
 }
 
-func (a *alerter) post(body []byte) error {
+func (a *alerter) post(content string) error {
 	for try := 0; ; try++ {
-		wait, err := a.postOnce(body)
+		wait, err := a.postOnce(content)
 		if wait == 0 || try >= alertRetries {
 			return err
 		}
@@ -270,20 +268,32 @@ func (a *alerter) post(body []byte) error {
 	}
 }
 
-// postOnce sends body once. On a 429 it returns how long to wait before
-// trying again (the Retry-After, at most maxRetryAfter).
-func (a *alerter) postOnce(body []byte) (time.Duration, error) {
+// sendAs is the format alerts go out in now, for Settings and postOnce.
+func (a *alerter) sendAs() (raw, format string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.url, resolveFormat(a.format, a.url)
+}
+
+// postOnce sends content once, in the current URL's format. On a 429 it
+// returns how long to wait before trying again (the Retry-After, at most
+// maxRetryAfter).
+func (a *alerter) postOnce(content string) (time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
-	u := a.webhook()
+	u, format := a.sendAs()
 	if u == "" {
 		return 0, errors.New("no webhook is configured")
 	}
+	body, ctype := alertBody(format, content)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return 0, errors.New("couldn't build the request")
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", ctype)
+	if format == formatText {
+		req.Header.Set("Title", "keydrop") // ntfy's notification title
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -413,7 +423,7 @@ func (s *Server) handleAlertWebhook(w http.ResponseWriter, r *http.Request, _ st
 	}
 	u, err := url.Parse(raw)
 	if err != nil || CheckAlertWebhook(raw) != nil || len(raw) > store.MaxWebhookLen {
-		s.renderSettings(w, r, se, http.StatusBadRequest, "That isn't a webhook URL: it should start with https://.")
+		s.renderSettings(w, r, se, http.StatusBadRequest, "That isn't a webhook URL: it should start with https:// (or http://).")
 		return
 	}
 	if err := s.store.SetAlertWebhook(raw); err != nil {

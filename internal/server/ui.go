@@ -1105,6 +1105,9 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["Build"] = s.buildInfo()
 	data["AlertsConfigured"] = s.alerts.configured()
 	data["AlertDest"] = s.alerts.destination(false)
+	_, format := s.alerts.sendAs()
+	data["AlertSendAs"] = formatName[format]
+	data["AlertNtfyHint"] = format == formatDiscord && (s.cfg.AlertFormat == "" || s.cfg.AlertFormat == formatAuto)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
 	data["AlertEnv"] = s.cfg.AlertWebhook != ""
 	data["AlertInbox"] = s.cfg.AlertInbox

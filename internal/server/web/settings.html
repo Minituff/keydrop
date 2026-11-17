@@ -45,21 +45,22 @@
 <h2>Alerts and canaries</h2>
 <div class="card alerts">
 {{if .AlertsConfigured}}
-  <p>Alerts go to: {{with .AlertDest}}{{if .Discord}}<strong>Discord</strong>{{if .Name}}, posted as <strong>{{.Name}}</strong>{{end}}{{if .ChannelURL}} · <a href="{{.ChannelURL}}" target="_blank" rel="noopener noreferrer">open the channel</a>{{end}}{{else if .Host}}a webhook at <strong>{{.Host}}</strong>{{else}}the webhook{{end}}{{end}}</p>
+  <p>Alerts go to: {{with .AlertDest}}{{if .Discord}}<strong>Discord</strong>{{if .Name}}, posted as <strong>{{.Name}}</strong>{{end}}{{if .ChannelURL}} · <a href="{{.ChannelURL}}" target="_blank" rel="noopener noreferrer">open the channel</a>{{end}}{{else if .Host}}a webhook at <strong>{{.Host}}</strong>{{else}}the webhook{{end}}{{end}} · sent as: <strong>{{.AlertSendAs}}</strong></p>
   {{with .AlertDest.Problem}}<p class="error" role="alert">{{.}}</p>{{end}}
+  {{if and .AlertNtfyHint (not .AlertDest.Discord)}}<p><small class="muted">Not Discord or Slack, so alerts are sent in Discord's format. For ntfy, set KEYDROP_ALERT_FORMAT=text in keydrop's container.</small></p>{{end}}
   <p><small class="muted">{{if eq .AlertSource "settings"}}Added here {{fmtTime .AlertSetAt}}.{{if .AlertEnv}} keydrop's container also sets KEYDROP_ALERT_WEBHOOK; that one is used again if you remove this.{{end}}{{else}}Set by KEYDROP_ALERT_WEBHOOK in keydrop's container. A webhook added here is used instead.{{end}}</small></p>
   <form method="post" action="/settings/alert-test" class="inline">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <button class="secondary">Send test alert</button>
   </form>
 {{else}}
-  <p>Alert webhook: <span class="badge">not configured</span>. Canary reads still show in the Inbox; add a webhook to get them in a chat channel too.</p>
+  <p>Alert webhook: <span class="badge">not configured</span>. Canary reads still show in the Inbox; add a Discord, Slack or ntfy webhook URL to get them on your phone or in a chat channel too.</p>
 {{end}}
   <form method="post" action="/settings/alert-webhook">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label>{{if eq .AlertSource "settings"}}Replace the webhook{{else if .AlertsConfigured}}Use a different webhook{{else}}Webhook URL{{end}}
       <input type="password" name="webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-    <p><small class="muted">Stored encrypted and never shown again. In Discord: the channel's settings → Integrations → Webhooks → Copy Webhook URL.</small></p>
+    <p><small class="muted">Stored encrypted and never shown again. In Discord: the channel's settings → Integrations → Webhooks → Copy Webhook URL. In Slack: an app's Incoming Webhooks. For ntfy: the topic's URL, with KEYDROP_ALERT_FORMAT=text.</small></p>
     <button>Save webhook</button>
   </form>
 {{if eq .AlertSource "settings"}}  <form method="post" action="/settings/alert-webhook/remove" class="inline">
