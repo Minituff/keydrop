@@ -422,17 +422,27 @@ waits on them.
   configured is checked at send time, since it too can change in Settings;
   the startup log says what's in effect and where it came from, and when
   it's on without a webhook.
-- **Notices can't cost a security alert anything.** `/api/v1/pair` needs
-  no credential, so anyone on the network can cause notices. They go
-  through the one alerter but have their own budget (3 at once, then one
-  per 2 minutes), spent *instead of* the security budget, never as well,
-  and may fill at most half the 32-slot queue, so canary alerts always
-  have room. Notices over the budget are counted and sent as one summary
-  of their own, on the notice budget. Each kind is sent at most once per
-  key per 10 minutes: pairing by the address's source group (the same /64
-  grouping as the pairing caps), the others by kind and token name, so an
-  agent asking for five keys sends one notice. That map is bounded: past
-  10,000 keys, notices are dropped rather than grow it.
+- **Notices can't cost a security alert anything.** They go through the
+  one alerter but have their own budget (3 at once, then one per 2
+  minutes), spent *instead of* the security budget, never as well, and
+  may fill at most half the 32-slot queue, so canary alerts always have
+  room. Notices over the budget are counted and sent as one summary of
+  their own, on the notice budget. Each kind is sent at most once per key
+  per 10 minutes, by kind and token name, so an agent asking for five
+  keys sends one notice.
+- **Pairing can't cost an agent's notice anything either.**
+  `/api/v1/pair` needs no credential, so anyone on the network can cause
+  pairing notices, from as many addresses as they have. They have a
+  budget of their own again (2 at once, then one per 5 minutes), a
+  dedupe map of their own (by the address's source group, the same /64
+  grouping as the pairing caps), a summary of their own ("N more machines
+  asked to pair"), and at most a quarter of the queue. So a flood of
+  pairing requests can't spend the budget, fill the map or take the
+  queue room that a token's request, renewal or flag notice needs; it
+  only delays other pairing notices. Each map is bounded: past 10,000
+  keys a notice is refused rather than grow it, and counted in its
+  class's summary, so it isn't lost silently. The agents' map is keyed by
+  token names, which only the admin makes.
 - **Server-built text only.** A notice names the token, `ns/NAME`, a
   count of keys, or the source address, and links to `/inbox` (or
   `/pair/ID`) only when `KEYDROP_PUBLIC_URL` is configured, not guessed;
@@ -478,9 +488,10 @@ has the server tell the alert webhook ahead of time.
   the queue, never the security budget, so it can't delay a canary alert.
   If it can't be queued (budget spent, or no webhook), nothing is marked
   and the next check tries again with the same keys; it isn't added to the
-  held-notice summary, which would lose the names. A sustained flood of
-  pairing notices can so delay it, hour by hour; the Secrets page still
-  marks the keys.
+  held-notice summary, which would lose the names. Pairing notices have
+  their own budget, so a flood of them can't delay it; agents' own
+  requests, renewals and flags can, hour by hour, and the Secrets page
+  still marks the keys.
 - **Names and dates only.** `ns/NAME` and how far off the date is, built by
   the server: never a value, and never a description or usage, which an
   agent may have written. The link (to `/`, which needs the admin's login)

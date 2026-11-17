@@ -206,7 +206,7 @@ func TestInboxNoticeFlood(t *testing.T) {
 	a.now = func() time.Time { return now }
 
 	for i := 0; i < 1000; i++ {
-		a.notice(fmt.Sprintf("notice %d", i))
+		a.notice(agentNotice, fmt.Sprintf("notice %d", i))
 	}
 	a.mu.Lock()
 	if a.budget.tokens != alertBurst || a.heldNotice != 1000-noticeBurst {
@@ -222,7 +222,7 @@ func TestInboxNoticeFlood(t *testing.T) {
 	// take at most half the queue, and canary alerts still get in.
 	a.notices = bucket{burst: 1e6, refill: time.Second, tokens: 1e6}
 	for i := 0; i < 1000; i++ {
-		a.notice("more")
+		a.notice(agentNotice, "more")
 	}
 	if n := len(a.queue); n > alertQueue/2 {
 		t.Fatalf("notices fill %d of %d", n, alertQueue)
@@ -250,6 +250,113 @@ func TestInboxNoticeFlood(t *testing.T) {
 	if !strings.Contains(all, fmt.Sprintf("keydrop: %d more things are waiting for you", held)) || a.heldNotice != 0 || a.budget.tokens != 0 {
 		t.Fatalf("summary: held %d, budget %v", a.heldNotice, a.budget.tokens)
 	}
+}
+
+// Pairing needs no credential, so its notices have their own budget: a
+// flood of pairing requests from many addresses doesn't stop an agent's
+// request, flag or renewal notice going out at once (the audit's
+// TestPoCNoticeBudgetStarved, inverted). The default budgets throughout.
+func TestPairingFloodLeavesAgentNotices(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	wh := h.webhook()
+	h.srv.cfg.AlertInbox = true
+	_, tok := h.tokenWithLifetime("bot", "lab", "30")
+	for i := range 50 {
+		h.apiFrom(fmt.Sprintf("203.0.113.%d", i+1), "POST", "/api/v1/pair", "", "", map[string]string{})
+	}
+	h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "lab", "name": "REAL_KEY"})
+	h.api("POST", "/api/v1/secrets/lab/REAL_KEY/flag", tok, map[string]string{"reason": "x"})
+	h.api("POST", "/api/v1/token/renew", tok, nil)
+	all := noticesIn(wh.all(h.srv.alerts))
+	for _, want := range []string{"`bot` is asking for `lab/REAL_KEY`", "`bot` flagged `lab/REAL_KEY`", "`bot` is asking for its new token"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("%q not delivered after a pairing flood:\n%s", want, all)
+		}
+	}
+	a := h.srv.alerts
+	a.mu.Lock()
+	heldPair, heldNotice := a.heldPair, a.heldNotice
+	a.pairs.tokens = 1
+	a.mu.Unlock()
+	if n := strings.Count(all, "asking to pair"); n != pairBurst || heldPair != 50-pairBurst || heldNotice != 0 {
+		t.Fatalf("%d pairing notices sent, %d held; %d agents' notices held", n, heldPair, heldNotice)
+	}
+	// The pairing summary comes out on the pairing budget.
+	a.flushHeld()
+	if all := noticesIn(wh.all(a)); !strings.Contains(all, fmt.Sprintf("keydrop: %d more machines asked to pair", 50-pairBurst)) || heldPairs(a) != 0 {
+		t.Fatalf("no pairing summary:\n%s", all)
+	}
+}
+
+// Pairing notices are deduplicated in a map of their own. Filling it (more
+// than maxAlertKeys address groups in alertEvery) neither blocks agents'
+// notices nor drops pairing notices silently: they're counted for the
+// summary (the audit's TestPoCNoticeKeyCapSilentDrop, inverted).
+func TestPairingMapFullCounted(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	wh := h.inboxAlerts("https://secrets.example.com")
+	tok := h.createToken("bot", "lab")
+	for i := 0; i <= maxAlertKeys; i++ {
+		h.apiFrom(fmt.Sprintf("2001:db8:%x:%x::1", i>>16, i&0xffff), "POST", "/api/v1/pair", "", "", map[string]string{})
+	}
+	a := h.srv.alerts
+	a.wg.Wait()
+	a.mu.Lock()
+	a.pairs = bucket{burst: 100, refill: time.Minute, tokens: 100} // the budget isn't the cause
+	held, keys, agentKeys := a.heldPair, len(a.lastPair), len(a.lastNotice)
+	a.mu.Unlock()
+	if keys != maxAlertKeys+1 || agentKeys != 0 {
+		t.Fatalf("pairing map %d, agents' map %d", keys, agentKeys)
+	}
+	h.apiFrom("2001:db8:ffff:ffff::1", "POST", "/api/v1/pair", "", "", map[string]string{})
+	a.mu.Lock()
+	heldNow, keysNow := a.heldPair, len(a.lastPair)
+	a.mu.Unlock()
+	if heldNow != held+1 || keysNow != keys {
+		t.Fatalf("a pairing notice refused by the full map: held %d -> %d", held, heldNow)
+	}
+	if code, _, raw := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "lab", "name": "REAL_KEY"}); code != http.StatusCreated {
+		t.Fatal(code, raw)
+	}
+	if all := noticesIn(wh.all(a)); !strings.Contains(all, "`bot` is asking for `lab/REAL_KEY`") {
+		t.Fatal("an agent's notice blocked by the full pairing map")
+	}
+}
+
+// Pairing notices fill at most a quarter of the queue, so with a stuck
+// webhook and no pairing budget limit, agents' notices still get in.
+func TestPairingNoticesQueueShare(t *testing.T) {
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-release }))
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() { close(release) })
+	a := newAlerter(ts.URL)
+	a.pairs = bucket{burst: 1e6, refill: time.Second, tokens: 1e6}
+	for range 1000 {
+		a.notice(pairNotice, "pair")
+	}
+	a.mu.Lock()
+	n := len(a.queue)
+	a.mu.Unlock()
+	if n > alertQueue/4 {
+		t.Fatalf("pairing notices fill %d of %d", n, alertQueue)
+	}
+	for i := range noticeBurst {
+		a.notice(agentNotice, fmt.Sprintf("agent %d", i))
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.heldNotice != 0 {
+		t.Fatalf("%d agents' notices held back by pairing notices", a.heldNotice)
+	}
+}
+
+func heldPairs(a *alerter) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.heldPair
 }
 
 func heldBack(a *alerter) int {

@@ -33,17 +33,24 @@ const (
 	alertBurst  = 5
 	alertRefill = time.Minute
 	// noticeBurst and noticeRefill are the Inbox notices' own budget
-	// (KEYDROP_ALERT_INBOX), smaller and separate: pairing needs no
-	// credential, so anyone on the network can cause notices, and they
-	// mustn't spend what a canary alert needs.
+	// (KEYDROP_ALERT_INBOX), smaller and separate, so no notice spends what
+	// a canary alert needs. They're for what agents with a token cause:
+	// requests, renewals, flags, expiry.
 	noticeBurst  = 3
 	noticeRefill = 2 * time.Minute
+	// pairBurst and pairRefill are pairing notices' budget, separate again:
+	// pairing needs no credential, so anyone on the network can cause
+	// them, and they mustn't spend or block what agents' notices need.
+	pairBurst  = 2
+	pairRefill = 5 * time.Minute
 	// alertQueue is how many alerts may wait to be sent. Notices may fill
-	// only half of it, so security alerts always have room.
+	// only half of it, pairing notices a quarter, so security alerts
+	// always have room, and agents' notices too.
 	alertQueue = 32
 	// maxAlertKeys is how many keys the per-key limits hold before the
 	// old ones are dropped. Notices are refused past it rather than grow
-	// the map: their keys come from addresses anyone can pick.
+	// the map, and counted for their summary: pairing notices' keys come
+	// from addresses anyone can pick, so they have a map of their own.
 	maxAlertKeys = 10000
 	// alertRetries and maxRetryAfter bound how long a 429 is waited out.
 	alertRetries  = 2
@@ -66,11 +73,14 @@ type alerter struct {
 	format     string               // KEYDROP_ALERT_FORMAT; "" is auto
 	dest       alertDest            // where url posts, for Settings
 	last       map[string]time.Time // canary ref + token -> last alert
-	lastNotice map[string]time.Time // kind + token or address -> last notice
+	lastNotice map[string]time.Time // kind + token -> last notice
+	lastPair   map[string]time.Time // address group -> last pairing notice
 	budget     bucket               // security alerts and Send test alert
 	notices    bucket               // Inbox notices, never the other way round
+	pairs      bucket               // pairing notices, never the other way round
 	held       int                  // alerts over the budget, for the next summary
 	heldNotice int                  // notices over theirs, for their own summary
+	heldPair   int                  // pairing notices over theirs, likewise
 	sleep      func(time.Duration)
 }
 
@@ -108,8 +118,10 @@ func newAlerter(webhook string) *alerter {
 		queue:      make(chan string, alertQueue),
 		last:       map[string]time.Time{},
 		lastNotice: map[string]time.Time{},
+		lastPair:   map[string]time.Time{},
 		budget:     bucket{burst: alertBurst, refill: alertRefill, tokens: alertBurst},
 		notices:    bucket{burst: noticeBurst, refill: noticeRefill, tokens: noticeBurst},
+		pairs:      bucket{burst: pairBurst, refill: pairRefill, tokens: pairBurst},
 		sleep:      time.Sleep,
 	}
 }
@@ -147,19 +159,48 @@ func (a *alerter) setURL(u string) {
 // allow reports whether an alert for key may go out now (one per key per
 // alertEvery), and if so counts it.
 func (a *alerter) allow(key string, now time.Time) bool {
-	return a.allowIn(a.last, key, now, false)
-}
-
-// allowNotice is allow for Inbox notices, in a map of their own.
-func (a *alerter) allowNotice(key string, now time.Time) bool {
-	return a.allowIn(a.lastNotice, key, now, true)
-}
-
-func (a *alerter) allowIn(m map[string]time.Time, key string, now time.Time, bounded bool) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	ok, _ := allowIn(a.last, key, now, false)
+	return ok
+}
+
+// noticeClass is a kind of Inbox notice: pairing notices, which anyone on
+// the network can cause, or agents' notices.
+type noticeClass bool
+
+const (
+	agentNotice noticeClass = false
+	pairNotice  noticeClass = true
+)
+
+// limits are the class's dedupe map, budget, count of what was held back
+// and share of the queue. Needs a.mu.
+func (a *alerter) limits(c noticeClass) (map[string]time.Time, *bucket, *int, int) {
+	if c == pairNotice {
+		return a.lastPair, &a.pairs, &a.heldPair, alertQueue / 4
+	}
+	return a.lastNotice, &a.notices, &a.heldNotice, alertQueue / 2
+}
+
+// allowNotice is allow for Inbox notices, in their class's own map. One
+// refused only because the map is full is counted for the summary.
+func (a *alerter) allowNotice(c noticeClass, key string, now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m, _, held, _ := a.limits(c)
+	ok, full := allowIn(m, key, now, true)
+	if full {
+		*held++
+	}
+	return ok
+}
+
+// allowIn reports whether key may have an alert now, and if so counts it
+// in m. full: refused only because m is bounded and full. Needs a.mu.
+func allowIn(m map[string]time.Time, key string, now time.Time, bounded bool) (ok, full bool) {
 	if last, ok := m[key]; ok && now.Sub(last) < alertEvery {
-		return false
+		return false, false
 	}
 	if len(m) > maxAlertKeys {
 		for k, t := range m {
@@ -168,11 +209,11 @@ func (a *alerter) allowIn(m map[string]time.Time, key string, now time.Time, bou
 			}
 		}
 		if bounded && len(m) > maxAlertKeys {
-			return false
+			return false, true
 		}
 	}
 	m[key] = now
-	return true
+	return true, false
 }
 
 // send queues content for the webhook. Over the global budget, or with the
@@ -189,33 +230,46 @@ func (a *alerter) send(content string) {
 	}
 }
 
-// notice queues an Inbox notice. It spends only the notices' budget and
-// fills at most half the queue, so no number of notices can delay or
-// crowd out a security alert. What's over is counted for one summary.
-func (a *alerter) notice(content string) { a.queueNotice(content, true) }
+// notice queues an Inbox notice of class c. It spends only its class's
+// budget and fills at most its class's share of the queue (half for
+// agents' notices, a quarter for pairing), so no number of notices can
+// crowd out a security alert, and no number of pairing requests can
+// spend or crowd out an agent's notice. What's over is counted for one
+// summary per class.
+func (a *alerter) notice(c noticeClass, content string) { a.queueNotice(c, content, true) }
 
 // queueNotice is notice, and reports whether content was queued. Without
 // count, what's over isn't counted for the summary: the caller keeps it
 // and tries again later (the expiry digest).
-func (a *alerter) queueNotice(content string, count bool) bool {
+func (a *alerter) queueNotice(c noticeClass, content string, count bool) bool {
 	if !a.configured() {
 		return false
 	}
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.noticeRoom() && a.notices.take(a.now()) && a.enqueue(content) {
+	if a.noticeRoom(c) && a.take(c) && a.enqueue(content) {
 		return true
 	}
 	if count {
-		a.heldNotice++
+		_, _, held, _ := a.limits(c)
+		*held++
 	}
 	return false
 }
 
-// noticeRoom reports whether a notice may be queued. Needs a.mu, which
-// every enqueue holds, so the queue can't grow between check and send.
-func (a *alerter) noticeRoom() bool { return len(a.queue) < alertQueue/2 }
+func (a *alerter) take(c noticeClass) bool {
+	_, b, _, _ := a.limits(c)
+	return b.take(a.now())
+}
+
+// noticeRoom reports whether a notice of class c may be queued. Needs
+// a.mu, which every enqueue holds, so the queue can't grow between check
+// and send.
+func (a *alerter) noticeRoom(c noticeClass) bool {
+	_, _, _, room := a.limits(c)
+	return len(a.queue) < room
+}
 
 // enqueue queues one message without blocking. Needs a.mu.
 func (a *alerter) enqueue(content string) bool {
@@ -247,8 +301,8 @@ func (a *alerter) run() {
 	}
 }
 
-// flushHeld sends one summary of the alerts held back, and one of the
-// notices held back, each when its own budget has room.
+// flushHeld sends one summary of the alerts held back, and one of each
+// class of notices held back, each when its own budget has room.
 func (a *alerter) flushHeld() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -261,9 +315,17 @@ func (a *alerter) flushHeld() {
 	if a.heldNotice == 1 {
 		things = "thing is"
 	}
-	if a.heldNotice > 0 && a.noticeRoom() && a.notices.take(now) &&
+	if a.heldNotice > 0 && a.noticeRoom(agentNotice) && a.notices.take(now) &&
 		a.enqueue(fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)) {
 		a.heldNotice = 0
+	}
+	machines := "machines"
+	if a.heldPair == 1 {
+		machines = "machine"
+	}
+	if a.heldPair > 0 && a.noticeRoom(pairNotice) && a.pairs.take(now) &&
+		a.enqueue(fmt.Sprintf("keydrop: %d more %s asked to pair; see keydrop's Agents page.", a.heldPair, machines)) {
+		a.heldPair = 0
 	}
 }
 

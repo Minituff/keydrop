@@ -255,8 +255,10 @@ https://secrets.example.com/inbox``.
 - **Quiet:** one notice per agent (per address, for pairing) every 10
   minutes; the Inbox shows the rest. Notices have their own small rate limit,
   separate from canary alerts, so a flood of pairing requests can't hold up a
-  canary alert. What's over it comes later as one line saying how many more
-  things are waiting.
+  canary alert. Pairing notices, which anyone on your network can cause,
+  have a smaller one of their own again, so they can't crowd out your
+  agents' requests and flags either. What's over a limit comes later as
+  one line saying how many more things are waiting.
 - **Names only:** the agent's name, the key's name, the address. Never a
   value, a token, or anything an agent wrote (a description, a flag's
   reason). A pairing notice doesn't carry the code: check it on the page

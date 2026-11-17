@@ -36,16 +36,17 @@ func inboxSource(chosen bool) string {
 }
 
 // inboxNotice sends text, ended with a link to path when
-// KEYDROP_PUBLIC_URL is configured, at most once per key per alertEvery.
-// Call it only after the change it announces was stored.
-func (s *Server) inboxNotice(key, text, path, page string) {
+// KEYDROP_PUBLIC_URL is configured, at most once per key per alertEvery,
+// within class c's limits. Call it only after the change it announces was
+// stored.
+func (s *Server) inboxNotice(c noticeClass, key, text, path, page string) {
 	if on, _ := s.inboxAlertsOn(); !on || !s.alerts.configured() {
 		return
 	}
-	if !s.alerts.allowNotice(key, s.now()) {
+	if !s.alerts.allowNotice(c, key, s.now()) {
 		return
 	}
-	s.alerts.notice(s.withLink(text, path, page))
+	s.alerts.notice(c, s.withLink(text, path, page))
 }
 
 // withLink ends text with a link to path when KEYDROP_PUBLIC_URL is
@@ -58,7 +59,7 @@ func (s *Server) withLink(text, path, page string) string {
 }
 
 func (s *Server) noticePairing(ip, id string) {
-	s.inboxNotice("pair\x00"+sourceGroup(ip),
+	s.inboxNotice(pairNotice, sourceGroup(ip),
 		fmt.Sprintf("keydrop: a machine at %s is asking to pair. Check its code before approving", orUnknown(ip)),
 		"/pair/"+id, "Agents page")
 }
@@ -68,16 +69,16 @@ func (s *Server) noticeRequest(token, ns string, names []string) {
 	if len(names) > 1 {
 		text = fmt.Sprintf("keydrop: `%s` is asking for %d keys in `%s`. Fill them in", token, len(names), ns)
 	}
-	s.inboxNotice("request\x00"+token, text, "/inbox", "Inbox")
+	s.inboxNotice(agentNotice, "request\x00"+token, text, "/inbox", "Inbox")
 }
 
 func (s *Server) noticeRenewal(token string) {
-	s.inboxNotice("renew\x00"+token,
+	s.inboxNotice(agentNotice, "renew\x00"+token,
 		fmt.Sprintf("keydrop: `%s` is asking for its new token. Approve or decline", token), "/inbox", "Inbox")
 }
 
 func (s *Server) noticeFlag(token, ref string) {
-	s.inboxNotice("flag\x00"+token, fmt.Sprintf("keydrop: `%s` flagged `%s`. See why", token, ref), "/inbox", "Inbox")
+	s.inboxNotice(agentNotice, "flag\x00"+token, fmt.Sprintf("keydrop: `%s` flagged `%s`. See why", token, ref), "/inbox", "Inbox")
 }
 
 // handleAlertInbox turns Inbox alerts on or off, or ("default") forgets the
