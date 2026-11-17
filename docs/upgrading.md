@@ -30,6 +30,25 @@ you revoked or replaced since then comes back: revoked tokens work again, and
 an old admin password does too. If that matters, revoke those tokens and
 change the password again.
 
+### Rolling back after limiting a key
+
+Once you limit a key to some agents (on its page), releases before
+per-key limits (v0.1.3 and earlier) refuse to start on the data directory,
+with "master key does not match this data directory": otherwise they would
+give those keys to every agent with the namespace. To go back to one
+without restoring a backup, stop keydrop and run, with the same environment
+as the server:
+
+```sh
+docker compose run --rm keydrop downgrade-data
+```
+
+It removes every key's limit and lists those keys: each of them is then
+usable by every agent with its namespace. This release still reads the
+data afterwards, and you can set the limits again. Run `downgrade-data`
+again to go back further (to a release before token expiry and canaries),
+one step per run.
+
 ## Rotating the TLS certificate
 
 Do this if keydrop's TLS private key may have leaked: a plaintext copy of

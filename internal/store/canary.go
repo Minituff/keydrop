@@ -596,6 +596,10 @@ func (s *Store) DowngradeV4() (V4Dropped, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var d V4Dropped
+	if s.v7 || s.st.hasLimits() {
+		// Its key check would no longer protect the limits.
+		return d, false, errors.New("downgrade the per-key limits first (DowngradeV7)")
+	}
 	if !s.v4 && !s.st.hasNewer4() {
 		return d, false, nil
 	}

@@ -235,6 +235,10 @@ func (s *Store) Restore(ns, name, id string) (VersionRow, int, error) {
 		return VersionRow{}, len(list), err
 	}
 	sec.Value, sec.Variable = val, o.Variable
+	if err := sec.limitVariable(); err != nil {
+		s.st = snap
+		return VersionRow{}, len(list), err
+	}
 	sec.dropCanaryIfVariable()
 	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, now
 	s.record(Event{Namespace: ns, Name: name, Action: "rolled back", Actor: "admin", Detail: sec.Kind()})

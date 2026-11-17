@@ -102,7 +102,10 @@ made-up data.
   `v6View`/`mac7` were added. Never add a plain new field an existing
   MAC covers. A field that restricts access (like expiry, rotations,
   canaries) must not be strippable: tie it to a sealed key check the way
-  `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in
+  `keyCheckV4` does, so only `downgrade-data` can remove it. Per-key
+  limits (`limit`, under `mac7`) are tied to `keyCheckV7`, which implies
+  v4; a save checks v7 before v4 so it never writes v4 over it, and
+  `DowngradeV4`/`Downgrade` refuse until `DowngradeV7` has run. Each gets a case in
   `TestOlderReleaseReadsNewerFile`. The e2e suite starts the older
   releases (`rollbackCommit` through `v6RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs

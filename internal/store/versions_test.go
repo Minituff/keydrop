@@ -459,7 +459,7 @@ func TestV6ReleaseReadsVersionsFile(t *testing.T) {
 	sec.Value, sec.Previous = k.seal(prev, aad("lab", "K", "value")), k.seal(cur, aad("lab", "K", "previous"))
 	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
 	k.st = v6
-	must(t, k.write(true)) // what it writes: the canaries made MAC4 required
+	must(t, k.write(true, false)) // what it writes: the canaries made MAC4 required
 	data, _ = os.ReadFile(path)
 	if bytes.Contains(data, []byte(`"versions"`)) || bytes.Contains(data, []byte(`"mac7"`)) {
 		t.Fatal("the v6 release's file has history")

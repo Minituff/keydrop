@@ -75,6 +75,15 @@ const (
 	// before MAC4 doesn't know this key check, so it refuses the file
 	// until that's run.
 	keyCheckV4 = "keydrop-key-check:v4"
+	// keyCheckV7 says MAC7 is required too, and everything keyCheckV4
+	// says. A key's limit (see limits.go) restricts access the same way,
+	// so it's written the first time a key is limited, and only
+	// `keydrop downgrade-data` (DowngradeV7) takes it back, to keyCheckV4.
+	// The release with MAC6 (v0.1.3) doesn't know it and refuses the file.
+	// Every MAC covers the key check, so an older one can't be swapped in
+	// on its own; putting back a whole older copy of the data still works,
+	// as nothing can stop.
+	keyCheckV7 = "keydrop-key-check:v7"
 	// TokenPrefix makes leaked tokens easy to recognise and grep for.
 	TokenPrefix = "kd_"
 )
@@ -141,6 +150,9 @@ type Secret struct {
 	// newest older value (see versions.go). Outside v6View, under MAC7.
 	// Admin-only: it never leaves the store (see copySecret).
 	Versions *ValueHistory `json:"versions,omitempty"`
+	// Limit, when set, names the only tokens that may use the key (see
+	// limits.go). Outside v6View, under MAC7, tied to keyCheckV7.
+	Limit *UseLimit `json:"limit,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -437,7 +449,7 @@ func (st *state) v6View() state {
 		c.Secrets = make(map[string]*Secret, len(st.Secrets))
 		for k, v := range st.Secrets {
 			cp := *v
-			cp.Versions = nil
+			cp.Versions, cp.Limit = nil, nil
 			c.Secrets[k] = &cp
 		}
 	}
@@ -450,7 +462,7 @@ func (st *state) hasNewer7() bool {
 		return true
 	}
 	for _, v := range st.Secrets {
-		if v.Versions != nil {
+		if v.Versions != nil || v.Limit != nil {
 			return true
 		}
 	}
@@ -571,6 +583,10 @@ type Store struct {
 	// file holds. Set the first time a MAC4 field is written; only
 	// DowngradeV4 clears it.
 	v4 bool
+	// v7: the key check says MAC7 is required (keyCheckV7), and MAC4 with
+	// it (v4 is set too). Set the first time a key is limited; only
+	// DowngradeV7 clears it.
+	v7 bool
 	// recentFrom is the last few distinct addresses each token was used
 	// from, newest last. Memory only: it backs a warning, not a decision,
 	// so it needs no place in the file and a restart just forgets it.
@@ -728,11 +744,12 @@ func (s *Store) load(data []byte) error {
 		return fmt.Errorf("reading %s: %w", s.path, err)
 	}
 	pt, err := s.open(s.st.KeyCheck, "keycheck")
-	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC && string(pt) != keyCheckV4) {
+	if err != nil || !slices.Contains([]string{keyCheckV1, keyCheckMAC, keyCheckV4, keyCheckV7}, string(pt)) {
 		return errors.New("master key does not match this data directory")
 	}
 	s.legacy = string(pt) == keyCheckV1
-	s.v4 = string(pt) == keyCheckV4
+	s.v7 = string(pt) == keyCheckV7
+	s.v4 = string(pt) == keyCheckV4 || s.v7
 	if !s.legacy {
 		if !hmac.Equal(s.st.MAC, s.mac()) {
 			return ErrIntegrity
@@ -759,7 +776,7 @@ func (s *Store) load(data []byte) error {
 			return ErrIntegrity
 		}
 		// And for the fields after MAC6, under MAC7.
-		if (s.st.hasNewer7() || s.st.MAC7 != nil) && !hmac.Equal(s.st.MAC7, s.mac7()) {
+		if (s.v7 || s.st.hasNewer7() || s.st.MAC7 != nil) && !hmac.Equal(s.st.MAC7, s.mac7()) {
 			return ErrIntegrity
 		}
 	}
@@ -865,7 +882,7 @@ func (s *Store) Downgrade() (bool, error) {
 		return false, nil
 	}
 	if s.v4 {
-		return false, errors.New("downgrade the token expiry and canary fields first (DowngradeV4)")
+		return false, errors.New("downgrade the per-key limits, token expiry and canary fields first (DowngradeV7, DowngradeV4)")
 	}
 	snap := s.st.clone()
 	s.st.KeyCheck = s.seal([]byte(keyCheckV1), "keycheck")
@@ -923,22 +940,34 @@ func (s *Store) commit(snap state) error {
 }
 
 func (s *Store) save() error {
+	if !s.legacy && !s.v7 && s.st.hasLimits() {
+		// From now on MAC7 (and MAC4) is required (see keyCheckV7). Checked
+		// first, and never undone here: once v7, a save can't go back to v4.
+		old := s.st.KeyCheck
+		s.st.KeyCheck = s.seal([]byte(keyCheckV7), "keycheck")
+		if err := s.write(true, true); err != nil {
+			s.st.KeyCheck = old
+			return err
+		}
+		s.v4, s.v7 = true, true
+		return nil
+	}
 	if !s.legacy && !s.v4 && s.st.hasNewer4() {
 		// From now on MAC4 is required (see keyCheckV4). s.v4 is set only
 		// once that's on disk: a failed save restores the old key check.
 		old := s.st.KeyCheck
 		s.st.KeyCheck = s.seal([]byte(keyCheckV4), "keycheck")
-		if err := s.write(true); err != nil {
+		if err := s.write(true, false); err != nil {
 			s.st.KeyCheck = old
 			return err
 		}
 		s.v4 = true
 		return nil
 	}
-	return s.write(s.v4)
+	return s.write(s.v4, s.v7)
 }
 
-func (s *Store) write(v4 bool) error {
+func (s *Store) write(v4, v7 bool) error {
 	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6, s.st.MAC7 = s.mac(), nil, nil, nil, nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
@@ -955,7 +984,7 @@ func (s *Store) write(v4 bool) error {
 	if s.st.hasNewer6() {
 		s.st.MAC6 = s.mac6()
 	}
-	if s.st.hasNewer7() {
+	if v7 || s.st.hasNewer7() {
 		s.st.MAC7 = s.mac7()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
@@ -1004,6 +1033,9 @@ func copySecret(sec *Secret) Secret {
 		c.Previous = []byte{1}
 	}
 	c.AckedBy = slices.Clone(sec.AckedBy)
+	if sec.Limit != nil {
+		c.Limit = &UseLimit{Tokens: slices.Clone(sec.Limit.Tokens)}
+	}
 	if sec.Ext != nil {
 		e := sec.Ext.clone()
 		c.Ext = &e
@@ -1361,6 +1393,9 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 		}
 		sec.setExt(e)
 	}
+	if err := sec.limitVariable(); err != nil {
+		return res, err
+	}
 	if ap == nil {
 		sec.dropCanaryIfVariable()
 	} else if sec.Canary {
@@ -1423,6 +1458,10 @@ func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	}
 	same := sameText(sec.Description, m.Description) && sameText(sec.Usage, m.Usage)
 	applyMeta(sec, m)
+	if err := sec.limitVariable(); err != nil {
+		s.st = snap
+		return err
+	}
 	sec.UpdatedAt = s.now().UTC()
 	if !same && sec.Ext != nil && sec.Ext.DescriptionBy != "" {
 		e := sec.ext()
@@ -1617,6 +1656,9 @@ func (s *Store) AgentAck(ns, name string, a AgentCtx) (*CanaryTouch, error) {
 // and its open flags, which stay for the admin but are marked so they
 // don't count against, or block, the new token. Call with s.mu held.
 func (s *Store) forgetToken(tok string) {
+	// And its place on any key's limit: a new token with the name isn't
+	// the one the admin allowed.
+	s.dropFromLimits(tok, func(string) bool { return true })
 	for _, sec := range s.st.Secrets {
 		if i := slices.Index(sec.AckedBy, tok); i >= 0 {
 			sec.AckedBy = slices.Delete(slices.Clone(sec.AckedBy), i, i+1)
@@ -1976,6 +2018,10 @@ func (s *Store) SetTokenNamespaces(name string, namespaces []string) error {
 		return ErrNotFound
 	}
 	t.Namespaces = append([]string(nil), namespaces...)
+	// Off the limits in the namespaces it lost, so a list names only
+	// tokens that have the key's namespace; granting it again doesn't
+	// bring the place back.
+	s.dropFromLimits(name, func(ns string) bool { return !t.Allows(ns) })
 	return s.commit(snap)
 }
 

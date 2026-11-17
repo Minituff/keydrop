@@ -959,7 +959,7 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings); per-secret `versions` (value history) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off, history beyond `previous` is gone |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings); per-secret `versions` (value history); per-secret `limit` (the agents that may use a key) | `notify` and `versions` yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off, history beyond `previous` is gone. `limit` **no**: see below |
 | `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the
@@ -972,7 +972,21 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   required whatever the file holds, and only `keydrop downgrade-data` takes
   it back. An older build doesn't know that key check and refuses to start
   ("master key does not match") until `downgrade-data` is run.
-- `downgrade-data` goes back one format per run: from v4 it drops these
+- **Per-key limits restrict access the same way:** stripping a `limit`
+  would let every agent with the namespace use the key. The first save
+  that writes one seals `keydrop-key-check:v7`, which says `mac7` is
+  required, and everything v4 says (`mac4` too). It's checked before
+  the v4 step on every save, so once v7 a save never writes v4 over it,
+  and it stays v7 when the last limit is lifted, as v4 stays when the
+  last expiry goes. v0.1.3 knows only the v1, v2 and v4 key checks, so it
+  refuses the file. Every MAC covers the key check, so an older key check
+  can't be swapped in on its own to make the limits strippable; putting
+  back a whole older copy of the data still works, as above.
+- `downgrade-data` goes back one format per run. From v7 it lifts every
+  key's limit, lists those keys (each is then usable by every agent with
+  its namespace) and puts back the v4 key check, whatever the file holds:
+  v7 implied it. `DowngradeV4` and the step to v1 refuse to run while v7
+  is in place, since their key checks wouldn't protect the limits. From v4 it drops these
   fields (tokens stop expiring, pending renewal requests are dropped, tokens
   with an uncollected rotation are deleted since only the new token would
   work, canaries become ordinary secrets, the canary Inbox entries go; the
