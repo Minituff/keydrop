@@ -50,6 +50,20 @@ Each token has a permission:
   changed later on the **Agents** page.
 - **Revoking.** Revoking a token clears what it left pending. Its open flags
   stay, marked *token since revoked*.
+- **Limiting one key to some agents.** On a secret's page, **Agents that may
+  use it** chooses between *any agent with the namespace* (the default) and
+  *only* the agents you tick. The others still see the key's name and
+  details, and can still flag it or set its status, but can't read,
+  replace or acknowledge its value: `keydrop run` and `get` are refused
+  with a message naming the agent, `keydrop secrets` marks it *limited to
+  other agents*, and every refused read is in the audit log. So one
+  sensitive key (a registrar key, a root cloud credential) can share a
+  namespace with keys every agent uses. Ticking none means no agent may use
+  it. An agent that's revoked, paired again in its place, or loses the
+  namespace comes off the list, and isn't put back on its own. Only secrets
+  can be limited, not variables. The Secrets page marks limited keys. Once
+  you limit a key, going back to an older release needs `keydrop
+  downgrade-data` first ([Upgrading](upgrading.md#rolling-back-after-limiting-a-key)).
 
 ## Pairing
 

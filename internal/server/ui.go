@@ -124,6 +124,7 @@ var flashes = map[string]string{
 	"renewed":        "Approved. The agent picks up its new token the next time it runs keydrop; the old token now only works for that.",
 	"declined":       "Declined. The agent keeps its current token until it runs out.",
 	"canary":         "Canary setting saved.",
+	"limit":          "Saved which agents may use it.",
 	"newns":          "Saved in a new namespace. No agent can read it yet: tick the namespace for an agent on the Agents page.",
 	"namespaces":     "Namespaces saved.",
 	"dismissed":      "Canary alert dismissed. The audit log keeps the read.",
@@ -736,9 +737,16 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 		v, _ := s.store.VariableValue(ns, name)
 		value = string(v)
 	}
+	// Readers are the agents that can actually use it; Granted, every agent
+	// with the namespace, ticked when it's on the key's limit.
 	var readers []string
+	var granted []nsOpt
 	for _, t := range s.store.ListTokens() {
-		if t.Allows(ns) {
+		if !t.Allows(ns) {
+			continue
+		}
+		granted = append(granted, nsOpt{t.Name, sec.Limit != nil && slices.Contains(sec.Limit.Tokens, t.Name)})
+		if sec.UsableBy(t.Name) {
 			readers = append(readers, t.Name)
 		}
 	}
@@ -748,7 +756,7 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 	}
 	s.render(w, r, "secret", status, se, page{
 		"Title": sec.Ref(), "S": sec, "Versions": s.store.Versions(ns, name), "MaxVersions": store.MaxVersions,
-		"Readers": readers, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
+		"Readers": readers, "Granted": granted, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
 		"GroupList": s.store.Groups(ns), "InGroup": s.store.GroupAssignments()[sec.Ref()],
 		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
 	})

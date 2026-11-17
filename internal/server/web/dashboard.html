@@ -19,6 +19,7 @@
     {{if .Variable}}<code class="val value">{{.Value}}</code>{{else}}<span class="mask" aria-label="hidden">••••••••••</span>{{end}}
     <span class="meta">
       {{if .New}}<span class="st new">new</span>{{end}}
+      {{if .Limit}}<span class="chip">limited</span>{{end}}
       {{with .StatusOf}}<span class="st bad">{{.}}</span>{{end}}
       {{with expiry .Expires}}<span class="st {{if .Class}}{{.Class}}{{else}}ok{{end}}">{{.Text}}</span>{{end}}
       {{if not .Variable}}<span class="rd">{{if .LastReadAt}}read {{since .LastReadAt}}{{if .LastReadBy}} by {{.LastReadBy}}{{end}}{{else}}never read{{end}}</span>{{end}}

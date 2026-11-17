@@ -157,6 +157,7 @@ changes a token's permission under **Agents**.
   the names don't leak.
 - Grants are per namespace, not per secret, so permissions stay easy to
   follow. A shared namespace granted to two tokens covers keys both need.
+  The one narrowing inside a namespace is a key's limit (next section).
 - Agents never get admin rights. Only the human (in the UI) creates
   tokens, changes grants or sees every namespace.
 - A token is a 0600 file per Unix user, so two users on one machine can
@@ -169,6 +170,66 @@ changes a token's permission under **Agents**.
   Namespaces and token names stay lower-case, so a ref like
   `homelab/GITHUB_PAT` reads unambiguously. The UI upper-cases what's typed,
   since a phone keyboard defaults to lower case.
+
+### Per-key limits
+People made a namespace per agent just to keep one sensitive key (a
+registrar key, a root cloud credential) from the other agents. Instead, the
+admin can limit a key to some of the tokens that have its namespace.
+
+- **It limits use, not visibility.** A token with the namespace but off the
+  list still sees the key in lists, `info`, history and `expiring`, exactly
+  as before; it can't reveal it (so `run` and `get` fail), put over it at
+  any permission (an add token over a key it created included), or ack it
+  (ack marks a value as seen, which a token that can't read it shouldn't).
+  Those get 403 naming only the asking token. Names inside a granted
+  namespace are visible by design, and hiding them would leak anyway: a
+  409 on put or request would say a hidden name exists. Flag, status, note
+  and request stay allowed: they carry no value, and flag and status are
+  how an agent reports a problem with a key it can see.
+- **Agents can tell.** Metadata gains `"usable": false` only for a token off
+  the list; for every other key and token the answer is byte-identical to
+  before. `keydrop secrets`, `info` and the MCP tools say *limited to other
+  agents*. A value the token can never read is never `new` to it, so
+  `secrets --new` doesn't list it forever. `APILevel` went to 4 for the
+  field; `MinCLILevel` didn't move: an older CLI ignores it and prints the
+  403 like any other error.
+- **Order of checks.** The namespace check comes first (404, or 403 for a
+  put), then the rate limits, then the limit, in the store, under the same
+  lock as the value. So a refused reveal counts towards the reveal limit,
+  can't be used to hammer, and is logged as `secret.read.denied` (with the
+  agent's purpose) in the main log, like the read it replaces. A refused
+  put or ack isn't logged, like other refused writes.
+- **An empty list means no agent, never everyone.** A revoked token comes
+  off every list (forgetToken), so a new token given its name, by hand or by
+  pairing again with *Replace*, doesn't inherit the access; a list left
+  empty stays a limit. A renewal keeps the token's name and so its place. A
+  token that loses a namespace comes off the lists of that namespace's
+  keys, so a list only names tokens that have the namespace and the page
+  shows who can really use the key; granting it back doesn't restore the
+  place. There's no token rename.
+- **Secrets only.** A variable's value is in every list, so a limit on one
+  would mean nothing. The store refuses to limit a variable and to make a
+  limited key a variable by any path (the admin's value or details forms,
+  restoring an older variable value, filling a request, an agent's put
+  with `variable`); lift the limit first. A pending request can be limited:
+  it's just a key.
+- **Canaries.** The check doesn't look at the canary flag, so a limited canary
+  and a limited ordinary secret give every token the same status, headers
+  and body, and `usable` the same way. A refused reveal, put or ack on a
+  limited canary is a touch (Inbox, alert, audit), as every other refused
+  call on one is. As for those, only the canary's refusal writes the touch
+  to disk.
+- **Admin only.** The form is on the key's page (CSRF, logged as
+  `secret.limit` with the token names). Like a canary it records no history
+  entry and leaves `updated_at` alone: agents read the history.
+- **Not strippable.** See [Data format history](#data-format-history): the
+  first limit seals `keydrop-key-check:v7`, so deleting the limits (with
+  `mac7`) doesn't give a loadable file, and v0.1.3 refuses the data until
+  `downgrade-data` removes them.
+- Not covered by the admin's views: older values, expiry alerts, the Inbox,
+  duplicate-value warnings and restore are admin-only and unchanged. A key
+  an add token created still counts towards its storage cap after it's
+  limited away from it.
 
 ### Pairing
 Pasting a token means it passes through a clipboard, a chat or a terminal,
@@ -293,7 +354,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
-  from the UI. Limitation: `keydrop vars` lists variable values
+  from the UI. A canary can be limited like any key, and stays
+  indistinguishable (see [Per-key limits](#per-key-limits)). Limitation: `keydrop vars` lists variable values
   without recording a touch, so if an agent's write turns a canary into a
   variable, from then on only calls on that name count.
 - The Inbox keeps one entry per (canary, token): first and last touch, a

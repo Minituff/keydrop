@@ -150,4 +150,3 @@ change too.
 - Passkeys (WebAuthn) for admin login
 - Trusted proxy-header auth (Authelia, Authentik), left out so far because a
   misconfigured proxy would bypass the login
-- Optional per-secret allowlists inside a namespace

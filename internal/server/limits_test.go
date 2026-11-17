@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -219,5 +221,75 @@ func TestLimitAPI(t *testing.T) {
 	}
 	if code, _, _ := h.api("PUT", "/api/v1/secrets/lab/REAL1", other, map[string]any{"value": "x", "overwrite": true}); code != http.StatusForbidden {
 		t.Fatalf("put without the namespace: %d", code)
+	}
+}
+
+// The form on a key's page: an admin form (CSRF, logged in), logged with
+// the agents' names, accepting only agents that have the namespace; the
+// page then names only the agents that can use the key.
+func TestLimitAdminForm(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	h.st.PutValue("lab", "ROOT_KEY", []byte("fake-root-value"), nil)
+	h.st.PutValue("lab", "SOME_URL", []byte("https://x.test"), &store.Meta{Variable: true})
+	h.createToken("alpha", "lab")
+	h.createToken("bravo", "lab")
+	h.createToken("zulu", "elsewhere")
+	readers := func() string {
+		t.Helper()
+		_, page := h.get("/secret/lab/ROOT_KEY")
+		if strings.Contains(page, "fake-root-value") {
+			t.Fatal("value on the page")
+		}
+		i := strings.Index(page, "Agents that can read it")
+		return stripTags(page[i : i+strings.Index(page[i:], "</dd>")])
+	}
+	if got := readers(); !strings.Contains(got, "alpha") || !strings.Contains(got, "bravo") {
+		t.Fatalf("readers before: %q", got)
+	}
+	if resp := h.post("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"yes"}, "token": {"alpha"}}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("without csrf: %d", resp.StatusCode)
+	}
+	if code, _ := h.form("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"yes"}, "token": {"alpha", "zulu"}}); code != http.StatusBadRequest {
+		t.Fatalf("an agent without the namespace: %d", code)
+	}
+	if sec, _ := h.st.GetSecret("lab", "ROOT_KEY"); sec.Limit != nil {
+		t.Fatal("a refused form set a limit")
+	}
+	code, page := h.form("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"yes"}, "token": {"alpha"}})
+	if code != http.StatusSeeOther || !strings.Contains(page, "Saved which agents may use it.") || !strings.Contains(page, `name="token" value="alpha" checked`) || strings.Contains(page, `value="bravo" checked`) {
+		t.Fatalf("limit: %d", code)
+	}
+	if got := readers(); !strings.Contains(got, "alpha") || strings.Contains(got, "bravo") {
+		t.Fatalf("readers with the limit: %q", got)
+	}
+	if !h.auditHas("secret.limit", "only: alpha") {
+		t.Fatal("not logged")
+	}
+	if _, dash := h.get("/"); !strings.Contains(dash, `<span class="chip">limited</span>`) {
+		t.Fatal("no badge on the list")
+	}
+	h.form("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"yes"}})
+	if got := readers(); !strings.Contains(got, "limited to no agent") || !h.auditHas("secret.limit", "only: no agent") {
+		t.Fatalf("readers with an empty limit: %q", got)
+	}
+	h.form("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"no"}, "token": {"alpha"}})
+	if sec, _ := h.st.GetSecret("lab", "ROOT_KEY"); sec.Limit != nil || !h.auditHas("secret.limit", "any agent with the namespace") {
+		t.Fatal("limit not lifted")
+	}
+	// Not offered for a variable, and refused if posted anyway.
+	if _, page := h.get("/secret/lab/SOME_URL"); strings.Contains(page, "/limit") {
+		t.Fatal("limit form on a variable")
+	}
+	if code, _ := h.form("/secret/lab/SOME_URL/limit", url.Values{"only": {"yes"}}); code != http.StatusBadRequest {
+		t.Fatalf("limit a variable: %d", code)
+	}
+	// Logged out: nothing.
+	h.web.Jar, _ = cookiejar.New(nil)
+	if resp := h.post("/secret/lab/ROOT_KEY/limit", url.Values{"only": {"yes"}}); resp.StatusCode == http.StatusSeeOther && strings.Contains(resp.Header.Get("Location"), "msg=limit") {
+		t.Fatal("logged out, but saved")
+	}
+	if sec, _ := h.st.GetSecret("lab", "ROOT_KEY"); sec.Limit != nil {
+		t.Fatal("logged out, but saved")
 	}
 }

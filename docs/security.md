@@ -61,6 +61,26 @@ Limitations, by design for now:
 - **One server per data directory.** There's no lock file: two instances
   on one volume would overwrite each other's changes. Run one.
 
+## What limiting a key does
+
+A key limited to some agents (on its page) is enforced by the server, per
+token: a token off the list gets 403 and no value, whatever it asks, and
+the refused read is logged. What it doesn't do:
+
+- **It's per token, not per program.** Two agents that share one token, or
+  one machine where both can read the token file, are one agent to keydrop.
+  Give the agent that should have the key its own token, under its own
+  Unix user.
+- **It doesn't hide the key.** Agents with the namespace still see its name,
+  description, status and history. Put a key in a namespace of its own if
+  its name is the secret.
+- **It doesn't take back what was read.** An agent that read the value
+  before the limit may still have it; replace the value too.
+- **Older releases ignore it,** so they refuse to start on the data until
+  `keydrop downgrade-data` removes the limits, which then apply to nobody.
+  As with every rollback, someone who can write `data/` can put back an
+  older copy from before the limit.
+
 ## What masking catches
 
 `keydrop run` masks a secret in the command's stdout and stderr: the value

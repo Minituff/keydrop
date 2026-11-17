@@ -383,6 +383,31 @@ func (s *Server) handleSetCanary(w http.ResponseWriter, r *http.Request, _ strin
 	s.back(w, r, "canary")
 }
 
+// handleSetLimit sets which agents may use a key: any agent with its
+// namespace ("only" not "yes"), or only the ticked ones, which must have
+// the namespace. The log names the agents, never anything about the value.
+func (s *Server) handleSetLimit(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	ns, name := r.PathValue("ns"), r.PathValue("name")
+	only := r.PostFormValue("only") == "yes"
+	switch err := s.store.SetLimit(ns, name, only, r.PostForm["token"]); {
+	case errors.Is(err, store.ErrNotFound):
+		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
+		return
+	case err != nil:
+		s.renderSecret(w, r, se, http.StatusBadRequest, err.Error())
+		return
+	}
+	detail := "any agent with the namespace"
+	if sec, _ := s.store.GetSecret(ns, name); sec.Limit != nil {
+		detail = "only: " + strings.Join(sec.Limit.Tokens, ", ")
+		if len(sec.Limit.Tokens) == 0 {
+			detail = "only: no agent"
+		}
+	}
+	s.event(r, "admin", "secret.limit", ns+"/"+name, detail)
+	s.back(w, r, "limit")
+}
+
 func (s *Server) handleDismissCanary(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	if err := s.store.DismissCanaryHit(r.PathValue("id")); err != nil {
 		s.renderInbox(w, r, se, http.StatusNotFound, "That canary alert is already dismissed.")

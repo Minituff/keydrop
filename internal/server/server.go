@@ -327,6 +327,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /tokens/{name}/renew", s.admin(s.handleRenewToken))
 	m.HandleFunc("POST /tokens/{name}/renewal/decline", s.admin(s.handleDeclineRenewal))
 	m.HandleFunc("POST /secret/{ns}/{name}/canary", s.admin(s.handleSetCanary))
+	m.HandleFunc("POST /secret/{ns}/{name}/limit", s.admin(s.handleSetLimit))
 	m.HandleFunc("POST /canary/{id}/dismiss", s.admin(s.handleDismissCanary))
 	m.HandleFunc("POST /settings/canary", s.admin(s.handleCanarySettings))
 	m.HandleFunc("POST /settings/alert-test", s.admin(s.handleAlertTest))

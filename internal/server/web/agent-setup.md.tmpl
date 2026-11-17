@@ -340,6 +340,8 @@ never need to see them.
   shell). `-e VAR=NAME` sets it under another name.
 - `keydrop secrets` / `keydrop info NAME` show what exists and what each key
   is for. Follow the description: it says what to do with the key.
+- A key marked "limited to other agents" isn't yours to use: don't try to
+  get it another way; tell the user if the task needs it.
 - Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
   lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
   takes them like secrets.
