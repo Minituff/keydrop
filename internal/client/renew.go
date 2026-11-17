@@ -25,8 +25,8 @@ var now = time.Now
 // SetClock replaces the clock, for the e2e tests' build.
 func SetClock(f func() time.Time) { now = f }
 
-// warnWithin is how close to expiry every command starts warning.
-const warnWithin = 30 * 24 * time.Hour
+// WarnWithin is how close to expiry every command starts warning.
+const WarnWithin = 30 * 24 * time.Hour
 
 // RenewState is where a token's renewal stands.
 type RenewState struct {
@@ -62,7 +62,7 @@ func (c *Client) checkExpiry(h string) {
 		return
 	}
 	at := now()
-	if t.Sub(at) > warnWithin || !at.Before(t) {
+	if t.Sub(at) > WarnWithin || !at.Before(t) {
 		return
 	}
 	c.warnedExp = true

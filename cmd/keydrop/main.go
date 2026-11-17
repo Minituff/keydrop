@@ -67,6 +67,10 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
   whoami                                show the token's name, namespaces, permission and
                                          expiry
+  doctor                                check this machine's setup (config, server, certificate
+                                         pin, token, access, version, clock) and say what to do
+                                         about each problem; changes nothing, reads no secret.
+                                         Exit 1 if a check failed
   renew [--wait] [--timeout 1h]         ask the admin to renew this token before (or up to
                                          30 days after) it expires; --wait waits for the
                                          approval and saves the new token over the token file.
@@ -159,6 +163,8 @@ func main() {
 		err = cmdPair(args)
 	case "whoami":
 		err = cmdWhoami(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	case "renew":
 		err = cmdRenew(args)
 	case "upgrade":

@@ -1340,15 +1340,22 @@ func saveLogin(u, tok, pin string) (string, error) {
 // doesn't refuse, since a TLS-terminating proxy on a private network is a
 // supported setup. On this machine (loopback) nothing crosses a network.
 func warnPlainHTTP(w io.Writer, u string) {
+	if plainHTTP(u) {
+		fmt.Fprintln(w, "keydrop: warning: "+plainHTTPWarning)
+	}
+}
+
+const plainHTTPWarning = "plain http, so the token and every value cross the network unencrypted; use the https:// URL unless a TLS-terminating proxy on a private network is in front of keydrop"
+
+// plainHTTP says whether u is plain http to another machine.
+func plainHTTP(u string) bool {
 	p, err := url.Parse(u)
 	if err != nil || !strings.EqualFold(p.Scheme, "http") {
-		return
+		return false
 	}
 	h := p.Hostname()
-	if ip := net.ParseIP(h); strings.EqualFold(h, "localhost") || (ip != nil && ip.IsLoopback()) {
-		return
-	}
-	fmt.Fprintln(w, "keydrop: warning: plain http, so the token and every value cross the network unencrypted; use the https:// URL unless a TLS-terminating proxy on a private network is in front of keydrop")
+	ip := net.ParseIP(h)
+	return !strings.EqualFold(h, "localhost") && (ip == nil || !ip.IsLoopback())
 }
 
 // pendingPair is a pairing request in progress, kept so that running

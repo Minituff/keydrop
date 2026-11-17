@@ -102,6 +102,16 @@ not an identity: anything with the token can set it.
 Without pairing, you can still create a token by hand under **Agents** and
 paste it into `keydrop login --url URL`.
 
+## If something isn't working
+
+Run `keydrop doctor` on the agent's machine. It checks the configuration,
+the server, the certificate pin, the token, what the token can reach, the
+CLI's version and the clock, one line each, and says what to do about each
+problem (exit 1 if a check failed). It changes nothing, reads no secret
+and never prints the token. If it says the certificate doesn't match the
+pin, see [Rotating the TLS certificate](upgrading.md#rotating-the-tls-certificate):
+get the new pin from the admin, not from the server.
+
 ## Windows
 
 `install.sh` is for Linux and macOS. On Windows, download the build under

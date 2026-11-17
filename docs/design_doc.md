@@ -727,6 +727,38 @@ limits, the audit log) applies unchanged and the server needs no change.
   coming through MCP: the calls are the same, and the reveal `purpose`
   the CLI sends for `run` and `get` doesn't arise, since no tool reveals.
 
+### Diagnosing a setup: `keydrop doctor`
+When a command fails, an agent sees one error and has to guess the cause,
+and guessing is how it ends up asking for a token in the chat. `keydrop
+doctor` runs fixed checks in order, one line each with a next step:
+where the configuration comes from (the config directory, and which
+`KEYDROP_*` variables are set, by name) and its ownership checks; the
+server's `/healthz`, unauthenticated, telling DNS, connection refused,
+timeouts, plain http on an https URL and "answers, but not like keydrop"
+apart; the certificate (pinned and matching, or not trusted); the token
+(`whoami`); its name, namespaces, permission and expiry; the version, with
+the same notice every command shows, worded by the self-upgrade setting;
+and the clock against the server's `Date`. A failed check skips the ones
+that depend on it. Exit 1 if any failed.
+
+- **It changes nothing.** It uses `client.Inspect`, a GET without the
+  client's side effects: a 401 doesn't collect and save a renewed token,
+  and a different build doesn't write the once-a-day `version-notice`
+  stamp. It never lists, reads or reveals an entry, so canaries can't
+  tell it ran.
+- **A 401 is reported as the server makes it.** Unknown, revoked, replaced
+  and long-expired tokens get the same 401 on purpose. Doctor then asks
+  the renewal status, which still answers in the renewal grace window or
+  for a renewed token not yet collected, so those two cases get their own
+  advice; anything else is "refused, pair again". A refused address is a
+  403 with its own message, so that one is distinguishable.
+- **A pin mismatch is only reported.** The handshake stops before any
+  request, so nothing (no token) reaches that server. Doctor prints the
+  configured pin and the one presented, points at `rotate-tls` and says to
+  get the new pin from the admin. It doesn't offer to trust the presented
+  certificate: if the admin didn't replace it, that's what an interception
+  looks like.
+
 ### Audit log
 - Anyone who can reach keydrop can cause some events without a working
   credential (`api.badtoken`, `token.expired`, `token.replaced`,

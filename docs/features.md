@@ -70,6 +70,12 @@ directly, so you never copy a token around.
   returns a secret's value: those would land in the transcript. The agent
   still uses a key with `keydrop run`. See
   [MCP](agent-setup.md#mcp).
+- **`keydrop doctor`** checks a machine's setup when something isn't
+  working: the config, whether the server answers, the certificate pin,
+  whether the token is accepted (or expired, renewable, refused from this
+  address), what it can reach, the CLI's version and the clock. One line
+  per check, with what to do about each problem. It changes nothing and
+  reads no secret.
 - **It stays current.** The server hands out its own CLI build. When an
   agent's CLI is a different build, keydrop tells it what to do, at most once a
   day. With **Allow self-upgrade** on for that agent (it's off by default),

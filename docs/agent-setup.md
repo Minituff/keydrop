@@ -345,6 +345,9 @@ never need to see them.
   then retry); that only replaces keydrop's own binary, from the paired
   server, so tell the user it ran. With self-upgrade off it says not to
   update it yourself: don't, by any route, and tell the user instead.
+- If a keydrop command fails and its message doesn't say what to do, run
+  `keydrop doctor` and follow what it says. Never work around it (no
+  disabling the pin, no pasted tokens).
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.
