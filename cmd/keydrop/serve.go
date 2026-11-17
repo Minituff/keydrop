@@ -390,6 +390,7 @@ func cmdServer(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go srv.RunBackground(ctx) // the expiry check; stops with ctx
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("keydrop %s listening on %s", version, listen)

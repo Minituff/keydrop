@@ -45,6 +45,52 @@ func TestInboxAlertsSetting(t *testing.T) {
 	}
 }
 
+func TestExpiryAlertsSetting(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, key32())
+	must(t, err)
+	path := filepath.Join(dir, stateFile)
+	inFile := func() bool {
+		data, _ := os.ReadFile(path)
+		return strings.Contains(string(data), `"notify"`) && strings.Contains(string(data), `"mac7"`)
+	}
+	if s.ExpiryAlertDays() != 0 || inFile() {
+		t.Fatal("new store: expiry alerts on")
+	}
+	for _, bad := range []int{-1, 1, 6, 8, 15, 31, 365} {
+		if err := s.SetExpiryAlertDays(bad); !errors.Is(err, ErrBadExpiryDays) {
+			t.Fatalf("%d: %v", bad, err)
+		}
+	}
+	if s.ExpiryAlertDays() != 0 || inFile() {
+		t.Fatal("a refused value was stored")
+	}
+	for _, d := range ExpiryAlertChoices {
+		must(t, s.SetExpiryAlertDays(d))
+		s2, err := Open(dir, key32())
+		must(t, err)
+		if s.ExpiryAlertDays() != d || s2.ExpiryAlertDays() != d || !inFile() {
+			t.Fatalf("%d: %d, reopened %d", d, s.ExpiryAlertDays(), s2.ExpiryAlertDays())
+		}
+	}
+	// Each setting leaves the other alone; with both off, nothing is stored.
+	on := true
+	must(t, s.SetInboxAlerts(&on))
+	must(t, s.SetExpiryAlertDays(0))
+	if got, chosen := s.InboxAlerts(); !got || !chosen || !inFile() {
+		t.Fatal("turning expiry alerts off lost the Inbox choice")
+	}
+	must(t, s.SetExpiryAlertDays(7))
+	must(t, s.SetInboxAlerts(nil))
+	if s.ExpiryAlertDays() != 7 || !inFile() {
+		t.Fatal("the Inbox default lost the expiry setting")
+	}
+	must(t, s.SetExpiryAlertDays(0))
+	if s.st.Notify != nil || inFile() {
+		t.Fatal("all defaults, but notify is stored")
+	}
+}
+
 // The setting is copied by clone, so a failed save puts it back.
 func TestInboxAlertsClone(t *testing.T) {
 	dir := t.TempDir()
@@ -90,9 +136,10 @@ func TestV6ReleaseReadsNotifyFile(t *testing.T) {
 	must(t, s.SetTokenSelfUpgrade("agent", true))
 	on := true
 	must(t, s.SetInboxAlerts(&on))
+	must(t, s.SetExpiryAlertDays(14))
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
-	for _, f := range []string{`"notify"`, `"mac7"`, `"self_upgrade"`, `"mac6"`, `"mac5"`, `"mac4"`, `"mac3"`, `"mac2"`} {
+	for _, f := range []string{`"notify"`, `"expiry_days"`, `"mac7"`, `"self_upgrade"`, `"mac6"`, `"mac5"`, `"mac4"`, `"mac3"`, `"mac2"`} {
 		if !strings.Contains(string(data), f) {
 			t.Fatalf("no %s in the file", f)
 		}
@@ -135,7 +182,7 @@ func TestV6ReleaseReadsNotifyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open after the v6 release wrote it: %v", err)
 	}
-	if on, chosen := s2.InboxAlerts(); on || chosen {
+	if on, chosen := s2.InboxAlerts(); on || chosen || s2.ExpiryAlertDays() != 0 {
 		t.Fatal("the setting survived a rewrite by the v6 release")
 	}
 	if tok, ok := tokenNamedT(s2, "agent"); !ok || !tok.SelfUpgrade {
@@ -158,6 +205,7 @@ func TestNotifyIntegrity(t *testing.T) {
 	must(t, s.SetTokenSelfUpgrade("agent", true))
 	on := true
 	must(t, s.SetInboxAlerts(&on))
+	must(t, s.SetExpiryAlertDays(14))
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
 
@@ -165,6 +213,7 @@ func TestNotifyIntegrity(t *testing.T) {
 	otherDir := t.TempDir()
 	other, _ := Open(otherDir, key32())
 	must(t, other.SetInboxAlerts(&on))
+	must(t, other.SetExpiryAlertDays(14))
 	var otherRaw map[string]any
 	otherData, _ := os.ReadFile(filepath.Join(otherDir, stateFile))
 	must(t, json.Unmarshal(otherData, &otherRaw))
@@ -186,6 +235,8 @@ func TestNotifyIntegrity(t *testing.T) {
 	try("unchanged", func(map[string]any) {}, nil)
 	try("turned off, mac7 kept", func(raw map[string]any) { notify(raw)["inbox"] = false }, ErrIntegrity)
 	try("choice removed, mac7 kept", func(raw map[string]any) { delete(notify(raw), "inbox") }, ErrIntegrity)
+	try("expiry days changed, mac7 kept", func(raw map[string]any) { notify(raw)["expiry_days"] = 30 }, ErrIntegrity)
+	try("expiry alerts off, mac7 kept", func(raw map[string]any) { delete(notify(raw), "expiry_days") }, ErrIntegrity)
 	try("notify dropped, mac7 kept", func(raw map[string]any) { delete(raw, "notify") }, ErrIntegrity)
 	try("mac7 dropped", func(raw map[string]any) { delete(raw, "mac7") }, ErrIntegrity)
 	try("mac7 wrong", func(raw map[string]any) { raw["mac7"] = make([]byte, 32) }, ErrIntegrity)
@@ -200,8 +251,8 @@ func TestNotifyIntegrity(t *testing.T) {
 	// choice made (the server then uses KEYDROP_ALERT_INBOX), and
 	// everything else as it was.
 	s2 := try("both dropped", func(raw map[string]any) { delete(raw, "notify"); delete(raw, "mac7") }, nil)
-	if on, chosen := s2.InboxAlerts(); on || chosen {
-		t.Fatalf("both dropped: %v %v", on, chosen)
+	if on, chosen := s2.InboxAlerts(); on || chosen || s2.ExpiryAlertDays() != 0 {
+		t.Fatalf("both dropped: %v %v %d", on, chosen, s2.ExpiryAlertDays())
 	}
 	if tok, _ := tokenNamedT(s2, "agent"); !tok.SelfUpgrade {
 		t.Fatal("both dropped: self-upgrade lost")

@@ -159,6 +159,19 @@ events first.
 
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys are
   about to expire, for health checks.
+- **Expiry alerts.** In Settings, "Warn me before a key expires" (Off, 7, 14
+  or 30 days; off by default) has the alert webhook tell you ahead of time:
+  one message when keys come within that many days of their date, and one
+  more when they pass it, for example ``keydrop: 2 keys expire within 14
+  days: `lab/CF_TOKEN` (in 3 days), `lab/GH_PAT` (in 9 days). Renew them:
+  https://secrets.example.com/``. keydrop looks about once an hour and puts
+  every key that's newly due in one message, naming at most 8. It covers
+  secrets and variables with a value; not requests still waiting for one,
+  and not canaries. It names keys and dates only, never a value or a
+  description, and needs a webhook (Settings or `KEYDROP_ALERT_WEBHOOK`).
+  Changing a key's date warns again for the new one. keydrop keeps what it
+  has announced in memory, so after a restart it announces the keys already
+  in the window once more.
 - **Rotation schedule.** Each token is replaced on a schedule you pick when you
   approve or make it ("New token every"): 30, 90 (the default), 180 or 365
   days, or never.

@@ -131,6 +131,12 @@ type Server struct {
 	polls *rateLimit
 	// alerts sends canary alerts to AlertWebhook.
 	alerts *alerter
+
+	// expiryMarks is what the expiry check has announced, by ref; see
+	// expiryalert.go. expiryKick asks RunBackground for a check now.
+	expiryMu    sync.Mutex
+	expiryMarks map[string]expiryMark
+	expiryKick  chan struct{}
 }
 
 // noisyEvents throttles the audit events an unauthenticated client can
@@ -191,6 +197,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		collects:    newRateLimit(collectsPerHour, time.Hour),
 		polls:       newRateLimit(pollsPerMinute, time.Minute),
 		alerts:      newAlerter(cfg.AlertWebhook),
+		expiryKick:  make(chan struct{}, 1),
 	}
 	s.alerts.format = cfg.AlertFormat
 	if cfg.Now != nil {
@@ -325,6 +332,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/alert-webhook", s.admin(s.handleAlertWebhook))
 	m.HandleFunc("POST /settings/alert-webhook/remove", s.admin(s.handleAlertWebhookRemove))
 	m.HandleFunc("POST /settings/alert-inbox", s.admin(s.handleAlertInbox))
+	m.HandleFunc("POST /settings/alert-expiry", s.admin(s.handleAlertExpiry))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))

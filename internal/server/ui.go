@@ -131,6 +131,7 @@ var flashes = map[string]string{
 	"webhookset":     "Webhook saved. Send a test alert to check it.",
 	"webhookremoved": "Webhook removed.",
 	"alertinbox":     "Inbox alerts setting saved.",
+	"alertexpiry":    "Expiry alerts setting saved.",
 }
 
 type page map[string]any
@@ -1116,6 +1117,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	if chosen {
 		data["InboxChoice"] = onOff(on)
 	}
+	data["ExpiryDays"], data["ExpiryChoices"] = s.store.ExpiryAlertDays(), store.ExpiryAlertChoices
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }

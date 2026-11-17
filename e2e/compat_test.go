@@ -236,16 +236,18 @@ func TestRollbackV5(t *testing.T) {
 	in.stop(t)
 }
 
-// TestRollbackV6 turns Inbox alerts on in Settings, with self-upgrade and
-// the webhook set too, so the file has mac6 and mac7. The release before
+// TestRollbackV6 turns Inbox alerts and expiry alerts on in Settings, with
+// self-upgrade and the webhook set too, so the file has mac6 and mac7. The release before
 // (v0.1.3) starts on the data as it is, keeps self-upgrade and the
-// webhook, drops the setting when it rewrites the file; this one then
+// webhook, drops the settings when it rewrites the file; this one then
 // starts on what it wrote, with Inbox alerts back to KEYDROP_ALERT_INBOX
-// (unset: off), and the setting can be turned on again.
+// (unset: off) and expiry alerts off, and the setting can be turned on again.
 func TestRollbackV6(t *testing.T) {
 	old := buildOld(t, v6RollbackCommit)
 	const inboxOn = `value="on" class="on small" aria-pressed="true"`
 	const inboxDefault = `value="default" class="on small" aria-pressed="true"`
+	const expiry14 = `value="14" class="on small" aria-pressed="true"`
+	const expiryOff = `value="0" class="on small" aria-pressed="true"`
 
 	in := newInstance(t, binary)
 	in.start(t, binary)
@@ -257,11 +259,12 @@ func TestRollbackV6(t *testing.T) {
 	g := newAgent(t, binary)
 	g.login(t, in.url, pin, web.postToken(t, url.Values{"name": {"rb6-agent"}, "namespaces": {"rb6"}, "selfupgrade": {"yes"}}))
 	web.mustPost(t, "/settings/alert-inbox", url.Values{"inbox": {"on"}})
-	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) {
-		t.Fatal("Inbox alerts not shown as on")
+	web.mustPost(t, "/settings/alert-expiry", url.Values{"days": {"14"}})
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) || !strings.Contains(page, expiry14) {
+		t.Fatal("Inbox alerts or expiry alerts not shown as on")
 	}
 	data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json"))
-	for _, f := range []string{`"notify"`, `"mac7"`, `"mac6"`} {
+	for _, f := range []string{`"notify"`, `"expiry_days"`, `"mac7"`, `"mac6"`} {
 		if !strings.Contains(string(data), f) {
 			t.Fatalf("no %s in the file", f)
 		}
@@ -293,7 +296,7 @@ func TestRollbackV6(t *testing.T) {
 		t.Fatal("this release returns a different value after the previous one rewrote the file")
 	}
 	web = login(t, in)
-	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxDefault) || !strings.Contains(page, "Inbox alerts: <strong>off</strong>") || !strings.Contains(page, "hooks.example.com") {
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxDefault) || !strings.Contains(page, "Inbox alerts: <strong>off</strong>") || !strings.Contains(page, "hooks.example.com") || !strings.Contains(page, expiryOff) {
 		t.Fatal("Settings after the previous release's rewrite")
 	}
 	if _, page := web.get(t, "/token/rb6-agent"); !strings.Contains(page, `value="yes" checked`) {

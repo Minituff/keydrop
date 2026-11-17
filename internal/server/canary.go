@@ -192,16 +192,25 @@ func (a *alerter) send(content string) {
 // notice queues an Inbox notice. It spends only the notices' budget and
 // fills at most half the queue, so no number of notices can delay or
 // crowd out a security alert. What's over is counted for one summary.
-func (a *alerter) notice(content string) {
+func (a *alerter) notice(content string) { a.queueNotice(content, true) }
+
+// queueNotice is notice, and reports whether content was queued. Without
+// count, what's over isn't counted for the summary: the caller keeps it
+// and tries again later (the expiry digest).
+func (a *alerter) queueNotice(content string, count bool) bool {
 	if !a.configured() {
-		return
+		return false
 	}
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.noticeRoom() || !a.notices.take(a.now()) || !a.enqueue(content) {
+	if a.noticeRoom() && a.notices.take(a.now()) && a.enqueue(content) {
+		return true
+	}
+	if count {
 		a.heldNotice++
 	}
+	return false
 }
 
 // noticeRoom reports whether a notice may be queued. Needs a.mu, which
@@ -432,6 +441,7 @@ func (s *Server) handleAlertWebhook(w http.ResponseWriter, r *http.Request, _ st
 	}
 	s.alerts.setURL(raw)
 	s.alerts.destination(true)
+	s.kickExpiry() // keys held back for want of a webhook
 	s.event(r, "admin", "settings.alertwebhook", "", "set ("+u.Hostname()+")")
 	http.Redirect(w, r, "/settings?msg=webhookset", http.StatusSeeOther)
 }

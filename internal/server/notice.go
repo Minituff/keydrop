@@ -45,12 +45,16 @@ func (s *Server) inboxNotice(key, text, path, page string) {
 	if !s.alerts.allowNotice(key, s.now()) {
 		return
 	}
+	s.alerts.notice(s.withLink(text, path, page))
+}
+
+// withLink ends text with a link to path when KEYDROP_PUBLIC_URL is
+// configured (not guessed), and otherwise names the page to open.
+func (s *Server) withLink(text, path, page string) string {
 	if s.cfg.PublicURL != "" && !s.cfg.PublicURLGuess {
-		text += ": " + strings.TrimRight(s.cfg.PublicURL, "/") + path
-	} else {
-		text += ". Open keydrop's " + page + "."
+		return text + ": " + strings.TrimRight(s.cfg.PublicURL, "/") + path
 	}
-	s.alerts.notice(text)
+	return text + ". Open keydrop's " + page + "."
 }
 
 func (s *Server) noticePairing(ip, id string) {

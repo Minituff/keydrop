@@ -350,6 +350,50 @@ waits on them.
 - Refused calls send nothing, and notices add no audit entries: the
   events they announce are already logged.
 
+### Expiry alerts
+`keydrop expiring --check` only helps if someone wires it into a health
+check; otherwise the first sign an API key expired is an agent's job
+failing. "Warn me before a key expires" in Settings (Off, 7, 14 or 30 days)
+has the server tell the alert webhook ahead of time.
+
+- **Owned by the server, on the server's clock.** `Server.RunBackground`
+  (started by `keydrop server` with the context that stops it on SIGTERM)
+  checks a minute after start, then hourly, and soon after the setting or
+  the webhook changes. It uses the injectable clock, so tests move time.
+- **Announce on entering, not daily.** A key is announced when it newly
+  comes within the window, and once more when it newly passes its date.
+  The record of what was announced is per key and holds the date it was
+  announced for: a new date re-arms it, as does leaving the window (date
+  removed or moved out, key deleted) and coming back. Turning the setting
+  off forgets it.
+- **In memory, not in the state file.** Recording it there would be a new
+  MAC'd field and another migration for something that grants nothing,
+  and a write every hour. The cost: after a restart keys already in the
+  window are announced once more. That's acceptable; a missed warning isn't.
+- **One digest per check.** Every key newly due goes in one message,
+  soonest first, at most 8 named and the rest counted, so a namespace of
+  keys sharing a date can't flood the channel.
+- **On the notice path.** The digest spends the notices' budget and half
+  the queue, never the security budget, so it can't delay a canary alert.
+  If it can't be queued (budget spent, or no webhook), nothing is marked
+  and the next check tries again with the same keys; it isn't added to the
+  held-notice summary, which would lose the names. A sustained flood of
+  pairing notices can so delay it, hour by hour; the Secrets page still
+  marks the keys.
+- **Names and dates only.** `ns/NAME` and how far off the date is, built by
+  the server: never a value, and never a description or usage, which an
+  agent may have written. The link (to `/`, which needs the admin's login)
+  is there only when `KEYDROP_PUBLIC_URL` is configured, not guessed.
+- **Which keys.** Secrets and variables that have a value and a date.
+  Pending requests have nothing to expire yet. Canaries are left out: the
+  channel is the admin's, so naming one leaks nothing to agents, but a
+  decoy's date is there to look real, and nobody renews a decoy. Agents
+  can't observe any of this: no API, CLI or `APILevel` change.
+- The setting is `notify.expiry_days` in the state file, under `mac7` like
+  `notify.inbox`, and like it isn't tied to the key check: stripping
+  `notify` and `mac7` together only turns expiry alerts off. Changing it is
+  a CSRF-checked admin form, logged as `settings.alertexpiry`.
+
 ### Duplicate values
 - When the admin saves a secret whose value equals another secret's, the
   page says `NAME has the same value as OTHER_NS/OTHER_NAME. If that was a
@@ -870,7 +914,7 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, chosen in Settings) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off |
 | `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the

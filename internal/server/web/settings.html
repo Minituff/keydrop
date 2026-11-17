@@ -73,6 +73,11 @@
     {{$c := .InboxChoice}}<button name="inbox" value="on" class="{{if eq $c "on"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "on"}}">On</button><button name="inbox" value="off" class="{{if eq $c "off"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "off"}}">Off</button><button name="inbox" value="default" class="{{if eq $c "default"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "default"}}">Default ({{if .InboxEnv}}on{{else}}off{{end}})</button>
   </form>
   <p><small class="muted">Default follows KEYDROP_ALERT_INBOX in keydrop's container{{if ne $c "default"}}; your choice here wins over it{{end}}.</small></p>
+  <p>Warn me before a key expires: <strong>{{if .ExpiryDays}}{{.ExpiryDays}} days ahead{{else}}off{{end}}</strong>{{if and .ExpiryDays (not .AlertsConfigured)}}, but it needs a webhook{{end}}. When on, the webhook gets one message when keys come within that many days of their expiry date, and one more when they pass it. It names the keys and their dates, nothing else.</p>
+  <form method="post" action="/settings/alert-expiry" class="seg" aria-label="Expiry alerts">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{$d := .ExpiryDays}}<button name="days" value="0" class="{{if eq $d 0}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $d 0}}">Off</button>{{range .ExpiryChoices}}<button name="days" value="{{.}}" class="{{if eq . $d}}on{{else}}secondary{{end}} small" aria-pressed="{{eq . $d}}">{{.}} days</button>{{end}}
+  </form>
 </div>
 <form method="post" action="/settings/canary" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
