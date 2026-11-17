@@ -94,6 +94,7 @@ type Server struct {
 	limiter      *auth.Limiter
 	setupLimiter *auth.Limiter
 	mux          *http.ServeMux
+	patterns     []string // every route registered on mux, in order (routes)
 	now          func() time.Time
 	deviceKey    []byte // signs device cookies (see deviceID)
 	started      time.Time
@@ -263,8 +264,18 @@ func randomString(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// routeList registers routes on the server's mux and keeps each pattern in
+// s.patterns, so a test can check docs/openapi.json against the routes the
+// server actually serves.
+type routeList struct{ s *Server }
+
+func (l routeList) HandleFunc(pattern string, h http.HandlerFunc) {
+	l.s.mux.HandleFunc(pattern, h)
+	l.s.patterns = append(l.s.patterns, pattern)
+}
+
 func (s *Server) routes() {
-	m := s.mux
+	m := routeList{s}
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	m.HandleFunc("GET /static/style.css", s.handleCSS)
 	m.HandleFunc("GET /install.sh", s.handleInstallScript)
