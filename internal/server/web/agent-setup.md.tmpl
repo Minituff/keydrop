@@ -283,7 +283,8 @@ values. An empty list is fine for a new install.
   your shell:
   `keydrop run -e GITHUB_PAT -- sh -c 'curl -H "Authorization: Bearer $GITHUB_PAT" https://api.github.com/user'`.
   `-e VAR=NAME` sets `$VAR` instead. If the value shows up in the output,
-  keydrop replaces it with `[keydrop:NAME]`.
+  keydrop replaces it with `[keydrop:NAME]`. For a command that reads a
+  key on stdin: `keydrop run --stdin NAME -- docker login -u USER --password-stdin HOST`.
 - `keydrop vars`, `keydrop get NAME`: settings that aren't secret
   (variables), such as URLs and account IDs, with their values.
 - `keydrop request NAME --desc "what it's for, which scopes, how long it should last"`:
@@ -308,7 +309,7 @@ values. An empty list is fine for a new install.
 Rules:
 
 - Values reach a command only through `keydrop run`, in that command's
-  environment. Never run `keydrop get --raw`, `--no-mask`, `env`,
+  environment or stdin. Never run `keydrop get --raw`, `--no-mask`, `env`,
   `printenv`, or anything else that prints a value.
 - `[keydrop:NAME]` in output is the mask working. Don't try to recover
   the value.
