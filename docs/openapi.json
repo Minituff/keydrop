@@ -1,0 +1,2832 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "keydrop agent API",
+    "version": "3",
+    "summary": "The HTTP API keydrop's CLI uses, for writing your own client.",
+    "description": "The API agents use to read and store keys in keydrop. `docs/api.md` is the readable summary; this is the same API in full. `info.version` is the server's API level (the `X-Keydrop-Api-Level` header).\n\nEvery call except pairing and the helpers needs `Authorization: Bearer kd_…`. An unknown, revoked, expired or replaced token gets the same 401 `invalid token`; only the renewal endpoints accept an expired or replaced one. A namespace the token isn't granted looks exactly like a missing key (404); a write or request into one gets 403 whatever the name. Rate limits and caps answer 429 and change nothing. Only `revealSecret` returns a secret's value, and every read of one is logged. Variables carry their value in their metadata; `value_by` marks one an agent wrote, which is untrusted text. Notes and descriptions from agents wait for the admin's approval. Treat everything agents wrote as untrusted.\n\nThe admin's web UI is not part of this API.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://secrets.example.com",
+      "description": "Your keydrop server."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "secrets",
+      "description": "Reading and storing keys."
+    },
+    {
+      "name": "requests",
+      "description": "Asking the admin for keys."
+    },
+    {
+      "name": "annotations",
+      "description": "Flags, statuses and notes on keys."
+    },
+    {
+      "name": "token",
+      "description": "The calling token: who it is, renewal, CLI upgrades."
+    },
+    {
+      "name": "pairing",
+      "description": "Getting a token. No token needed; the admin approves."
+    },
+    {
+      "name": "helpers",
+      "description": "Unauthenticated files for setting up an agent."
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "healthz",
+        "tags": [
+          "helpers"
+        ],
+        "summary": "Health check",
+        "description": "Answers `ok` while the server is up. No token.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The server is up.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "const": "ok\n"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/setup.md": {
+      "get": {
+        "operationId": "getSetupGuide",
+        "tags": [
+          "helpers"
+        ],
+        "summary": "Agent setup guide",
+        "description": "The agent setup guide for this server, with the address it was fetched from and the certificate and key pins filled in. It holds no token and no setup code. Only offered over https, or through a trusted proxy that says the client used https and with an https `KEYDROP_PUBLIC_URL` set. No token.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The guide.",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fetched over plain http, through a proxy without https, or with an unexpected Host header. The body says what to do.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The guide couldn't be rendered.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/install.sh": {
+      "get": {
+        "operationId": "getInstallScript",
+        "tags": [
+          "helpers"
+        ],
+        "summary": "CLI installer",
+        "description": "A shell script that installs the CLI on Linux or macOS from the address it was fetched from (pinned to keydrop's key when that's keydrop itself). Same transport rules as `/setup.md`. No token.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The script.",
+            "content": {
+              "text/x-shellscript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Fetched over plain http, through a proxy without https, or with an unexpected Host header.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This server has no CLI builds to hand out (`KEYDROP_CLI_DIR` isn't set).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cli/{file}": {
+      "get": {
+        "operationId": "downloadCLI",
+        "tags": [
+          "helpers"
+        ],
+        "summary": "Download a CLI build",
+        "description": "The CLI builds the server hands out, the same version as the server, and their checksums. At most 8 downloads at a time, 2 per address (IPv6: per /64). No token.",
+        "parameters": [
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "description": "`keydrop-<os>-<arch>` (`.exe` on Windows), or `SHA256SUMS`.",
+            "schema": {
+              "type": "string",
+              "pattern": "^(keydrop-(linux|darwin|windows)-(amd64|arm64)(\\.exe)?|SHA256SUMS)$"
+            },
+            "example": "keydrop-linux-amd64"
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The file. A build is served as a download with a Content-Length; `SHA256SUMS` is text.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "application/octet-stream"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such build, or this server has no CLI builds (`KEYDROP_CLI_DIR` isn't set).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The build couldn't be read.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Too many downloads at once, overall or from this address. Try again after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pair": {
+      "post": {
+        "operationId": "startPairing",
+        "tags": [
+          "pairing"
+        ],
+        "summary": "Ask to pair",
+        "description": "Starts a pairing request, without a token. The admin approves it in the web UI (setting the agent's name, namespaces and permission); then the agent collects its token with `pollPairing`. A request lasts 10 minutes. At most 3 wait per address and 8 per IPv6 /64, and 50 overall; when the list is full the busiest address's oldest request makes way for a newcomer, or, when no address is busier, the oldest waiting request overall. An approved request is never dropped.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          }
+        },
+        "security": [],
+        "responses": {
+          "201": {
+            "description": "Waiting for the admin. Show `code` to the user, who checks it matches the one in the UI.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairStart"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/pair/poll": {
+      "post": {
+        "operationId": "pollPairing",
+        "tags": [
+          "pairing"
+        ],
+        "summary": "Collect a paired token",
+        "description": "Checks a pairing request, without a token. Once the admin approves, the token is handed over exactly once, and only to the address that asked. At most 300 polls a minute per address (IPv6: per /64).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairPollRequest"
+              }
+            }
+          }
+        },
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "`pending`, or `approved` with the token. Keep the token secret: store it with mode 600 and never print it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairPoll"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "description": "Polled from an address other than the one that asked. The request stays; pair again from this address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request: it expired, was denied or already collected, or the approved token was revoked before it was collected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/whoami": {
+      "get": {
+        "operationId": "whoami",
+        "tags": [
+          "token"
+        ],
+        "summary": "Describe this token",
+        "description": "The token's name, namespaces, permission and expiry.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Whoami"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          }
+        }
+      }
+    },
+    "/api/v1/cli/upgrade": {
+      "post": {
+        "operationId": "askCLIUpgrade",
+        "tags": [
+          "token"
+        ],
+        "summary": "Ask whether the CLI may upgrade itself",
+        "description": "`keydrop upgrade` asks first: the answer is the agent's **Allow self-upgrade** setting, which the admin sets. The ask is logged. A CLI below the server's minimum level may still call this one (no 426).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradeRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The answer.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpgradeAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v1/token/renew": {
+      "post": {
+        "operationId": "requestRenewal",
+        "tags": [
+          "token"
+        ],
+        "summary": "Ask for this token to be renewed",
+        "description": "Asks the admin to renew the calling token. Asking again while a request waits changes nothing (`created` is false). One of the renewal endpoints: an expired token may call it for up to 30 days after it expired, and a token whose renewal was approved until the new token is first used. 240 asks and status checks an hour per token and address.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where the renewal stands.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenewState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      },
+      "get": {
+        "operationId": "getRenewal",
+        "tags": [
+          "token"
+        ],
+        "summary": "Where this token's renewal stands",
+        "description": "Same answer as `requestRenewal`, without asking: `state` is `none` when nothing was asked. A renewal endpoint (see `requestRenewal`), and shares its rate limit.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where the renewal stands.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenewState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/token/collect": {
+      "post": {
+        "operationId": "collectRenewedToken",
+        "tags": [
+          "token"
+        ],
+        "summary": "Collect the renewed token",
+        "description": "Called with the old token once the admin approved its renewal: returns the new token. Only from the address that asked for the renewal (403 otherwise; the attempt is logged and the admin alerted). Repeatable until the new token is first used; after that, or after 7 days, the old token gets 401. 30 collects an hour per token and address. Save the new token atomically and never print it.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new token.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Collected"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not an allowed source for this token, or not the address that asked for the renewal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing to collect: the renewal wasn't approved, or the new token is already in use.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets": {
+      "get": {
+        "operationId": "listSecrets",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "List keys",
+        "description": "Metadata of the keys in the token's namespaces. Never a secret's value; a variable's `value` is included.",
+        "parameters": [
+          {
+            "name": "new",
+            "in": "query",
+            "description": "Any non-empty value: only keys whose value is new to this token.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          },
+          {
+            "name": "pending",
+            "in": "query",
+            "description": "Any non-empty value: only requested keys still waiting for a value.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "homelab"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The keys, possibly none.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Secret"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}": {
+      "get": {
+        "operationId": "getSecret",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Get a key's metadata",
+        "description": "One key's metadata, including its status, open flags, approved notes, how many notes wait for approval, and whether a description waits. `last_read_at` and `last_read_by` appear only when this token read it last. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The key.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Secret"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putSecret",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Store a value",
+        "description": "For add and write tokens. An add token can only replace keys it created, and can't store variables. Without `\"variable\": true` the value is stored as a secret, even over a variable. A variable from an agent is at most 2,000 bytes on one line. A token holds at most 500 keys and 8 MiB of values, then gets 403. A description or usage from an agent waits for the admin's approval, and `url` links to the page where that happens. 200 puts and requests an hour per token. A namespace the token isn't granted gets 403, whether or not the key exists.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}/reveal": {
+      "post": {
+        "operationId": "revealSecret",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Read a value",
+        "description": "The only endpoint that returns a secret's value. Each read of a secret is written to the audit log with the token, its `X-Keydrop-Agent` label and the purpose; if it can't be logged, the call fails with 500 and no value. Reading marks the value as no longer new to this token. Reveals and acks together are limited to 1,200 an hour per token; past that, 429 with no value. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "name": "purpose",
+            "in": "query",
+            "description": "Why the agent reads it, in a few words. Shown to the admin in the log as the agent's words; cut to 200 bytes.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "deploy the DNS records"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The value. `status` is there when the key isn't ok, for example marked leaked.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revealed"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key has no value yet (a request waiting for the admin).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}/ack": {
+      "post": {
+        "operationId": "ackSecret",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Mark a value as seen",
+        "description": "Marks the key's value as no longer new to this token without reading it. Logged. Counts towards the 1,200 reveals and acks an hour. The CLI no longer uses it: a reveal does the same.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ref"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/requests": {
+      "post": {
+        "operationId": "requestSecret",
+        "tags": [
+          "requests"
+        ],
+        "summary": "Ask the admin for a key",
+        "description": "Creates a placeholder for the admin to fill in. `namespace` may be left out when the token has exactly one. Counts towards the 200 puts and requests an hour; a token has at most 20 open requests (then 429). A description or usage waits for the admin's approval.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Requested.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token isn't granted that namespace, or isn't an allowed source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key already has a value, or another token already asked for it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/requests/batch": {
+      "post": {
+        "operationId": "requestSecrets",
+        "tags": [
+          "requests"
+        ],
+        "summary": "Ask the admin for several keys",
+        "description": "Up to 10 keys in one namespace, filled on one card. All or nothing: on any error nothing is requested. A batch of N counts as N requests towards the limits. `group` is only a suggestion, shown to the admin as agent-written.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Requested.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token isn't granted that namespace, or isn't an allowed source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "One of the keys already has a value, or another token already asked for it. Nothing was requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/expiring": {
+      "get": {
+        "operationId": "listExpiring",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Keys that expire soon",
+        "description": "Keys in the token's namespaces whose expiry date falls within `days` days, including ones already past it.",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "How far ahead to look. Default 14, at most 36500; anything that isn't a whole number from 0 up means the default.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 36500,
+              "default": 14
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The keys, possibly none.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Secret"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          }
+        }
+      }
+    },
+    "/api/v1/history": {
+      "get": {
+        "operationId": "listHistory",
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Changes to keys",
+        "description": "Changes to the keys in the token's namespaces, newest first. Values never appear, and neither do flag reasons. The server keeps 500 events per namespace.",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "homelab"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Only keys with this name.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "CLOUDFLARE_API_TOKEN"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many. Default 50, at most 1000.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 50
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The events, possibly none.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Event"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}/flag": {
+      "post": {
+        "operationId": "flagSecret",
+        "tags": [
+          "annotations"
+        ],
+        "summary": "Ask the admin to look at a key",
+        "description": "Raises a flag for the admin, for example when a key stopped working. Any token that can see the key may flag it. The reason and link are for the admin only; other agents see who flagged it and when. One open flag per token per key (409), and at most 20 open per token (429). Flags, statuses and notes together are limited to 60 an hour per token. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Flagged.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ref"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This token already has an open flag on the key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}/status": {
+      "post": {
+        "operationId": "setSecretStatus",
+        "tags": [
+          "annotations"
+        ],
+        "summary": "Set a key's status",
+        "description": "Marks a key expired, revoked, leaked or replaced by another key in the same namespace; `ok` clears it. Flags, statuses and notes together are limited to 60 an hour per token. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Set.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The admin set the current status, so only the admin can change it; or the token isn't an allowed source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/api/v1/secrets/{ns}/{name}/notes": {
+      "post": {
+        "operationId": "addNote",
+        "tags": [
+          "annotations"
+        ],
+        "summary": "Propose a note",
+        "description": "Proposes a note for other agents. No other agent sees it until the admin approves it; `url` links to the page where that happens. One waiting note per token per key (409), 20 waiting per token and 50 notes per key (429). Flags, statuses and notes together are limited to 60 an hour per token. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Namespace"
+          },
+          {
+            "$ref": "#/components/parameters/Name"
+          },
+          {
+            "$ref": "#/components/parameters/Agent"
+          },
+          {
+            "$ref": "#/components/parameters/CliLevel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Waiting for the admin.",
+            "headers": {
+              "X-Keydrop-Version": {
+                "$ref": "#/components/headers/Version"
+              },
+              "X-Keydrop-Api-Level": {
+                "$ref": "#/components/headers/ApiLevel"
+              },
+              "X-Keydrop-Min-Cli-Level": {
+                "$ref": "#/components/headers/MinCliLevel"
+              },
+              "X-Keydrop-Self-Upgrade": {
+                "$ref": "#/components/headers/SelfUpgrade"
+              },
+              "X-Keydrop-Token-Expires": {
+                "$ref": "#/components/headers/TokenExpires"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This token already has a note on the key waiting for approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "426": {
+            "$ref": "#/components/responses/UpgradeRequired"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An agent token, `kd_` followed by 43 characters. It comes from pairing, renewal, or the admin's Agents page. Keep it in a file only its owner can read; never print or log it."
+      }
+    },
+    "parameters": {
+      "Namespace": {
+        "name": "ns",
+        "in": "path",
+        "required": true,
+        "description": "The namespace: lowercase letters, digits, `.`, `_` and `-`.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "example": "homelab"
+      },
+      "Name": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "description": "The key's name, environment-variable style.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
+        },
+        "example": "CLOUDFLARE_API_TOKEN"
+      },
+      "Agent": {
+        "name": "X-Keydrop-Agent",
+        "in": "header",
+        "required": false,
+        "description": "Which agent is acting, when several share a token (for example `claude`). Only a label for the audit log, not an identity; ignored unless it's a valid name.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "claude"
+      },
+      "CliLevel": {
+        "name": "X-Keydrop-Cli-Level",
+        "in": "header",
+        "required": false,
+        "description": "The API level the client was built for. Left out, it counts as 1. Below `X-Keydrop-Min-Cli-Level`, calls get 426.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1
+        },
+        "example": 3
+      }
+    },
+    "headers": {
+      "Version": {
+        "description": "The server's build. Sent only to an authenticated token, and only when the build has a version.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ApiLevel": {
+        "description": "The server's API level; equals `info.version` of this document.",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "MinCliLevel": {
+        "description": "The lowest `X-Keydrop-Cli-Level` the server accepts.",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "SelfUpgrade": {
+        "description": "Whether the admin lets this agent upgrade its own CLI.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ]
+        }
+      },
+      "TokenExpires": {
+        "description": "When this token expires (RFC 3339), or `never`.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "2027-01-23T00:00:00Z"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The body isn't valid JSON, is over 128 KiB, or a field is invalid (too long, invisible or control characters, a bad name or date). Nothing changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "No `Authorization: Bearer` header (`missing bearer token`), or `invalid token`. An unknown, revoked, expired or replaced token all get the same `invalid token`; the renewal endpoints still accept an expired or replaced one (see `requestRenewal`).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The token isn't allowed from this address (the admin can add it under Agents), or the call needs a permission the token doesn't have.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No such key, or one in a namespace this token isn't granted: the two are the same answer, so names in other namespaces don't leak.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The key already has a value (send `overwrite` to replace it), or another token already asked for it.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "UpgradeRequired": {
+        "description": "The CLI is below the server's minimum level (`X-Keydrop-Cli-Level` under `X-Keydrop-Min-Cli-Level`). The message says whether to run `keydrop upgrade` or tell the user, by the agent's self-upgrade setting.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Over a rate limit or a cap; nothing changed and no value was returned. Try again later.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "ServerError": {
+        "description": "Something failed on the server; for a reveal, the read couldn't be written to the audit log, so no value was returned. Tell the admin.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "Every JSON error. `error` is plain English and says what to do next; it names keys (`ns/NAME`) but never holds a value or a token.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "examples": [
+              "no secret homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          }
+        }
+      },
+      "Whoami": {
+        "type": "object",
+        "required": [
+          "name",
+          "namespaces",
+          "write",
+          "permission",
+          "expires_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "examples": [
+              "build-box"
+            ]
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "examples": [
+              [
+                "homelab"
+              ]
+            ]
+          },
+          "permission": {
+            "type": "string",
+            "enum": [
+              "read",
+              "add",
+              "write"
+            ],
+            "description": "`read`: read only. `add`: may also store new keys and replace the ones it created. `write`: may store and replace any key in its namespaces, and store variables."
+          },
+          "write": {
+            "type": "boolean",
+            "description": "Older form of `permission`: true only for `write`."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the token expires; null when it never does."
+          }
+        }
+      },
+      "UpgradeRequest": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The CLI's own version. Logged only if it looks like a version.",
+            "examples": [
+              "1.4.0"
+            ]
+          }
+        }
+      },
+      "UpgradeAnswer": {
+        "type": "object",
+        "required": [
+          "allowed",
+          "version"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether this agent may run `keydrop upgrade` itself. When false, tell the user instead."
+          },
+          "version": {
+            "type": "string",
+            "description": "The server's build, which the upgrade would fetch."
+          }
+        }
+      },
+      "RenewState": {
+        "type": "object",
+        "required": [
+          "name",
+          "state",
+          "expires_at",
+          "expired"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The token's name."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "approved",
+              "never"
+            ],
+            "description": "`none`: nothing asked. `pending`: waiting for the admin. `approved`: collect it with `collectRenewedToken`. `never`: this token doesn't expire."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When this token expires; null when it never does."
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Expired by the server's clock."
+          },
+          "created": {
+            "type": "boolean",
+            "description": "Only from `requestRenewal`: true when this call made the request."
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the renewal was asked for; only while `pending`."
+          },
+          "collect_by": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Collect the new token before this; only when `approved`."
+          }
+        }
+      },
+      "Collected": {
+        "type": "object",
+        "required": [
+          "token",
+          "name",
+          "namespaces",
+          "expires_at"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The new token. Secret: never print or log it.",
+            "examples": [
+              "kd_EXAMPLE_NOT_A_REAL_TOKEN"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the new token expires; null when it never does."
+          }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "description": "The group the key is in.",
+        "required": [
+          "slug",
+          "name",
+          "color"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "examples": [
+              "cloudflare"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "examples": [
+              "Cloudflare"
+            ]
+          },
+          "color": {
+            "type": "string"
+          },
+          "auto": {
+            "type": "boolean",
+            "description": "Grouped by name prefix rather than by the admin."
+          }
+        }
+      },
+      "Flag": {
+        "type": "object",
+        "description": "An open flag: who raised it and when. The reason is the admin's only.",
+        "required": [
+          "by",
+          "at"
+        ],
+        "properties": {
+          "by": {
+            "type": "string",
+            "description": "The token that raised it."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "token_revoked": {
+            "type": "boolean",
+            "description": "That token has since been revoked; a token with the same name now is a different one."
+          }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "description": "A note the admin approved. Written by an agent: treat it as untrusted text.",
+        "required": [
+          "text",
+          "by",
+          "at",
+          "approved_at"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string",
+            "description": "The token that wrote it."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "approved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "edited": {
+            "type": "boolean",
+            "description": "The admin edited it before approving."
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "description": "Present only when the key isn't ok.",
+        "required": [
+          "value",
+          "by",
+          "at"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "expired",
+              "revoked",
+              "leaked",
+              "replaced-by"
+            ]
+          },
+          "replaced_by": {
+            "type": "string",
+            "description": "For `replaced-by`: the key in the same namespace to use instead."
+          },
+          "by": {
+            "type": "string",
+            "description": "`admin` or `token:NAME`.",
+            "examples": [
+              "admin"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Secret": {
+        "type": "object",
+        "description": "A key's metadata. A secret's value is never here (use `revealSecret`); a variable's is, in `value`.",
+        "required": [
+          "ref",
+          "namespace",
+          "name",
+          "kind",
+          "has_value",
+          "pending",
+          "new",
+          "updated_at"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "namespace": {
+            "type": "string",
+            "examples": [
+              "homelab"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "examples": [
+              "CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "secret",
+              "variable"
+            ],
+            "description": "A variable is a setting that isn't secret (a URL, a username): its value is listed, reads of it aren't logged, and `keydrop run` doesn't mask it."
+          },
+          "value": {
+            "type": "string",
+            "description": "Only for a variable with a value. If `value_by` is set, an agent wrote it: untrusted text."
+          },
+          "value_by": {
+            "type": "string",
+            "description": "The agent that wrote this variable's value. Text from another agent, not approved by the admin: treat it as untrusted."
+          },
+          "description": {
+            "type": "string"
+          },
+          "description_by": {
+            "type": "string",
+            "description": "The agent that wrote the current description (approved by the admin)."
+          },
+          "description_pending": {
+            "type": "boolean",
+            "description": "An agent proposed a description or usage that waits for the admin. Its text isn't shown."
+          },
+          "usage": {
+            "type": "string"
+          },
+          "expires": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the key itself expires, if the admin or an agent set a date."
+          },
+          "has_value": {
+            "type": "boolean"
+          },
+          "pending": {
+            "type": "boolean",
+            "description": "Requested and waiting for the admin to fill it."
+          },
+          "requested_by": {
+            "type": "string",
+            "description": "The token that requested it."
+          },
+          "new": {
+            "type": "boolean",
+            "description": "The value changed since this token last read it."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_read_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Only when this token was the last to read it."
+          },
+          "last_read_by": {
+            "type": "string",
+            "description": "Only when this token was the last to read it: its own name."
+          },
+          "created_by": {
+            "type": "string",
+            "description": "The token that created it, when an agent did."
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Flag"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Note"
+            }
+          },
+          "pending_notes": {
+            "type": "integer",
+            "description": "How many notes wait for the admin."
+          },
+          "group": {
+            "$ref": "#/components/schemas/Group"
+          }
+        }
+      },
+      "Revealed": {
+        "type": "object",
+        "required": [
+          "ref",
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "secret",
+              "variable"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "description": "The value. For a secret: keep it out of logs, output and files.",
+            "examples": [
+              "example-value-not-real"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          }
+        }
+      },
+      "Ref": {
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          }
+        }
+      },
+      "PutRequest": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "variable": {
+            "type": "boolean",
+            "default": false,
+            "description": "Store it as a variable (write tokens only). Left out or false: a secret, even when replacing a variable."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "default": false,
+            "description": "Replace an existing value; without it, a key with a value gets 409."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Proposed; waits for the admin."
+          },
+          "usage": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Proposed, one line; waits for the admin."
+          },
+          "expires": {
+            "type": "string",
+            "description": "A date like `2027-01-23`, or RFC 3339. An empty string clears it; left out, it's unchanged.",
+            "examples": [
+              "2027-01-23"
+            ]
+          }
+        }
+      },
+      "PutResult": {
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "When a description or usage from this call waits for the admin: the page where they approve it. The admin's page for it. Empty when the server doesn't know its public URL."
+          }
+        }
+      },
+      "RequestRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "description": "May be left out when the token has exactly one namespace.",
+            "examples": [
+              "homelab"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "examples": [
+              "CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "What the key is; waits for the admin."
+          },
+          "usage": {
+            "type": "string",
+            "description": "How it's used; waits for the admin."
+          }
+        }
+      },
+      "RequestResult": {
+        "type": "object",
+        "required": [
+          "ref",
+          "url"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "The admin's page for it. Empty when the server doesn't know its public URL.",
+            "examples": [
+              "https://secrets.example.com/secret/homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          }
+        }
+      },
+      "BatchRequest": {
+        "type": "object",
+        "required": [
+          "names"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "description": "May be left out when the token has exactly one namespace."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true,
+            "examples": [
+              [
+                "CLOUDFLARE_API_TOKEN",
+                "CLOUDFLARE_ZONE_ID"
+              ]
+            ]
+          },
+          "group": {
+            "type": "string",
+            "description": "A group name to suggest; shown to the admin as agent-written."
+          },
+          "description": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          }
+        }
+      },
+      "BatchResult": {
+        "type": "object",
+        "required": [
+          "refs",
+          "batch"
+        ],
+        "properties": {
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "`namespace/NAME`.",
+              "examples": [
+                "homelab/CLOUDFLARE_API_TOKEN"
+              ]
+            }
+          },
+          "batch": {
+            "type": "string",
+            "description": "The batch's ID."
+          },
+          "url": {
+            "type": "string",
+            "description": "The card where the admin fills them; only when the server knows its public URL."
+          },
+          "urls": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each key's page by `ref`; only when the server knows its public URL."
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "description": "One change. Values never appear.",
+        "required": [
+          "at",
+          "ref",
+          "namespace",
+          "name",
+          "action",
+          "actor"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "examples": [
+              "requested"
+            ]
+          },
+          "actor": {
+            "type": "string",
+            "description": "`admin` or `token:NAME`.",
+            "examples": [
+              "admin"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "FlagRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "One line, for the admin only."
+          },
+          "link": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "An http(s) URL, for the admin only.",
+            "examples": [
+              "https://status.example.com/incident/1"
+            ]
+          }
+        }
+      },
+      "StatusRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "expired",
+              "revoked",
+              "leaked",
+              "replaced-by"
+            ]
+          },
+          "replaced_by": {
+            "type": "string",
+            "description": "Only with `replaced-by`: another key in the same namespace, which must exist.",
+            "examples": [
+              "CLOUDFLARE_API_TOKEN_V2"
+            ]
+          }
+        }
+      },
+      "StatusResult": {
+        "type": "object",
+        "required": [
+          "ref",
+          "status"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, the status, or `replaced-by NAME`.",
+            "examples": [
+              "leaked"
+            ]
+          }
+        }
+      },
+      "NoteRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        }
+      },
+      "NoteResult": {
+        "type": "object",
+        "required": [
+          "ref",
+          "url"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "`namespace/NAME`.",
+            "examples": [
+              "homelab/CLOUDFLARE_API_TOKEN"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "The admin's page for it. Empty when the server doesn't know its public URL."
+          }
+        }
+      },
+      "PairRequest": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "The machine's name, shown to the admin. Unchecked: only letters, digits and `._-@` are kept, up to 64.",
+            "examples": [
+              "build-box"
+            ]
+          },
+          "user": {
+            "type": "string",
+            "description": "The user on it, shown to the admin. Unchecked, cleaned like `host`.",
+            "examples": [
+              "deploy"
+            ]
+          }
+        }
+      },
+      "PairStart": {
+        "type": "object",
+        "required": [
+          "code",
+          "path",
+          "poll",
+          "expires_in"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Shown to both sides, so the user can check the admin approves the right request.",
+            "examples": [
+              "ABC-DEF"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Where the admin approves it, relative to the server's web UI.",
+            "examples": [
+              "/pair/EXAMPLE"
+            ]
+          },
+          "link": {
+            "type": "string",
+            "description": "`path` as a full URL; only when the server's public URL is configured.",
+            "examples": [
+              "https://secrets.example.com/pair/EXAMPLE"
+            ]
+          },
+          "poll": {
+            "type": "string",
+            "description": "The secret to poll with. Keep it private: it collects the token."
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "Seconds until the request expires.",
+            "examples": [
+              600
+            ]
+          }
+        }
+      },
+      "PairPollRequest": {
+        "type": "object",
+        "required": [
+          "poll"
+        ],
+        "properties": {
+          "poll": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "PairPoll": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved"
+            ]
+          },
+          "token": {
+            "type": "string",
+            "description": "Only when `approved`, and only once. Secret: store it with mode 600 and never print it.",
+            "examples": [
+              "kd_EXAMPLE_NOT_A_REAL_TOKEN"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Only when `approved`: the agent's name."
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only when `approved`."
+          }
+        }
+      }
+    }
+  }
+}

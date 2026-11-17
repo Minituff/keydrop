@@ -152,4 +152,3 @@ change too.
   misconfigured proxy would bypass the login
 - Optional per-secret allowlists inside a namespace
 - Version history beyond one previous value
-- An OpenAPI description of the agent API

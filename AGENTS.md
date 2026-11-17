@@ -217,9 +217,10 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - Error messages and UI text: plain English, say what to do next.
 - **CLI compatibility:** when you change the agent API, decide whether the
   CLI depends on it and raise `APILevel` / `MinCLILevel` in
-  `internal/server/compat.go` as its comment says. Raising `MinCLILevel`
-  refuses every older CLI, so it needs a reason in the commit message and a
-  new entry in `cliLevelCommits` (`e2e/compat_test.go`).
+  `internal/server/compat.go` as its comment says, and update
+  `docs/openapi.json` in the same change (`TestOpenAPI*` checks it).
+  Raising `MinCLILevel` refuses every older CLI, so it needs a reason in the
+  commit message and a new entry in `cliLevelCommits` (`e2e/compat_test.go`).
 - UI: follow [docs/ui.md](docs/ui.md), and update it when you add a palette
   variable or component.
 
