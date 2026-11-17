@@ -31,7 +31,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          newline (docker login --password-stdin)
   secrets [--new] [--pending]           list secrets this token can see (no values;
                                          --new: changed since this token last read it),
-                                         under [namespace: group] headings
+                                         under [namespace: group] headings; a key the admin
+                                         limited to other agents says so, and run refuses it
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
   history [NAME] [--since 72h] [--quiet]

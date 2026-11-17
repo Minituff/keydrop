@@ -165,8 +165,8 @@ func (s Secret) HasValue() bool { return len(s.Value) > 0 }
 // changed since it last acknowledged it. Before any agent acknowledges a
 // change it's new to all of them; after that, only to those that haven't.
 func (s Secret) NewFor(tok string) bool {
-	if !s.HasValue() {
-		return false
+	if !s.HasValue() || !s.UsableBy(tok) {
+		return false // a value it may not read is never new to it
 	}
 	return s.New || (len(s.AckedBy) > 0 && !slices.Contains(s.AckedBy, tok))
 }
@@ -1316,6 +1316,9 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	res = PutResult{Existed: ok && len(sec.Value) > 0, WasVariable: ok && sec.Variable}
+	if ap != nil && ok && !sec.UsableBy(ap.Token.Name) {
+		return res, ErrLimited // whatever its permission, and before ErrExists
+	}
 	if res.Existed && !overwrite {
 		return res, ErrExists
 	}
@@ -1553,7 +1556,11 @@ func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err er
 // (hit is set) in the same write as any other read, so it takes as long,
 // and returns the value as usual.
 func (s *Store) AgentReveal(ns, name, tok, ip string) (value []byte, variable bool, hit *CanaryTouch, err error) {
-	return s.revealHit(ns, name, tok, tok, ip)
+	value, variable, hit, err = s.revealHit(ns, name, tok, tok, ip)
+	if errors.Is(err, ErrLimited) {
+		hit = s.AgentTouch(ns, name, AgentCtx{tok, ip}, "reveal") // a refused call, as for the rate limit
+	}
+	return value, variable, hit, err
 }
 
 func (s *Store) reveal(ns, name, by, tok string) (value []byte, variable bool, err error) {
@@ -1568,6 +1575,9 @@ func (s *Store) revealHit(ns, name, by, tok, ip string) (value []byte, variable 
 	sec, ok := s.st.Secrets[key(ns, name)]
 	if !ok {
 		return nil, false, nil, ErrNotFound
+	}
+	if tok != "" && !sec.UsableBy(tok) {
+		return nil, false, nil, ErrLimited
 	}
 	if len(sec.Value) == 0 {
 		return nil, sec.Variable, nil, ErrNoValue
@@ -1632,6 +1642,9 @@ func (s *Store) Ack(ns, name, by string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if !sec.UsableBy(by) {
+		return ErrLimited // it can't read the value, so it can't mark it seen
+	}
 	if !slices.Contains(sec.AckedBy, by) {
 		sec.AckedBy = append(slices.Clone(sec.AckedBy), by)
 	}
@@ -1641,7 +1654,9 @@ func (s *Store) Ack(ns, name, by string) error {
 
 // AgentAck is Ack by the token in a, which counts as a touch on a canary.
 func (s *Store) AgentAck(ns, name string, a AgentCtx) (*CanaryTouch, error) {
-	if err := s.Ack(ns, name, a.Token); err != nil {
+	if err := s.Ack(ns, name, a.Token); errors.Is(err, ErrLimited) {
+		return s.AgentTouch(ns, name, a, "ack"), err
+	} else if err != nil {
 		return nil, err
 	}
 	return s.AgentTouch(ns, name, a, "ack"), nil

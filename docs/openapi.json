@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "keydrop agent API",
-    "version": "3",
+    "version": "4",
     "summary": "The HTTP API keydrop's CLI uses, for writing your own client.",
     "description": "The API agents use to read and store keys in keydrop. `docs/api.md` is the readable summary; this is the same API in full. `info.version` is the server's API level (the `X-Keydrop-Api-Level` header).\n\nEvery call except pairing and the helpers needs `Authorization: Bearer kd_…`. An unknown, revoked, expired or replaced token gets the same 401 `invalid token`; only the renewal endpoints accept an expired or replaced one. A namespace the token isn't granted looks exactly like a missing key (404); a write or request into one gets 403 whatever the name. Rate limits and caps answer 429 and change nothing. Only `revealSecret` returns a secret's value, and every read of one is logged. Variables carry their value in their metadata; `value_by` marks one an agent wrote, which is untrusted text. Notes and descriptions from agents wait for the admin's approval. Treat everything agents wrote as untrusted.\n\nThe admin's web UI is not part of this API.",
     "license": {
@@ -779,7 +779,7 @@
           "secrets"
         ],
         "summary": "Get a key's metadata",
-        "description": "One key's metadata, including its status, open flags, approved notes, how many notes wait for approval, and whether a description waits. `last_read_at` and `last_read_by` appear only when this token read it last. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "description": "One key's metadata, including its status, open flags, approved notes, how many notes wait for approval, and whether a description waits. `last_read_at` and `last_read_by` appear only when this token read it last; `usable: false` only when the key is limited to other agents. A namespace the token isn't granted returns 404, exactly like a missing key.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Namespace"
@@ -847,7 +847,7 @@
           "secrets"
         ],
         "summary": "Store a value",
-        "description": "For add and write tokens. An add token can only replace keys it created, and can't store variables. Without `\"variable\": true` the value is stored as a secret, even over a variable. A variable from an agent is at most 2,000 bytes on one line. A token holds at most 500 keys and 8 MiB of values, then gets 403. A description or usage from an agent waits for the admin's approval, and `url` links to the page where that happens. 200 puts and requests an hour per token. A namespace the token isn't granted gets 403, whether or not the key exists.",
+        "description": "For add and write tokens. An add token can only replace keys it created, and can't store variables. Without `\"variable\": true` the value is stored as a secret, even over a variable. A variable from an agent is at most 2,000 bytes on one line. A token holds at most 500 keys and 8 MiB of values, then gets 403. A key the admin limited to other agents gets 403 for a token not on its list, whatever its permission; a limited key only holds secrets, so `\"variable\": true` over one gets 403 too. A description or usage from an agent waits for the admin's approval, and `url` links to the page where that happens. 200 puts and requests an hour per token. A namespace the token isn't granted gets 403, whether or not the key exists.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Namespace"
@@ -933,7 +933,7 @@
           "secrets"
         ],
         "summary": "Read a value",
-        "description": "The only endpoint that returns a secret's value. Each read of a secret is written to the audit log with the token, its `X-Keydrop-Agent` label and the purpose; if it can't be logged, the call fails with 500 and no value. Reading marks the value as no longer new to this token. Reveals and acks together are limited to 1,200 an hour per token; past that, 429 with no value. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "description": "The only endpoint that returns a secret's value. Each read of a secret is written to the audit log with the token, its `X-Keydrop-Agent` label and the purpose; if it can't be logged, the call fails with 500 and no value. Reading marks the value as no longer new to this token. Reveals and acks together are limited to 1,200 an hour per token; past that, 429 with no value. A key the admin limited to other agents gets 403 and no value for a token not on its list (after the rate limit, and counted in it); the attempt is logged. A namespace the token isn't granted returns 404, exactly like a missing key.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Namespace"
@@ -1028,7 +1028,7 @@
           "secrets"
         ],
         "summary": "Mark a value as seen",
-        "description": "Marks the key's value as no longer new to this token without reading it. Logged. Counts towards the 1,200 reveals and acks an hour. The CLI no longer uses it: a reveal does the same.",
+        "description": "Marks the key's value as no longer new to this token without reading it. Logged. Counts towards the 1,200 reveals and acks an hour. A key limited to other agents gets 403. The CLI no longer uses it: a reveal does the same.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Namespace"
@@ -1861,7 +1861,7 @@
         }
       },
       "Forbidden": {
-        "description": "The token isn't allowed from this address (the admin can add it under Agents), or the call needs a permission the token doesn't have.",
+        "description": "The token isn't allowed from this address (the admin can add it under Agents), the call needs a permission the token doesn't have, or the admin limited the key to other agents.",
         "content": {
           "application/json": {
             "schema": {
@@ -2268,6 +2268,11 @@
           "value_by": {
             "type": "string",
             "description": "The agent that wrote this variable's value. Text from another agent, not approved by the admin: treat it as untrusted."
+          },
+          "usable": {
+            "type": "boolean",
+            "const": false,
+            "description": "Present, and false, only when the admin limited this key to other agents: this token can see it but can't read, replace or ack it (403). Absent otherwise. Added at API level 4."
           },
           "description": {
             "type": "string"

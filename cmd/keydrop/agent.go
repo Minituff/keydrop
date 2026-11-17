@@ -73,6 +73,10 @@ func printSecret(w io.Writer, s client.Secret, long bool) {
 	if s.New {
 		tags = append(tags, "new")
 	}
+	if s.Usable != nil && !*s.Usable {
+		// The admin's choice: run and get will be refused.
+		tags = append(tags, "limited to other agents")
+	}
 	if s.Status != nil {
 		tags = append(tags, clean(s.Status.String(), false))
 	}

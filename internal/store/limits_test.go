@@ -413,3 +413,47 @@ func TestLimitSnapshot(t *testing.T) {
 		t.Fatal("a failed save lifted the limit")
 	}
 }
+
+// The store refuses a token off a key's limit whatever the caller: no
+// value, no write, no ack, and never new to it. A refusal on a canary is
+// a touch. The admin's own calls aren't limited.
+func TestLimitEnforced(t *testing.T) {
+	dir := t.TempDir()
+	s := limited(t, dir)
+	two := s.st.Tokens["two"]
+	if sec, _ := s.GetSecret("lab", "CF"); !sec.NewFor("one") || sec.NewFor("two") {
+		t.Fatal("new: only to a token that may read it")
+	}
+	if v, _, _, err := s.AgentReveal("lab", "CF", "one", "10.0.0.1"); err != nil || string(v) != "compat-value" {
+		t.Fatalf("listed: %q %v", v, err)
+	}
+	for _, name := range []string{"CF", "NOBODY"} {
+		if v, _, hit, err := s.AgentReveal("lab", name, "two", "10.0.0.2"); !errors.Is(err, ErrLimited) || v != nil || hit != nil {
+			t.Fatalf("%s off the list: %q %v %v", name, v, hit, err)
+		}
+		if _, err := s.AgentAck("lab", name, AgentCtx{"two", ""}); !errors.Is(err, ErrLimited) {
+			t.Fatalf("%s ack: %v", name, err)
+		}
+		for _, ow := range []bool{true, false} {
+			if _, err := s.AgentPut("lab", name, []byte("x"), AgentPut{Token: *two, Overwrite: ow}); !errors.Is(err, ErrLimited) {
+				t.Fatalf("%s put (overwrite %v): %v", name, ow, err)
+			}
+		}
+	}
+	// The admin isn't a token.
+	if v, _, err := s.Reveal("lab", "NOBODY", "admin (web)"); err != nil || string(v) != "nobody-value" {
+		t.Fatalf("admin reveal: %v", err)
+	}
+	must(t, s.SetValue("lab", "NOBODY", []byte("admin-value"), false))
+	// A canary: the refusal is a touch, the same answer otherwise.
+	must(t, s.SetLimit("lab", "DECOY", true, []string{"one"}))
+	if _, _, hit, err := s.AgentReveal("lab", "DECOY", "two", "10.0.0.2"); !errors.Is(err, ErrLimited) || hit == nil || hit.Action != "reveal" {
+		t.Fatalf("canary reveal: %v %+v", err, hit)
+	}
+	if hit, err := s.AgentAck("lab", "DECOY", AgentCtx{"two", ""}); !errors.Is(err, ErrLimited) || hit == nil || hit.Action != "ack" {
+		t.Fatalf("canary ack: %v %+v", err, hit)
+	}
+	if res, err := s.AgentPut("lab", "DECOY", []byte("x"), AgentPut{Token: *two, Overwrite: true}); !errors.Is(err, ErrLimited) || res.Canary == nil {
+		t.Fatalf("canary put: %v %+v", err, res)
+	}
+}

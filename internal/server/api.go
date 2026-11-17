@@ -51,6 +51,10 @@ type APISecret struct {
 	// ValueBy names the agent that wrote a variable's value. That value is
 	// text from another agent, unapproved, and treated as untrusted.
 	ValueBy string `json:"value_by,omitempty"`
+	// Usable is false, and only present, when the admin limited the key to
+	// other agents: this token sees it but can't read, replace or ack it.
+	// Absent for every other key, so those answers are as before.
+	Usable *bool `json:"usable,omitempty"`
 }
 
 // APIGroup is an entry's group as agents see it.
@@ -104,6 +108,9 @@ func (s *Server) toAPI(sec store.Secret, tok string, assign map[string]store.Gro
 	// read" (as a canary usually is), isn't this agent's to know.
 	if sec.LastReadBy == tok && tok != "" {
 		a.LastReadAt, a.LastReadBy = sec.LastReadAt, sec.LastReadBy
+	}
+	if !sec.UsableBy(tok) {
+		a.Usable = new(bool)
 	}
 	if e := sec.Ext; e != nil {
 		a.CreatedBy, a.Status, a.DescriptionBy = e.CreatedBy, e.Status, e.DescriptionBy
@@ -300,20 +307,28 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 	if !s.revealAllowed(w, r, t, sec, "reveal") {
 		return
 	}
+	// The purpose is the agent's word, and the Log shows it to the admin.
+	purpose := store.AgentLine(r.URL.Query().Get("purpose"))
+	if purpose != "" {
+		purpose = "agent says: " + purpose
+	}
 	// Reading the value is what makes it no longer new to this token.
 	val, variable, hit, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name, s.clientIP(r))
 	switch {
+	case errors.Is(err, store.ErrLimited):
+		// The same for a canary (which is also a touch) as for any key.
+		if hit != nil {
+			s.canaryTouched(r, *hit)
+		}
+		s.event(r, actor(t), "secret.read.denied", sec.Ref(), strings.TrimSuffix("limited to other agents; "+purpose, "; "))
+		limitedError(w, t, sec.Ref())
+		return
 	case errors.Is(err, store.ErrNoValue):
 		apiError(w, http.StatusConflict, sec.Ref()+" has no value yet")
 		return
 	case err != nil:
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	// The purpose is the agent's word, and the Log shows it to the admin.
-	purpose := store.AgentLine(r.URL.Query().Get("purpose"))
-	if purpose != "" {
-		purpose = "agent says: " + purpose
 	}
 	kind := "variable"
 	var unlogged error
@@ -349,7 +364,14 @@ func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	}
 	hit, err := s.store.AgentAck(sec.Namespace, sec.Name, s.agentCtx(r, t))
-	if err != nil {
+	if hit != nil && err != nil {
+		s.canaryTouched(r, *hit)
+	}
+	switch {
+	case errors.Is(err, store.ErrLimited):
+		limitedError(w, t, sec.Ref())
+		return
+	case err != nil:
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -431,7 +453,10 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	case errors.Is(err, store.ErrReadOnly):
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
 		return
-	case errors.Is(err, store.ErrVariableNeedsWrite), errors.Is(err, store.ErrTokenCap):
+	case errors.Is(err, store.ErrLimited):
+		limitedError(w, t, ns+"/"+name)
+		return
+	case errors.Is(err, store.ErrVariableNeedsWrite), errors.Is(err, store.ErrTokenCap), errors.Is(err, store.ErrLimitVariable):
 		apiError(w, http.StatusForbidden, err.Error())
 		return
 	case err != nil:
@@ -786,6 +811,12 @@ func (s *Server) revealAllowed(w http.ResponseWriter, r *http.Request, t store.T
 	s.throttledEvent(r, actor(t), "token.ratelimited", "", "reveals and acks over "+strconv.Itoa(revealsPerHour)+" an hour", false)
 	apiError(w, http.StatusTooManyRequests, "too many reveals and acks from this token (the limit is "+strconv.Itoa(revealsPerHour)+" an hour); try again later")
 	return false
+}
+
+// limitedError is the answer to a token the key is limited away from. It
+// names only the asking token, never the ones allowed.
+func limitedError(w http.ResponseWriter, t store.Token, ref string) {
+	apiError(w, http.StatusForbidden, ref+" is limited to other agents; ask the admin to allow "+t.Name+" on it, and don't try to get it another way")
 }
 
 // writeAllowed applies the per-token limit on puts and requests, which
