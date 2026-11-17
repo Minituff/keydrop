@@ -13,9 +13,12 @@ The secret page lists the older values, newest first: when each was
 replaced, who saved it (you or an agent) and its kind, never the value.
 **Restore** makes one current again, and the current value moves into the
 list, so restoring loses nothing. To look at an old value, restore it and
-press **Show value**. Agents can't see the list or restore from it. It's
-for mistakes: an agent with write permission that replaces a key five
-times in a row pushes your values out of it, so keep backups of `data/`.
+press **Show value**. Agents can't see the list or restore from it. When
+an agent saves a value, the list keeps only that agent's newest older
+value (and each other agent's), so an agent that replaces a key over and
+over takes one place in the list and your values stay. Several agents
+with write permission working together can still push your oldest values
+out, one place each, so keep backups of `data/`.
 
 Lists show names and descriptions only, never values. The page is built for
 phones and uses no JavaScript. **Settings → Appearance** picks System, Light

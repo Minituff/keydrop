@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -155,6 +156,25 @@ func (s *Store) withCurrent(sec *Secret, list []older, now time.Time) []older {
 	}
 	cur := older{Version{VersionInfo{newVersionID(), now, s.savedBy(sec)}, sec.Variable, sec.Value}, "value"}
 	return append([]older{cur}, list...)
+}
+
+// newestPerAgent keeps, of the older values agents saved, only each
+// agent's newest; the admin's, and those whose saver isn't known, all
+// stay. Applied when an agent saves, so a run of writes by one token takes
+// one slot of the history, not all of it (its last-but-one value can still
+// be restored), and k tokens take k: the admin's newest MaxVersions-k
+// older values stay. The admin's own saves and restores never drop
+// anything this way. list is the caller's to change.
+func newestPerAgent(list []older) []older {
+	seen := map[string]bool{}
+	return slices.DeleteFunc(list, func(o older) bool {
+		if !strings.HasPrefix(o.By, "token:") {
+			return false
+		}
+		dup := seen[o.By]
+		seen[o.By] = true
+		return dup
+	})
 }
 
 // savedBy names who saved sec's current value, or "" if that isn't known.

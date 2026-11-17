@@ -296,23 +296,31 @@ func TestDeleteClearsVersions(t *testing.T) {
 
 // The per-token storage cap counts the older values of the keys a token
 // made, as it counts Previous; once the admin saves over a key it no longer
-// counts, history included.
+// counts, history included. (A token's own run of writes keeps only its
+// newest older value, so another token's write is what makes a third.)
 func TestTokenCapCountsVersions(t *testing.T) {
 	s, tok := capStore(t)
-	size := MaxBytesPerToken/5 + 1
-	put := func() error {
+	_, err := s.CreateToken("other", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	other := *s.st.Tokens["other"]
+	size := MaxBytesPerToken/4 + 1
+	put := func(tok Token) error {
 		_, err := s.AgentPut("lab", "BIG", bytes.Repeat([]byte("x"), size), AgentPut{Token: tok, Overwrite: true})
 		return err
 	}
-	for i := 0; i < 4; i++ {
-		must(t, put()) // value, previous and two older values: 4 sizes
+	must(t, put(tok))   // value
+	must(t, put(tok))   // value and previous: 2 sizes
+	must(t, put(other)) // its value, and bulk's newest: 2 sizes
+	must(t, put(tok))   // value, previous and an older value: 3 sizes
+	if got := len(s.Versions("lab", "BIG")); got != 2 {
+		t.Fatalf("%d older values", got)
 	}
-	if err := put(); !errors.Is(err, ErrTokenCap) {
-		t.Fatalf("fifth: %v", err)
+	if err := put(tok); !errors.Is(err, ErrTokenCap) {
+		t.Fatalf("fourth size: %v", err)
 	}
 	must(t, s.PutValue("lab", "BIG", []byte("admin"), nil))
 	for i := 0; i < 4; i++ {
-		must(t, put()) // the admin's key now: not counted
+		must(t, put(tok)) // the admin's key now: not counted
 	}
 }
 
@@ -639,5 +647,98 @@ func TestValueAuthorAfterV6Release(t *testing.T) {
 	must(t, err)
 	if by := s.ValueAuthor("lab", "URL"); by != "writer" || s.st.Secrets[key("lab", "URL")].Versions.By != "token:writer" {
 		t.Fatalf("saved again: %q", by)
+	}
+}
+
+// When an agent saves, the history keeps only each agent's newest older
+// value: a run of writes by one token can't push the admin's older values
+// out, and holds at most two of its values on the key (current and one
+// older), whatever their size. Two tokens alternating take two slots.
+func TestAgentWritesKeepAdminHistory(t *testing.T) {
+	s, err := Open(t.TempDir(), key32())
+	must(t, err)
+	_, err = s.CreateToken("t1", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	t1 := *s.st.Tokens["t1"]
+	big := strings.Repeat("x", 4000)
+	put := func(tok Token, name, v string) {
+		t.Helper()
+		_, err := s.AgentPut("lab", name, []byte(v), AgentPut{Token: tok, Overwrite: true})
+		must(t, err)
+	}
+	for _, v := range []string{"A", "B", "C"} {
+		must(t, s.SetValue("lab", "K", []byte(v), false))
+	}
+	for _, v := range []string{"A", "B", "C"} {
+		must(t, s.SetValue("lab", "DECOY", []byte(v), false))
+	}
+	must(t, s.SetCanary("lab", "DECOY", true))
+	for i := range 10 {
+		put(t1, "K", fmt.Sprintf("w%d-%s", i, big))
+		put(t1, "DECOY", fmt.Sprintf("w%d-%s", i, big))
+	}
+	short := func(name string) string {
+		var out []string
+		for _, v := range olderPlain(t, s, "lab", name) {
+			out = append(out, strings.TrimSuffix(strings.TrimSuffix(v, "/s"), "-"+big))
+		}
+		return strings.Join(out, " ")
+	}
+	if got := short("K"); got != "w8 C B A" {
+		t.Fatalf("after ten writes by one token: %s", got)
+	}
+	// A canary's history works the same: agents can't tell one by it.
+	if got := short("DECOY"); got != "w8 C B A" {
+		t.Fatalf("canary, after ten writes: %s", got)
+	}
+	if sec := s.st.Secrets[key("lab", "K")]; len(sec.Value)+len(sec.Previous)+sec.olderBytes() > 2*(len(big)+100)+3*100 {
+		t.Fatalf("%d bytes held on the key", len(sec.Value)+len(sec.Previous)+sec.olderBytes())
+	}
+	// Every row left restores, by its ID.
+	byID := map[string]string{}
+	for i, r := range s.Versions("lab", "K") {
+		byID[r.ID] = olderPlain(t, s, "lab", "K")[i]
+	}
+	for id, want := range byID {
+		_, _, err := s.Restore("lab", "K", id)
+		must(t, err)
+		if got := current(t, s, "lab", "K"); got != want {
+			t.Fatalf("restored %s: %.10s, want %.10s", id, got, want)
+		}
+	}
+	// The admin's own saves keep five, agents' values included.
+	s2, err := Open(t.TempDir(), key32())
+	must(t, err)
+	_, err = s2.CreateToken("t1", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	_, err = s2.AgentPut("lab", "K", []byte("w0"), AgentPut{Token: *s2.st.Tokens["t1"]})
+	must(t, err)
+	_, err = s2.AgentPut("lab", "K", []byte("w1"), AgentPut{Token: *s2.st.Tokens["t1"], Overwrite: true})
+	must(t, err)
+	for _, v := range []string{"A", "B", "C", "D"} {
+		must(t, s2.SetValue("lab", "K", []byte(v), false))
+	}
+	if got := strings.Join(olderPlain(t, s2, "lab", "K"), " "); got != "C/s B/s A/s w1/s w0/s" {
+		t.Fatalf("the admin's saves: %s", got)
+	}
+	// Two tokens alternating keep one older value each: of the admin's
+	// four values, the newest three stay.
+	s3, err := Open(t.TempDir(), key32())
+	must(t, err)
+	for _, n := range []string{"t1", "t2"} {
+		_, err = s3.CreateToken(n, []string{"lab"}, PermWrite, nil)
+		must(t, err)
+	}
+	for _, v := range []string{"A", "B", "C", "D"} {
+		must(t, s3.SetValue("lab", "K", []byte(v), false))
+	}
+	for i := range 10 {
+		for _, n := range []string{"t1", "t2"} {
+			_, err := s3.AgentPut("lab", "K", []byte(fmt.Sprintf("%s-%d", n, i)), AgentPut{Token: *s3.st.Tokens[n], Overwrite: true})
+			must(t, err)
+		}
+	}
+	if got := strings.Join(olderPlain(t, s3, "lab", "K"), " "); got != "t1-9/s t2-8/s D/s C/s B/s" {
+		t.Fatalf("two tokens: %s", got)
 	}
 }

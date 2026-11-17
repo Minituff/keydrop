@@ -1365,6 +1365,9 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 	// first value doesn't: a key nobody but the admin has saved is stored
 	// as the release with MAC6 stores it.
 	list := s.withCurrent(sec, sec.olderValues(), now)
+	if ap != nil {
+		list = newestPerAgent(list)
+	}
 	if len(list) > 0 || sec.Versions != nil || ap != nil {
 		if err := s.setOlder(sec, list, actor); err != nil {
 			return res, err

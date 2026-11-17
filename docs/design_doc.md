@@ -113,13 +113,24 @@ values (`MaxVersions`) beyond the current one.
   responses are the same byte for byte with or without history, canaries
   included. Deleting a key deletes its history. Making a key a canary, or
   ordinary again, keeps its history, as it always kept the previous value.
+- **One place per agent.** When a token saves a value, the history keeps
+  only each agent's newest older value; the admin's older values, and
+  those whose saver isn't known, all stay. So a run of writes by one
+  token takes one place (its last-but-one value can still be restored),
+  not all five, and holds at most two of its values on a key, current
+  included, which bounds what a token can store on keys it didn't create
+  (those don't count towards its cap). The admin's own saves and restores
+  never drop anything this way: the admin's five-deep history is the
+  point.
 - **What it doesn't protect against.** A write token can still replace a
-  key, and five writes in a row push every value the admin saved out of
-  the history; it's for mistakes, not for an agent that's out to destroy
-  a key. The audit log and the change log still show every write, and a
-  backup of `data/` is still the only copy that an agent can't reach.
-  Older values of the keys a token created count towards its storage cap,
-  as the previous value always did, until the admin saves over the key.
+  key, and k tokens with write access to it take k places, so they push
+  out all but the admin's newest 5−k older values (two tokens alternating
+  leave the newest three; five leave none). It's for mistakes, not for
+  agents that are out to destroy a key. The audit log and the change log
+  still show every write, and a backup of `data/` is still the only copy
+  that an agent can't reach. Older values of the keys a token created
+  count towards its storage cap, as the previous value always did, until
+  the admin saves over the key.
 
 Each secret has a description ("what this is for and what to do with it"),
 an optional usage hint and an optional expiry date. The description is the
