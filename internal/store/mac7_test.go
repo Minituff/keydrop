@@ -88,3 +88,96 @@ func TestMAC7Integrity(t *testing.T) {
 		return macOf(k.mac7Key, &c)
 	}, nil)
 }
+
+// The views as they were before v6View copied the secrets (bb993bf), for
+// TestViewsUnchangedBySecretCopies.
+func oldViews(st *state) (legacy, v2, v3, v4, v5, v6 state) {
+	v6 = *st
+	v6.MAC, v6.MAC2, v6.MAC3, v6.MAC4, v6.MAC5, v6.MAC6, v6.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	v6.Notify = nil
+	v5 = v6
+	v5.Tokens = map[string]*Token{}
+	for k, v := range v6.Tokens {
+		cp := *v
+		cp.SelfUpgrade = false
+		v5.Tokens[k] = &cp
+	}
+	v4 = v5
+	v4.MAC5, v4.Alerts = nil, nil
+	v3 = v4
+	v3.MAC4, v3.Canary = nil, nil
+	v3.Secrets = map[string]*Secret{}
+	for k, v := range st.Secrets {
+		cp := *v
+		cp.Canary = false
+		v3.Secrets[k] = &cp
+	}
+	v3.Tokens = map[string]*Token{}
+	for k, v := range v4.Tokens {
+		cp := *v
+		cp.ExpiresAt, cp.Lifetime, cp.Renewal, cp.Rotation = nil, 0, nil, nil
+		v3.Tokens[k] = &cp
+	}
+	// The older views wrote through v3's copies; copy again so v3 stays.
+	cpSecrets := func(m map[string]*Secret, f func(*Secret)) map[string]*Secret {
+		out := map[string]*Secret{}
+		for k, v := range m {
+			cp := *v
+			f(&cp)
+			out[k] = &cp
+		}
+		return out
+	}
+	v2 = v3
+	v2.Groups, v2.Settings = nil, nil
+	v2.Secrets = cpSecrets(v3.Secrets, func(s *Secret) { s.Group, s.Batch = "", nil })
+	legacy = v2
+	legacy.History, legacy.Fixups = nil, 0
+	legacy.Secrets = cpSecrets(v2.Secrets, func(s *Secret) { s.Ext = nil })
+	legacy.Tokens = map[string]*Token{}
+	for k, v := range v2.Tokens {
+		cp := *v
+		cp.Add = false
+		legacy.Tokens[k] = &cp
+	}
+	return
+}
+
+// v6View copies the secrets so a per-secret field can be zeroed in it.
+// That changes nothing a MAC covers: every view marshals byte-for-byte as
+// before, so every older release still verifies the file, and computing
+// the views leaves the state alone.
+func TestViewsUnchangedBySecretCopies(t *testing.T) {
+	dir := t.TempDir()
+	s := canaried(t, dir)
+	must(t, s.SetAlertWebhook(testWebhook))
+	_, err := s.CreateToken("agent", []string{"ns"}, PermRead, nil)
+	must(t, err)
+	must(t, s.SetTokenSelfUpgrade("agent", true))
+	on := true
+	must(t, s.SetInboxAlerts(&on))
+	for name, st := range map[string]*state{"in use": &s.st, "empty": {}, "no secrets": {Tokens: s.st.Tokens}} {
+		before, _ := json.Marshal(st)
+		legacy, v2, v3, v4, v5, v6 := oldViews(st)
+		for _, c := range []struct {
+			view     string
+			old, now state
+		}{
+			{"legacy", legacy, st.legacyView()}, {"v2", v2, st.v2View()}, {"v3", v3, st.v3View()},
+			{"v4", v4, st.v4View()}, {"v5", v5, st.v5View()}, {"v6", v6, st.v6View()},
+		} {
+			o, _ := json.Marshal(&c.old)
+			n, _ := json.Marshal(&c.now)
+			if string(o) != string(n) {
+				t.Fatalf("%s: %s changed:\n%s\n%s", name, c.view, o, n)
+			}
+		}
+		if after, _ := json.Marshal(st); string(after) != string(before) {
+			t.Fatalf("%s: computing the views changed the state", name)
+		}
+	}
+	// And the file's MACs still verify.
+	if _, err := Open(dir, key32()); err != nil {
+		t.Fatal(err)
+	}
+}

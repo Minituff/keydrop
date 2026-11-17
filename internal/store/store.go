@@ -371,11 +371,11 @@ func (st *state) v2View() state {
 func (st *state) v3View() state {
 	c := st.v4View()
 	c.MAC4, c.Canary = nil, nil
-	c.Secrets = make(map[string]*Secret, len(st.Secrets))
-	for k, v := range st.Secrets {
-		cp := *v
-		cp.Canary = false
-		c.Secrets[k] = &cp
+	if c.Secrets == nil {
+		c.Secrets = map[string]*Secret{} // as this view always made its own copy
+	}
+	for _, v := range c.Secrets {
+		v.Canary = false // a copy, made by v6View
 	}
 	tokens := c.Tokens // v5View's copies, without SelfUpgrade
 	c.Tokens = make(map[string]*Token, len(tokens))
@@ -400,11 +400,11 @@ func (st *state) v4View() state {
 // v5View is the state as the release with MAC5 (and without self-upgrade)
 // sees it: each token's SelfUpgrade and MAC6 dropped, the MACs empty.
 // Marshalled, it's byte-for-byte what that release marshals for its MAC5.
-// The token map is a copy; everything else is shared with st: don't write
-// through it.
+// The token map is a copy, the secrets v6View's copies; everything else is
+// shared with st: don't write through it.
 func (st *state) v5View() state {
 	c := st.v6View()
-	tokens := c.Tokens // st's map: v6View copies nothing
+	tokens := c.Tokens // st's map: v6View copies only the secrets
 	c.Tokens = make(map[string]*Token, len(tokens))
 	for k, v := range tokens {
 		cp := *v
@@ -418,8 +418,9 @@ func (st *state) v5View() state {
 // fields after it and MAC7 dropped, the MACs empty. Marshalled, it's
 // byte-for-byte what that release marshals for its MAC6, so it still
 // verifies a file this one wrote. It's the innermost view: every older one
-// starts from it. A shallow copy, sharing every map and pointer with st:
-// don't write through it.
+// starts from it. The secrets map and the secrets in it are copies, so a
+// view can zero a per-secret field; every other map and pointer is shared
+// with st: don't write through them.
 //
 // A field added before MAC7 has shipped is zeroed here and named in
 // hasNewer7. Once a release that checks MAC7 has shipped, the next field
@@ -428,6 +429,13 @@ func (st *state) v6View() state {
 	c := *st
 	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
 	c.Notify = nil
+	if st.Secrets != nil {
+		c.Secrets = make(map[string]*Secret, len(st.Secrets))
+		for k, v := range st.Secrets {
+			cp := *v
+			c.Secrets[k] = &cp
+		}
+	}
 	return c
 }
 
