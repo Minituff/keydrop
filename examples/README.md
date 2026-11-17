@@ -18,6 +18,11 @@ it when `keydrop upgrade` runs.
   `keydrop guard --command ls` exits 0: an older CLI without the guard
   exits 2, which as a hook blocks every shell command.
 
+- [`claude-code/mcp.json`](claude-code/mcp.json): registers `keydrop mcp`
+  as an MCP server. Copy it to your project's `.mcp.json`. It's optional:
+  the CLI does everything, and the MCP tools only make listing, checking
+  and requesting keys discoverable. No tool returns a secret's value.
+
 What the guard catches and what it doesn't, and why it's a guard-rail
 rather than a security boundary:
 [docs/agent-setup.md](../docs/agent-setup.md#claude-code-hooks).

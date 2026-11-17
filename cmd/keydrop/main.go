@@ -80,6 +80,9 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          shell command would print a value: get --raw,
                                          --no-mask, run -- env or printenv. Needs no token
                                          or network; --command checks CMD instead
+  mcp                                   an MCP server on stdin/stdout (for an agent's MCP
+                                         config): tools that list keys, show details and
+                                         history, and request keys. Never a secret's value
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
@@ -162,6 +165,8 @@ func main() {
 		err = cmdUpgrade(args)
 	case "guard":
 		err = cmdGuard(args)
+	case "mcp":
+		err = cmdMCP(args)
 	case "version", "--version", "-v":
 		fmt.Println("keydrop", version)
 	case "help", "--help", "-h":

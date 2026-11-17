@@ -677,6 +677,56 @@ limited to what it needs:
   remove) is a CSRF-checked POST and is audit-logged, as are the agent
   calls.
 
+### MCP server
+`keydrop mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdin/stdout, built into the CLI. It's another front end to
+commands that already exist, using the machine's pairing (URL, pin, token)
+and the same API client, so every server-side rule (grants, canaries, rate
+limits, the audit log) applies unchanged and the server needs no change.
+
+- **Metadata only.** A tool result goes straight into the model's
+  transcript, which is kept by the provider, logged and often shared, so a
+  value there is as good as printed. The tools are `keydrop_secrets`,
+  `keydrop_vars`, `keydrop_info`, `keydrop_history`, `keydrop_request` and
+  `keydrop_whoami`. None of them calls the reveal endpoint, and a test runs
+  every tool against a real server and fails if one does or if the
+  secret's value reaches the MCP process at all. As a second line, the
+  tools drop any value the server sent with an entry that isn't a
+  variable. To use a key, the agent runs `keydrop run -e NAME -- CMD` in
+  the shell, as before; the server's `instructions` say so.
+- **Variables are included**, with their values: they're the documented
+  exception, values agents already see with `keydrop vars`, and they come
+  from the same list call, so the server's kind check (`store.VariableValue`
+  refuses a secret) decides what has a value, not the CLI. No tool reads a
+  variable through reveal, so a variable that turns into a secret while
+  it's read can't slip through that way.
+- **Agent text stays untrusted.** Each tool returns exactly the text the
+  CLI command prints, through the same functions: control characters made
+  visible, and descriptions, notes and variables another agent wrote
+  quoted under "untrusted text from another agent". A tool result is
+  model input, so the quoting matters more here, not less.
+- **Left out:** anything that returns or handles a value (`get`, `run`,
+  `put`, `import`); `wait`, which blocks for up to half an hour; `flag`,
+  `status` and `note`, to keep the first version small (they could be
+  added, since they carry no value); and `pair`, `login`, `renew` and
+  `upgrade`, which change the machine's setup.
+- **Protocol:** JSON-RPC 2.0, one message per line, answering
+  `initialize` (protocol versions 2025-06-18, 2025-03-26 and 2024-11-05),
+  `ping`, `tools/list` and `tools/call`, one request at a time. stdout
+  carries only replies: while it runs, anything else the CLI would print
+  there goes to stderr, where its warnings (token expiry, a different
+  server build) already go. A line over 1 MiB is answered with an error
+  and skipped, malformed JSON gets a parse error, and the server exits 0
+  when stdin ends. Tool failures (not paired, not found, the server
+  unreachable) are tool results marked `isError`, so the session goes on.
+  Each call builds its client afresh, so pairing the machine, or a
+  renewed token, takes effect without restarting the MCP client.
+- What the server records of these calls (a request, a canary touched)
+  names the token, with the `KEYDROP_AGENT` label if the MCP server's
+  environment sets one, exactly as for the CLI. Nothing marks a call as
+  coming through MCP: the calls are the same, and the reveal `purpose`
+  the CLI sends for `run` and `get` doesn't arise, since no tool reveals.
+
 ### Audit log
 - Anyone who can reach keydrop can cause some events without a working
   credential (`api.badtoken`, `token.expired`, `token.replaced`,

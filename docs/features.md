@@ -64,6 +64,12 @@ directly, so you never copy a token around.
   -- env`) before it runs, and tells the agent what to do instead. It needs
   no network or token. A guard-rail for mistakes, not a security boundary:
   see [Claude Code hooks](agent-setup.md#claude-code-hooks).
+- **`keydrop mcp`** is an optional [MCP](https://modelcontextprotocol.io)
+  server, so an agent can list keys, read their details and history, and
+  request new ones through tools instead of the shell. It has no tool that
+  returns a secret's value: those would land in the transcript. The agent
+  still uses a key with `keydrop run`. See
+  [MCP](agent-setup.md#mcp).
 - **It stays current.** The server hands out its own CLI build. When an
   agent's CLI is a different build, keydrop tells it what to do, at most once a
   day. With **Allow self-upgrade** on for that agent (it's off by default),
