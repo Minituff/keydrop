@@ -250,7 +250,7 @@ func TestNotifyIntegrity(t *testing.T) {
 	// Both dropped is what the release before writes: it opens, with no
 	// choice made (the server then uses KEYDROP_ALERT_INBOX), and
 	// everything else as it was.
-	s2 := try("both dropped", func(raw map[string]any) { delete(raw, "notify"); delete(raw, "mac7") }, nil)
+	s2 := try("both dropped", stripV7, nil)
 	if on, chosen := s2.InboxAlerts(); on || chosen || s2.ExpiryAlertDays() != 0 {
 		t.Fatalf("both dropped: %v %v %d", on, chosen, s2.ExpiryAlertDays())
 	}

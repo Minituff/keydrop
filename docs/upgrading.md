@@ -30,6 +30,18 @@ you revoked or replaced since then comes back: revoked tokens work again, and
 an old admin password does too. If that matters, revoke those tokens and
 change the password again.
 
+### Running an older release on newer data
+
+Without per-key limits, v0.1.3 starts on this release's data directory
+as it is. The first time it saves anything it drops what it doesn't know:
+older values beyond the previous one, the Inbox and expiry alert choices
+in Settings, and the record of which agent saved each value. Back on
+this release, a variable an agent wrote is then labelled as agent text
+the way v0.1.3 labels it, from the change log: an agent that has since
+written a few hundred other changes in the namespace can have pushed
+that out, and the variable reads as yours until it's saved again.
+If you went back and forth, look over your variables' values.
+
 ### Rolling back after limiting a key
 
 Once you limit a key to some agents (on its page), releases before

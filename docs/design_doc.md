@@ -669,6 +669,22 @@ every read logged, no way to just look). So an entry is either a
   `get NAME` and `run -e` keep the value itself exact (scripts read it)
   and put the label on stderr instead, naming the agent. Once
   the admin saves the value, the label goes.
+- **The label is stored with the value.** Who saved the current value is
+  kept in the key's `versions` (`by`), written on every save by a token,
+  a key's first value included, and carried by a restore, so restoring an
+  agent's older value brings its label back. It used to be worked out
+  from the change log, which a token can age out: the log keeps 500
+  events per namespace and drops the busiest token's own oldest first, so
+  a few hundred writes to a scratch key made the token's variable read
+  as the admin's. The log is now only the fallback for a value with no
+  saver stored: one saved before this release, or one in a file the
+  previous release (v0.1.3) rewrote, since it drops `versions`. For those
+  it's the old behaviour, label included until the token has written
+  enough to push its event out; the next save stores the saver again.
+  With nothing stored and nothing in the log the value counts as the
+  admin's: every token save now stores its saver, and the log keeps the
+  admin's events ahead of agents', so that's a value the admin saved, or
+  one of those older cases.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
   so a generated password can't land in a list. The same goes for the
@@ -1059,15 +1075,19 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   still rolls back one step. `versions` describes it (ID, when it was
   replaced, who saved it) and holds only the values older than it, plus
   who saved the current value. It's written once a key has a value
-  replaced, so a key with one value has none and a file with none has no
-  `mac7`. An older build rewrites the whole file on every save, so it
+  replaced, or when a token saves one (the saver is what labels an
+  agent's variable, see Variables), so a key with one value the admin
+  saved has none, and a file where only the admin has saved values has
+  no `mac7`. An older build rewrites the whole file on every save, so it
   can't leave `versions` describing a `previous` it changed: whatever it
   did (a rollback, a save), the file it writes has the current value and
   `previous` as it left them and no `versions`; this one then shows that
   `previous` as the only older value (its date and saver unknown) and
   builds history again from the next save. History grants and restricts
   nothing, so it isn't tied to the key check: stripping `versions` with
-  `mac7` (and nothing else under it set) loses only the history.
+  `mac7` (and nothing else under it set) loses the history, and the
+  stored savers, so an agent's variable is labelled from the change log
+  again, as in that release.
 - When an older build rewrites the file it drops the fields it doesn't know;
   keys and their values stay. The e2e suite starts the older builds on data
   this one wrote, lets them rewrite it, and opens the result.

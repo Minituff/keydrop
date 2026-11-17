@@ -20,6 +20,32 @@ func mac6Release(st state) state {
 	return c
 }
 
+// stripV7 removes from a raw file what's after MAC6: what the release
+// before MAC7 drops when it writes the file back. Every value a token saves
+// stores its saver in versions, so any fixture where an agent saved one
+// has some.
+func stripV7(raw map[string]any) {
+	delete(raw, "mac7")
+	delete(raw, "notify")
+	for _, v := range raw["secrets"].(map[string]any) {
+		delete(v.(map[string]any), "versions")
+		delete(v.(map[string]any), "limit")
+	}
+}
+
+// asV6Wrote drops what's after MAC6 from s's state and saves it: the file
+// as the release with MAC6 writes it back.
+func asV6Wrote(t *testing.T, s *Store) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sec := range s.st.Secrets {
+		sec.Versions, sec.Limit = nil, nil
+	}
+	s.st.Notify = nil
+	must(t, s.save())
+}
+
 func checkMAC6(k *Store, v6 state) bool {
 	check := v6
 	check.MAC, check.MAC2, check.MAC3, check.MAC4, check.MAC5, check.MAC6 = nil, nil, nil, nil, nil, nil
@@ -36,6 +62,7 @@ func TestMAC6FileOpens(t *testing.T) {
 	_, err := s.CreateToken("agent", []string{"ns"}, PermRead, nil)
 	must(t, err)
 	must(t, s.SetTokenSelfUpgrade("agent", true))
+	asV6Wrote(t, s) // the agent's value in the fixture stored its saver
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
 	if strings.Contains(string(data), `"mac7"`) {
@@ -79,12 +106,12 @@ func TestMAC7Integrity(t *testing.T) {
 	try("mac7 wrong", func(state) []byte { return make([]byte, 32) }, ErrIntegrity)
 	try("mac7 under another key", func(st state) []byte {
 		c := st
-		c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+		c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
 		return macOf(k.mac6Key, &c)
 	}, ErrIntegrity)
 	try("mac7 right", func(st state) []byte {
 		c := st
-		c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+		c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
 		return macOf(k.mac7Key, &c)
 	}, nil)
 }
@@ -154,6 +181,7 @@ func TestViewsUnchangedBySecretCopies(t *testing.T) {
 	_, err := s.CreateToken("agent", []string{"ns"}, PermRead, nil)
 	must(t, err)
 	must(t, s.SetTokenSelfUpgrade("agent", true))
+	asV6Wrote(t, s) // oldViews knows nothing of versions
 	on := true
 	must(t, s.SetInboxAlerts(&on))
 	for name, st := range map[string]*state{"in use": &s.st, "empty": {}, "no secrets": {Tokens: s.st.Tokens}} {

@@ -158,9 +158,10 @@ func (s *Store) withCurrent(sec *Secret, list []older, now time.Time) []older {
 }
 
 // savedBy names who saved sec's current value, or "" if that isn't known.
-// Until a key has history that's not recorded, so the latest change in the
-// history log says, unless it was a rollback or has aged out. Call with
-// s.mu held.
+// It's stored once a key has history, and for every value a token saves;
+// otherwise (the admin's first value, or one saved before this release)
+// the latest change in the history log says, unless it was a rollback or
+// has aged out. Call with s.mu held.
 func (s *Store) savedBy(sec *Secret) string {
 	if sec.Versions != nil {
 		return sec.Versions.By

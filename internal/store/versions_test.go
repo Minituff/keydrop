@@ -486,3 +486,158 @@ func TestV6ReleaseReadsVersionsFile(t *testing.T) {
 		t.Fatalf("older values after new saves %s", got)
 	}
 }
+
+// A value a token saves stores its saver, even as a key's first value, so
+// ValueAuthor names it for as long as it's current, however much of the
+// change log is trimmed; a restore brings an older value's saver back with
+// it, and the admin's save takes the label away.
+func TestValueAuthorStored(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, key32())
+	must(t, err)
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	tok := *s.st.Tokens["writer"]
+	put := func(name, v string) {
+		t.Helper()
+		_, err := s.AgentPut("lab", name, []byte(v), AgentPut{Token: tok, Overwrite: true, Variable: true})
+		must(t, err)
+	}
+	must(t, s.PutValue("lab", "ADMIN_VAR", []byte("admin-text"), &Meta{Variable: true}))
+	put("ADMIN_VAR", "agent-text") // over the admin's variable
+	put("FIRST", "agent-first")    // a key's first value
+	for _, n := range []string{"ADMIN_VAR", "FIRST"} {
+		if sec := s.st.Secrets[key("lab", n)]; sec.Versions == nil || sec.Versions.By != "token:writer" {
+			t.Fatalf("%s: saver not stored: %+v", n, sec.Versions)
+		}
+	}
+	for i := range 600 { // more events than a namespace keeps
+		put("SCRATCH", fmt.Sprintf("scratch-%d", i))
+	}
+	if n := len(s.History(func(ev Event) bool { return ev.Name == "ADMIN_VAR" || ev.Name == "FIRST" }, 0)); n != 1 {
+		t.Fatalf("%d events left for the agent's keys, want only the admin's", n)
+	}
+	for _, n := range []string{"ADMIN_VAR", "FIRST"} {
+		if by := s.ValueAuthor("lab", n); by != "writer" {
+			t.Fatalf("%s after its events aged out: %q", n, by)
+		}
+	}
+	// Reopened: what's stored, not what's in memory.
+	s, err = Open(dir, key32())
+	must(t, err)
+	if by := s.ValueAuthor("lab", "ADMIN_VAR"); by != "writer" {
+		t.Fatalf("reopened: %q", by)
+	}
+	must(t, s.SetValue("lab", "ADMIN_VAR", []byte("admin-again"), true))
+	if by := s.ValueAuthor("lab", "ADMIN_VAR"); by != "" {
+		t.Fatalf("after the admin's save: %q", by)
+	}
+	rows := s.Versions("lab", "ADMIN_VAR")
+	_, _, err = s.Restore("lab", "ADMIN_VAR", rows[0].ID) // the agent's
+	must(t, err)
+	if by := s.ValueAuthor("lab", "ADMIN_VAR"); by != "writer" {
+		t.Fatalf("after restoring the agent's value: %q", by)
+	}
+	must(t, s.Rollback("lab", "ADMIN_VAR")) // the admin's again
+	if by := s.ValueAuthor("lab", "ADMIN_VAR"); by != "" {
+		t.Fatalf("after restoring the admin's value: %q", by)
+	}
+	// The admin's own first value stores nothing new (see
+	// TestFirstValueNoHistory) and reads as the admin's.
+	must(t, s.PutValue("lab", "PLAIN", []byte("x"), &Meta{Variable: true}))
+	if s.st.Secrets[key("lab", "PLAIN")].Versions != nil || s.ValueAuthor("lab", "PLAIN") != "" {
+		t.Fatal("the admin's first value")
+	}
+}
+
+// The stored saver is under MAC7 like the rest of the history: it can't be
+// edited or dropped without the master key. Dropping it together with
+// MAC7 (what the release with MAC6 writes back, on a file with no per-key
+// limit) leaves the label to the change log, as before this release.
+func TestValueAuthorIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, key32())
+	must(t, err)
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	tok := *s.st.Tokens["writer"]
+	_, err = s.AgentPut("lab", "URL", []byte("agent-text"), AgentPut{Token: tok, Variable: true})
+	must(t, err)
+	path := filepath.Join(dir, stateFile)
+	data, _ := os.ReadFile(path)
+	if !bytes.Contains(data, []byte(`"versions"`)) || !bytes.Contains(data, []byte(`"mac7"`)) {
+		t.Fatal("no stored saver or mac7 in the file")
+	}
+	try := func(name string, edit func(raw map[string]any), want error) *Store {
+		t.Helper()
+		var raw map[string]any
+		must(t, json.Unmarshal(data, &raw))
+		edit(raw)
+		b, _ := json.Marshal(raw)
+		os.WriteFile(path, b, 0o600)
+		s, err := Open(dir, key32())
+		if !errors.Is(err, want) && !(want == nil && err == nil) {
+			t.Fatalf("%s: %v, want %v", name, err, want)
+		}
+		return s
+	}
+	sec := func(raw map[string]any) map[string]any {
+		return raw["secrets"].(map[string]any)["lab/URL"].(map[string]any)
+	}
+	try("saver made the admin", func(raw map[string]any) {
+		sec(raw)["versions"].(map[string]any)["by"] = "admin"
+	}, ErrIntegrity)
+	try("saver dropped, mac7 kept", func(raw map[string]any) { delete(sec(raw), "versions") }, ErrIntegrity)
+	try("mac7 dropped", func(raw map[string]any) { delete(raw, "mac7") }, ErrIntegrity)
+	s = try("both dropped", stripV7, nil)
+	if by := s.ValueAuthor("lab", "URL"); by != "writer" {
+		t.Fatalf("both dropped, the log still has the event: %q", by)
+	}
+}
+
+// The release with MAC6 (v0.1.3) opens a file with stored savers and,
+// writing it back, drops them. The label then comes from the change log
+// again, which is that release's behaviour: kept while the token's event
+// is in the log, gone once the token has written enough to age it out
+// (the residual the design doc names). Saving again stores it again.
+func TestValueAuthorAfterV6Release(t *testing.T) {
+	dir := t.TempDir()
+	s := canaried(t, dir)
+	_, err := s.CreateToken("agent", []string{"ns"}, PermRead, nil)
+	must(t, err)
+	must(t, s.SetTokenSelfUpgrade("agent", true)) // so the file has a mac6
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	tok := *s.st.Tokens["writer"]
+	must(t, s.PutValue("lab", "URL", []byte("admin-text"), &Meta{Variable: true}))
+	_, err = s.AgentPut("lab", "URL", []byte("agent-text"), AgentPut{Token: tok, Variable: true, Overwrite: true})
+	must(t, err)
+	data, _ := os.ReadFile(filepath.Join(dir, stateFile))
+	var st state
+	must(t, json.Unmarshal(data, &st))
+	k, _ := newStore(dir, key32())
+	if !checkMAC6(k, mac6Release(st)) {
+		t.Fatal("the v6 release would refuse this file")
+	}
+	asV6Wrote(t, s)
+	s, err = Open(dir, key32())
+	must(t, err)
+	if s.st.Secrets[key("lab", "URL")].Versions != nil {
+		t.Fatal("the v6 release's file has a stored saver")
+	}
+	if by := s.ValueAuthor("lab", "URL"); by != "writer" {
+		t.Fatalf("from the change log: %q", by)
+	}
+	for i := range 600 {
+		_, err := s.AgentPut("lab", "SCRATCH", []byte(fmt.Sprintf("scratch-%d", i)), AgentPut{Token: tok, Overwrite: true})
+		must(t, err)
+	}
+	if by := s.ValueAuthor("lab", "URL"); by != "" {
+		t.Fatalf("the residual changed: %q (update the design doc)", by)
+	}
+	_, err = s.AgentPut("lab", "URL", []byte("agent-again"), AgentPut{Token: tok, Variable: true, Overwrite: true})
+	must(t, err)
+	if by := s.ValueAuthor("lab", "URL"); by != "writer" || s.st.Secrets[key("lab", "URL")].Versions.By != "token:writer" {
+		t.Fatalf("saved again: %q", by)
+	}
+}

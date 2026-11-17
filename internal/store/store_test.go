@@ -660,6 +660,7 @@ func TestNewerFieldsIntegrity(t *testing.T) {
 }
 
 func stripNewer(raw map[string]any) {
+	stripV7(raw)
 	delete(raw, "mac2")
 	delete(raw, "history")
 	delete(raw, "fixups")

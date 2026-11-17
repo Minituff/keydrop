@@ -134,5 +134,9 @@ func TestSelfUpgradeIntegrity(t *testing.T) {
 	try("turned off, mac6 kept", func(raw map[string]any) { delete(tok(raw, "agent"), "self_upgrade") }, ErrIntegrity)
 	// Both dropped is what the release before writes: it opens, with
 	// self-upgrade off.
-	try("both dropped", func(raw map[string]any) { delete(tok(raw, "agent"), "self_upgrade"); delete(raw, "mac6") }, nil)
+	try("both dropped", func(raw map[string]any) {
+		stripV7(raw)
+		delete(tok(raw, "agent"), "self_upgrade")
+		delete(raw, "mac6")
+	}, nil)
 }

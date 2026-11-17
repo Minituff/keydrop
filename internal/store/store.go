@@ -1257,9 +1257,22 @@ func (s *Store) agentPut(ns, name string, value []byte, p AgentPut) (PutResult, 
 
 // ValueAuthor names the token that wrote a key's current value, or "" if
 // the admin did. Variables from an agent are labelled with it.
+//
+// The saver stored with the value (Versions.By, under MAC7) decides: every
+// save by a token and every restore records it, so the label stays for as
+// long as the value is current, however many events are written after it.
+// Only a value with no saver stored (saved before this release, or after
+// the release with MAC6 rewrote the file and dropped Versions) is worked
+// out from the change log as before, which a token can age out by writing
+// enough events. With nothing stored and nothing in the log it's the
+// admin's: since this release every token save stores its saver, and the
+// log keeps the admin's events ahead of agents'.
 func (s *Store) ValueAuthor(ns, name string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sec, ok := s.st.Secrets[key(ns, name)]; ok && sec.Versions != nil && sec.Versions.By != "" {
+		return strings.TrimPrefix(strings.TrimPrefix(sec.Versions.By, "admin"), "token:")
+	}
 	for i := len(s.st.History) - 1; i >= 0; i-- {
 		ev := s.st.History[i]
 		if ev.Namespace == ns && ev.Name == name && (ev.Action == "created" || ev.Action == "replaced") {
@@ -1341,18 +1354,21 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 			}
 		}
 	}
-	if ok {
-		// The current value, if any, becomes the newest older one, with its
-		// own kind; the oldest drops off past MaxVersions.
-		list := s.withCurrent(sec, sec.olderValues(), now)
-		if len(list) > 0 || sec.Versions != nil {
-			if err := s.setOlder(sec, list, actor); err != nil {
-				return res, err
-			}
-		}
-	} else {
+	if !ok {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
 		s.st.Secrets[key(ns, name)] = sec
+	}
+	// The current value, if any, becomes the newest older one, with its
+	// own kind; the oldest drops off past MaxVersions. A token's value
+	// always records who saved it, even with no history yet, so its label
+	// can't age out of the change log (see ValueAuthor). The admin's
+	// first value doesn't: a key nobody but the admin has saved is stored
+	// as the release with MAC6 stores it.
+	list := s.withCurrent(sec, sec.olderValues(), now)
+	if len(list) > 0 || sec.Versions != nil || ap != nil {
+		if err := s.setOlder(sec, list, actor); err != nil {
+			return res, err
+		}
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
 	sec.Pending, sec.New, sec.AckedBy, sec.UpdatedAt = false, true, nil, now
