@@ -78,8 +78,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   guard [--command 'CMD']               a Claude Code PreToolUse hook: reads the hook's JSON
                                          on stdin and exits 2 (blocking the call) when a
                                          shell command would print a value: get --raw,
-                                         --no-mask, run -- env/printenv/echo $NAME. Needs no
-                                         token or network; --command checks CMD instead
+                                         --no-mask, run -- env or printenv. Needs no token
+                                         or network; --command checks CMD instead
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)

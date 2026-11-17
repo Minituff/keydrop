@@ -36,7 +36,7 @@ func TestGuard(t *testing.T) {
 		"keydrop get X --raw",
 		"cd /tmp && ~/.local/bin/keydrop get " + pasted + " --raw",
 		"keydrop run --no-mask -e X -- make",
-		"keydrop run -e X -- sh -c 'echo $X'",
+		"keydrop run -e X -- sh -c 'printenv X'",
 	} {
 		r := g.run(t, hook(cmd), "guard")
 		if r.code != 2 || r.stdout != "" || !strings.HasPrefix(r.stderr, "Blocked: ") || strings.Count(r.stderr, "\n") != 1 {

@@ -434,31 +434,44 @@ first: `keydrop guard --command ls` must exit 0. A CLI from before it exits
   with the CLI, so `keydrop upgrade` keeps it current. It blocks:
     - `keydrop get … --raw`, in any spelling the CLI accepts (`-raw`,
       `--raw=true`);
-    - `--no-mask` on a keydrop command (for `run`, among run's own flags,
-      not the command's);
-    - `keydrop run … -- CMD` where CMD prints what run gave it: `env`,
-      `printenv`, `set`, `export -p`/`declare -p`, or `echo`/`printf` of a
-      variable that run set (`-e NAME`, `-e VAR=NAME`), directly or in a
-      `sh -c` script.
+    - `--no-mask` among keydrop's own flags (for `run`, before the command
+      it runs, so `run -e X -- grep --no-mask` passes);
+    - `keydrop run … -- env` (with nothing to run after it) and
+      `keydrop run … -- printenv`, which print what run gave the command.
 
-    It finds these when keydrop is called by path (`./keydrop`,
-    `~/.local/bin/keydrop`), after `sudo`, `env VAR=x`, `command`, `exec`,
-    `nohup`, `nice`, `timeout` or `time`, and anywhere in a compound
-    command: after `&&`, `||`, `;` or `|`, inside `$(…)`, backticks or
-    `<(…)`, in a `sh -c`/`bash -c` string, after `eval`, or in a heredoc
-    fed to a shell. A mention that isn't a command passes: `echo "never use
-    keydrop get --raw"`, `grep -- --no-mask docs/`, a commit message, a
-    quoted heredoc written to a file.
+    It finds these when keydrop is called by name or path (`./keydrop`,
+    `~/.local/bin/keydrop`, `keydrop.exe`), after `VAR=x` assignments and
+    `sudo`, `env`, `command`, `exec`, `nohup` or `time`, and anywhere in a
+    compound command: after `&&`, `||`, `;`, `|`, `&`, a newline or a
+    parenthesis, inside `$(…)` or backticks, and in a `sh -c`, `bash -c`,
+    `zsh -c` or `dash -c` string (also as the command `keydrop run` runs),
+    up to four levels deep. A mention in an argument passes: `echo "never
+    use keydrop get --raw"`, `grep -- --no-mask docs/`, `git commit -m
+    '…'`, `keydrop note X '…'`.
 
-    It doesn't catch what it would need a real shell to see: keydrop under
-    another name or through a variable (`$KD get X --raw`), a heredoc piped
-    to a shell (`cat <<EOF | sh`), `ssh host 'keydrop get X --raw'`,
-    `xargs`, a script file, or a program that prints its environment some
-    other way (`python -c 'print(os.environ)'`). A shell command it can't
-    read, or input that isn't a Bash tool call, is let through, so a broken
-    guard never stops every command. Other agents can call it as
-    `keydrop guard --command 'CMD'`: exit 2 means blocked, with the reason
-    on stderr.
+    It reads the command with a small tokeniser, not a shell, so it doesn't
+    catch:
+    - keydrop through a variable or under another name (`$KD get X
+      --raw`), or after a shell keyword (`if`, `!`, `{`, `do`) or a wrapper
+      not listed above (`eval`, `xargs`, `ssh`, `doas`, `timeout`, `nice`);
+    - a wrapper option that takes a value (`sudo -u bob keydrop …`), or a
+      shell option that does before `-c` (`bash -o pipefail -c '…'`);
+    - a heredoc or here-string fed to a shell, or a script file;
+    - other ways of printing a value under `keydrop run`: `echo $NAME`,
+      `printf`, `set`, `export -p`, `env >file`, `python -c
+      'print(os.environ)'`;
+    - anything nested more than four levels deep.
+
+    And it can block too much: it doesn't understand heredocs, so a
+    heredoc line that is a `keydrop get … --raw` command, or has one in
+    backticks or `$(…)`, is blocked even when the heredoc is quoted and
+    nothing in it runs (for example a commit message written with
+    `cat <<'EOF'`). Reword it, or write the text to a file first.
+
+    Input that isn't a Bash tool call, or that it can't read, is let
+    through, so a broken guard never stops every command. Other agents can
+    call it as `keydrop guard --command 'CMD'`: exit 2 means blocked, with
+    the reason on stderr.
 
 The guard is a guard-rail for honest mistakes, not a security boundary (see
 the [threat model](security.md)): an agent set on getting a value can
