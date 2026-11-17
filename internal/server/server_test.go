@@ -272,6 +272,97 @@ func TestForwardedForAllLines(t *testing.T) {
 	}
 }
 
+// clientIP hands back a canonical address: a forwarded hop is the client's
+// own text, and must neither carry free text (an IPv6 zone) into logs and
+// alerts nor let one address pass for several.
+func TestClientIPCanonical(t *testing.T) {
+	h := newHarness(t)
+	h.srv.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.168.1.10/32"), netip.MustParsePrefix("fd00::10/128")}
+	for _, c := range []struct {
+		name, remote string
+		xff          []string
+		want         string
+	}{
+		{"plain IPv4 hop", "192.168.1.10:1", []string{"10.0.0.5"}, "10.0.0.5"},
+		{"plain IPv6 hop", "192.168.1.10:1", []string{"2001:db8::5"}, "2001:db8::5"},
+		{"zoned hop", "192.168.1.10:1", []string{"fe80::1%eth0"}, "fe80::1"},
+		{"hostile zone", "192.168.1.10:1", []string{"fe80::1%<!channel> `x` <@U1>"}, "fe80::1"},
+		{"newline in zone", "192.168.1.10:1", []string{"fe80::1%a\nb"}, "fe80::1"},
+		{"mapped IPv4 hop", "192.168.1.10:1", []string{"::ffff:10.0.0.5"}, "10.0.0.5"},
+		{"upper-case hop", "192.168.1.10:1", []string{"2001:DB8::5"}, "2001:db8::5"},
+		{"expanded hop", "192.168.1.10:1", []string{"2001:0db8:0000:0000:0000:0000:0000:0005"}, "2001:db8::5"},
+		{"zoned trusted proxy hop is skipped", "192.168.1.10:1", []string{"10.0.0.5, fd00::10%x"}, "10.0.0.5"},
+		{"mapped trusted proxy hop is skipped", "192.168.1.10:1", []string{"10.0.0.5, ::ffff:192.168.1.10"}, "10.0.0.5"},
+		{"chain read from the right", "192.168.1.10:1", []string{"10.0.0.1, 10.0.0.2, 192.168.1.10"}, "10.0.0.2"},
+		{"unparseable hop", "192.168.1.10:1", []string{"10.0.0.1, not-an-address"}, "192.168.1.10"},
+		{"unparseable after a good hop", "192.168.1.10:1", []string{"garbage, 192.168.1.10"}, "192.168.1.10"},
+		{"no header", "192.168.1.10:1", nil, "192.168.1.10"},
+		{"untrusted peer ignores header", "10.0.0.7:1", []string{"fe80::1%evil"}, "10.0.0.7"},
+		{"untrusted IPv6 peer", "[2001:db8::7]:1", []string{"10.0.0.5"}, "2001:db8::7"},
+		{"link-local peer keeps its zone", "[fe80::7%eth0]:1", []string{"10.0.0.5"}, "fe80::7%eth0"},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		for _, v := range c.xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := h.srv.clientIP(r); got != c.want {
+			t.Errorf("%s: clientIP = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A pairing request through a trusted proxy with a hostile zone in
+// X-Forwarded-For leaves no trace of the zone anywhere the admin looks, and
+// spellings of one address share that address's cap.
+func TestPairingForwardedZone(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	wh := h.inboxAlerts("https://secrets.example.com")
+	const zone = "<!channel>MARKZONE`x`"
+	code, m := h.apiFrom("fe80::1%"+zone, "POST", "/api/v1/pair", "", "", map[string]string{})
+	if code != http.StatusCreated {
+		t.Fatalf("pair: %d", code)
+	}
+	var seen []string
+	for _, e := range h.srv.audit.Recent(100) {
+		seen = append(seen, fmt.Sprintf("%+v", e))
+	}
+	_, page := h.get(m["path"].(string))
+	_, agents := h.get("/tokens")
+	_, auditPage := h.get("/audit")
+	seen = append(seen, page, agents, auditPage)
+	seen = append(seen, wh.all(h.srv.alerts)...)
+	all := strings.Join(seen, "\n")
+	if !strings.Contains(page, "fe80::1") || !strings.Contains(noticesIn(wh.all(h.srv.alerts)), "fe80::1 is asking to pair") {
+		t.Fatalf("the address isn't shown:\n%s", all)
+	}
+	for _, bad := range []string{"MARKZONE", "!channel", "fe80::1%"} {
+		if strings.Contains(all, bad) {
+			t.Errorf("zone text %q got through:\n%s", bad, all)
+		}
+	}
+
+	// One address, three spellings, plus the mapped form: the per-address
+	// cap (3) counts them as one.
+	for i, ip := range []string{"2001:db8::5", "2001:DB8::5", "2001:0db8:0:0:0:0:0:5%eth0"} {
+		if code, _ := h.apiFrom(ip, "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
+			t.Fatalf("pair %d from %s: %d", i, ip, code)
+		}
+	}
+	if code, _ := h.apiFrom("2001:db8:0::5", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusTooManyRequests {
+		t.Fatalf("fourth spelling of one address: %d, want 429", code)
+	}
+	for i, ip := range []string{"10.0.0.9", "::ffff:10.0.0.9", "::FFFF:10.0.0.9"} {
+		if code, _ := h.apiFrom(ip, "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusCreated {
+			t.Fatalf("pair %d from %s: %d", i, ip, code)
+		}
+	}
+	if code, _ := h.apiFrom("::ffff:10.0.0.9", "POST", "/api/v1/pair", "", "", map[string]string{}); code != http.StatusTooManyRequests {
+		t.Fatalf("mapped spelling of a capped address: %d, want 429", code)
+	}
+}
+
 // Filling the pairing list from a few addresses can't keep a new address
 // out: the busiest address's oldest request makes way.
 func TestPairingFairShare(t *testing.T) {

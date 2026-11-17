@@ -284,8 +284,8 @@ which are the places keydrop exists to keep secrets out of. So a machine
   `discord` is a JSON `{"content": ...}` with `allowed_mentions` empty, so
   a name can't ping anyone; `slack` is `{"text": ...}` with `&`, `<` and
   `>` escaped as Slack asks, so nothing becomes a mention or a link (names
-  can't hold them, but an address can: an IPv6 zone from
-  `X-Forwarded-For` is free text); `text` is the message as a plain body
+  and addresses can't hold them; the escaping stays in case another
+  route opens); `text` is the message as a plain body
   without the backticks, for ntfy. `auto` picks `slack` only for an https
   URL on `hooks.slack.com` and `discord` otherwise, which is what every
   release before it sent. It never guesses ntfy: self-hosted ntfy runs on
@@ -909,7 +909,12 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   only the proxy's own address: any host in a trusted range can claim to
   be any address. All `X-Forwarded-For` lines are joined and read from
   the right, skipping trusted proxies, so a proxy that adds its own line
-  instead of appending can't be fooled by a line the client sent.
+  instead of appending can't be fooled by a line the client sent. The
+  address taken from the header is rewritten in canonical form, with any
+  IPv6 zone dropped and `::ffff:1.2.3.4` read as `1.2.3.4`: a zone is free
+  text the client may have written, and one address spelled several ways
+  mustn't look like several clients to the limits. The direct peer's
+  address is used as the kernel reports it.
 - Turning the authenticator on or off, and changing the password, all
   need the current password, so an unattended logged-in browser isn't
   enough.

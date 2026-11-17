@@ -45,9 +45,10 @@ func resolveFormat(format, raw string) string {
 // slackEscape makes the control characters of Slack's markup literal, so
 // nothing in an alert becomes a mention (<!channel>, <@U…>) or a link.
 // Token and namespace names ([a-z0-9._-]) and secret names ([A-Z0-9_])
-// can't hold them, but an address can: an IPv6 zone in X-Forwarded-For
-// from a trusted proxy is free text (fe80::1%<!channel>), and pairing needs
-// no credential. Escaped whatever the source.
+// can't hold them, and clientIP drops the zone from a forwarded address
+// (once the way free text such as fe80::1%<!channel> got in, with no
+// credential, via pairing). Escaped whatever the source all the same, in
+// case some other route opens.
 var slackEscape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // alertBody builds the request body and its Content-Type for one alert.
