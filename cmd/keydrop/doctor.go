@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/minituff/keydrop/internal/client"
 	"github.com/minituff/keydrop/internal/server"
@@ -44,10 +46,21 @@ type report struct {
 func (r *report) line(status, check, detail, next string) {
 	fmt.Fprintf(r.w, "%-5s %-11s %s\n", status, check, detail)
 	if next != "" {
-		// Some come from error messages, which start lower-case.
-		fmt.Fprintf(r.w, "      → %s\n", strings.ToUpper(next[:1])+next[1:])
+		fmt.Fprintf(r.w, "      → %s\n", capitalise(next))
 	}
 	r.failed = r.failed || status == "FAIL"
+}
+
+// capitalise upper-cases s's first letter: some of what doctor prints comes
+// from error messages, which start lower-case. By rune, so a message that
+// starts with a multi-byte character isn't cut in half; an invalid first
+// byte is left as it is.
+func capitalise(s string) string {
+	c, n := utf8.DecodeRuneInString(s)
+	if c == utf8.RuneError {
+		return s
+	}
+	return string(unicode.ToUpper(c)) + s[n:]
 }
 
 func (r *report) skip(why string, checks ...string) {

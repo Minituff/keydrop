@@ -115,7 +115,7 @@ func TestAlertFormatFollowsURL(t *testing.T) {
 	a, ft := fakeAlerter("https://discord.com/api/webhooks/1/fake", "")
 	h.srv.alerts = a
 	a.mu.Lock()
-	a.enqueue("keydrop: canary `lab/BAIT` was read.") // queued, not yet sent
+	a.enqueue(a.queue, "keydrop: canary `lab/BAIT` was read.") // queued, not yet sent
 	a.mu.Unlock()
 	if code, _ := h.form("/settings/alert-webhook", url.Values{"webhook": {"https://hooks.slack.com/services/T0/B0/fake-slack-path"}}); code != http.StatusSeeOther {
 		t.Fatalf("set: %d", code)

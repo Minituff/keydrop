@@ -156,7 +156,7 @@ func TestExpiryAlertsNoWebhook(t *testing.T) {
 	h.st.SetExpiryAlertDays(14)
 	h.expiringKey("lab", "CF_TOKEN", c.now().Add(3*day), false)
 	h.srv.checkExpiry()
-	if a := h.srv.alerts; len(a.queue) != 0 || a.heldNotice != 0 || h.srv.expiryMarks != nil {
+	if a := h.srv.alerts; len(a.noteQ) != 0 || a.heldNotice != 0 || h.srv.expiryMarks != nil {
 		t.Fatal("something was sent or marked without a webhook")
 	}
 	if _, s := h.get("/settings"); !strings.Contains(s, "Warn me before a key expires: <strong>14 days ahead</strong>, but it needs a webhook") {

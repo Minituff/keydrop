@@ -124,7 +124,7 @@ func TestInboxAlertsOffOrNoWebhook(t *testing.T) {
 	if code, _, _ := h2.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "lab", "name": "ONE"}); code != http.StatusCreated {
 		t.Fatalf("request: %d", code)
 	}
-	if a := h2.srv.alerts; len(a.queue) != 0 || a.heldNotice != 0 || len(a.lastNotice) != 0 {
+	if a := h2.srv.alerts; len(a.noteQ) != 0 || a.heldNotice != 0 || len(a.lastNotice) != 0 {
 		t.Fatal("a notice went somewhere without a webhook")
 	}
 	if _, s := h2.get("/settings"); !strings.Contains(s, "Inbox alerts: <strong>on</strong>, but they need a webhook") {
@@ -219,13 +219,17 @@ func TestInboxNoticeFlood(t *testing.T) {
 	}
 
 	// Even with an unlimited notice budget and a stuck webhook, notices
-	// take at most half the queue, and canary alerts still get in.
+	// wait in their own queue, half the size, and canary alerts still
+	// get in.
 	a.notices = bucket{burst: 1e6, refill: time.Second, tokens: 1e6}
 	for i := 0; i < 1000; i++ {
 		a.notice(agentNotice, "more")
 	}
-	if n := len(a.queue); n > alertQueue/2 {
-		t.Fatalf("notices fill %d of %d", n, alertQueue)
+	a.mu.Lock()
+	n := len(a.noteQ)
+	a.mu.Unlock()
+	if n > alertQueue/2 {
+		t.Fatalf("notices fill %d of %d", n, alertQueue/2)
 	}
 	for i := 0; i < alertBurst-1; i++ {
 		a.send(fmt.Sprintf("keydrop: canary alert %d", i))
@@ -325,7 +329,7 @@ func TestPairingMapFullCounted(t *testing.T) {
 	}
 }
 
-// Pairing notices fill at most a quarter of the queue, so with a stuck
+// Pairing notices fill at most half the notice queue, so with a stuck
 // webhook and no pairing budget limit, agents' notices still get in.
 func TestPairingNoticesQueueShare(t *testing.T) {
 	release := make(chan struct{})
@@ -338,7 +342,7 @@ func TestPairingNoticesQueueShare(t *testing.T) {
 		a.notice(pairNotice, "pair")
 	}
 	a.mu.Lock()
-	n := len(a.queue)
+	n := len(a.noteQ)
 	a.mu.Unlock()
 	if n > alertQueue/4 {
 		t.Fatalf("pairing notices fill %d of %d", n, alertQueue)
@@ -475,5 +479,41 @@ func TestInboxAlertsStartupLog(t *testing.T) {
 		if c.want == "" && strings.Contains(got, "Inbox alerts") || !strings.Contains(got, c.want) {
 			t.Fatalf("env %v, choice %v: %q", c.env, c.choice, got)
 		}
+	}
+}
+
+// The sender takes security alerts ahead of notices already queued: a
+// canary alert waits only for the message being posted when it arrives.
+func TestSecurityAlertsSentFirst(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	first := make(chan struct{})
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, string(buf))
+		n := len(got)
+		mu.Unlock()
+		if n == 1 {
+			close(first)
+			<-release // the webhook is slow with the first notice
+		}
+	}))
+	t.Cleanup(ts.Close)
+	a := newAlerter(ts.URL)
+	a.notices = bucket{burst: 100, refill: time.Second, tokens: 100}
+	a.notice(agentNotice, "notice 0")
+	<-first // being posted
+	for i := 1; i <= 5; i++ {
+		a.notice(agentNotice, fmt.Sprintf("notice %d", i))
+	}
+	a.send("canary alert")
+	close(release)
+	a.wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 7 || !strings.Contains(got[0], "notice 0") || !strings.Contains(got[1], "canary alert") {
+		t.Fatalf("order: %v", got)
 	}
 }

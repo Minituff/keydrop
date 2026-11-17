@@ -18,7 +18,9 @@ import (
 
 // Canaries: decoy secrets whose every read by an agent is an alarm. To the
 // agent a canary is an ordinary secret (same responses, same errors, same
-// work per read); only the admin's pages show it.
+// work per read); only the admin's pages show it. A refused call on one
+// records the touch, which the same call on an ordinary secret doesn't, so
+// it can take longer: the probe is itself the touch (see the design doc).
 
 const (
 	// alertTimeout bounds one webhook POST. Sent in the background, so the
@@ -43,9 +45,10 @@ const (
 	// them, and they mustn't spend or block what agents' notices need.
 	pairBurst  = 2
 	pairRefill = 5 * time.Minute
-	// alertQueue is how many alerts may wait to be sent. Notices may fill
-	// only half of it, pairing notices a quarter, so security alerts
-	// always have room, and agents' notices too.
+	// alertQueue is how many security alerts may wait to be sent. Notices
+	// wait in a queue of their own, half its size, which pairing notices
+	// may fill only half of, so agents' notices always have room. The
+	// sender takes security alerts first.
 	alertQueue = 32
 	// maxAlertKeys is how many keys the per-key limits hold before the
 	// old ones are dropped. Notices are refused past it rather than grow
@@ -64,7 +67,8 @@ const (
 type alerter struct {
 	client *http.Client
 	now    func() time.Time
-	queue  chan string // alert texts; the body is built when posted
+	queue  chan string // security alert texts; the body is built when posted
+	noteQ  chan string // Inbox notice texts, sent after any security alert
 	once   sync.Once
 	wg     sync.WaitGroup // alerts queued and not yet sent, for tests
 
@@ -116,6 +120,7 @@ func newAlerter(webhook string) *alerter {
 		},
 		now:        time.Now,
 		queue:      make(chan string, alertQueue),
+		noteQ:      make(chan string, alertQueue/2),
 		last:       map[string]time.Time{},
 		lastNotice: map[string]time.Time{},
 		lastPair:   map[string]time.Time{},
@@ -175,12 +180,12 @@ const (
 )
 
 // limits are the class's dedupe map, budget, count of what was held back
-// and share of the queue. Needs a.mu.
+// and share of the notice queue. Needs a.mu.
 func (a *alerter) limits(c noticeClass) (map[string]time.Time, *bucket, *int, int) {
 	if c == pairNotice {
-		return a.lastPair, &a.pairs, &a.heldPair, alertQueue / 4
+		return a.lastPair, &a.pairs, &a.heldPair, cap(a.noteQ) / 2
 	}
-	return a.lastNotice, &a.notices, &a.heldNotice, alertQueue / 2
+	return a.lastNotice, &a.notices, &a.heldNotice, cap(a.noteQ)
 }
 
 // allowNotice is allow for Inbox notices, in their class's own map. One
@@ -225,17 +230,17 @@ func (a *alerter) send(content string) {
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.budget.take(a.now()) || !a.enqueue(content) {
+	if !a.budget.take(a.now()) || !a.enqueue(a.queue, content) {
 		a.held++
 	}
 }
 
 // notice queues an Inbox notice of class c. It spends only its class's
-// budget and fills at most its class's share of the queue (half for
-// agents' notices, a quarter for pairing), so no number of notices can
-// crowd out a security alert, and no number of pairing requests can
-// spend or crowd out an agent's notice. What's over is counted for one
-// summary per class.
+// budget and waits in the notice queue, which the sender takes only when
+// no security alert is waiting, so no number of notices can crowd out or
+// queue ahead of a security alert. Pairing notices may fill only half of
+// it, so no number of pairing requests can spend or crowd out an agent's
+// notice. What's over is counted for one summary per class.
 func (a *alerter) notice(c noticeClass, content string) { a.queueNotice(c, content, true) }
 
 // queueNotice is notice, and reports whether content was queued. Without
@@ -248,7 +253,7 @@ func (a *alerter) queueNotice(c noticeClass, content string, count bool) bool {
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.noticeRoom(c) && a.take(c) && a.enqueue(content) {
+	if a.noticeRoom(c) && a.take(c) && a.enqueue(a.noteQ, content) {
 		return true
 	}
 	if count {
@@ -268,14 +273,14 @@ func (a *alerter) take(c noticeClass) bool {
 // and send.
 func (a *alerter) noticeRoom(c noticeClass) bool {
 	_, _, _, room := a.limits(c)
-	return len(a.queue) < room
+	return len(a.noteQ) < room
 }
 
-// enqueue queues one message without blocking. Needs a.mu.
-func (a *alerter) enqueue(content string) bool {
+// enqueue queues one message on q without blocking. Needs a.mu.
+func (a *alerter) enqueue(q chan string, content string) bool {
 	a.wg.Add(1)
 	select {
-	case a.queue <- content:
+	case q <- content:
 		return true
 	default:
 		a.wg.Done()
@@ -283,21 +288,29 @@ func (a *alerter) enqueue(content string) bool {
 	}
 }
 
-// run sends the queue, and every alertRefill a summary of what was held
-// back, when the budget allows one.
+// run sends the queues, security alerts first, and every alertRefill a
+// summary of what was held back, when the budget allows one. A security
+// alert still waits for the message being posted when it arrives.
 func (a *alerter) run() {
 	tick := time.NewTicker(alertRefill)
 	defer tick.Stop()
 	for {
+		var content string
 		select {
-		case content := <-a.queue:
-			if err := a.post(content); err != nil {
-				log.Printf("alert webhook: %v", err)
+		case content = <-a.queue:
+		default:
+			select {
+			case content = <-a.queue:
+			case content = <-a.noteQ:
+			case <-tick.C:
+				a.flushHeld()
+				continue
 			}
-			a.wg.Done()
-		case <-tick.C:
-			a.flushHeld()
 		}
+		if err := a.post(content); err != nil {
+			log.Printf("alert webhook: %v", err)
+		}
+		a.wg.Done()
 	}
 }
 
@@ -308,7 +321,7 @@ func (a *alerter) flushHeld() {
 	defer a.mu.Unlock()
 	now := a.now()
 	if a.held > 0 && a.budget.take(now) &&
-		a.enqueue(fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)) {
+		a.enqueue(a.queue, fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)) {
 		a.held = 0
 	}
 	things := "things are"
@@ -316,7 +329,7 @@ func (a *alerter) flushHeld() {
 		things = "thing is"
 	}
 	if a.heldNotice > 0 && a.noticeRoom(agentNotice) && a.notices.take(now) &&
-		a.enqueue(fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)) {
+		a.enqueue(a.noteQ, fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)) {
 		a.heldNotice = 0
 	}
 	machines := "machines"
@@ -324,7 +337,7 @@ func (a *alerter) flushHeld() {
 		machines = "machine"
 	}
 	if a.heldPair > 0 && a.noticeRoom(pairNotice) && a.pairs.take(now) &&
-		a.enqueue(fmt.Sprintf("keydrop: %d more %s asked to pair; see keydrop's Agents page.", a.heldPair, machines)) {
+		a.enqueue(a.noteQ, fmt.Sprintf("keydrop: %d more %s asked to pair; see keydrop's Agents page.", a.heldPair, machines)) {
 		a.heldPair = 0
 	}
 }

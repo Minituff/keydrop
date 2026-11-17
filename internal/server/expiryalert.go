@@ -107,7 +107,7 @@ func (s *Server) checkExpiry() {
 		marks[sec.Ref()] = m
 		due = append(due, sec)
 	}
-	// Notices' budget and half the queue, never the security alerts'. If
+	// Notices' budget and queue, never the security alerts'. If
 	// it isn't queued, nothing is marked and the next check tries again.
 	if len(due) > 0 && !s.alerts.queueNotice(agentNotice, s.expiryDigest(due, days, now), false) {
 		return

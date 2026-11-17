@@ -52,7 +52,12 @@ They **can** still see metadata: secret and variable names, descriptions,
 namespaces, token names, the admin password's PBKDF2 hash, and the audit
 log. And someone who can write to `data/` can put back an **older complete
 copy** of it in the current format (a backup verifies fine, bringing
-back revoked tokens or an old password), or delete it. Protect `data/` like any other backup, just not like the key.
+back revoked tokens or an old password), or delete it. On data where no
+key is limited, they can also remove the newest settings together with
+their HMAC: the alert choices made in Settings go back to their defaults,
+older values beyond the previous one go, and agents' variables are
+labelled from the change log again, but nothing that grants or limits
+access can be removed this way. Protect `data/` like any other backup, just not like the key.
 
 Limitations, by design for now:
 
@@ -80,6 +85,18 @@ the refused read is logged. What it doesn't do:
   `keydrop downgrade-data` removes the limits, which then apply to nobody.
   As with every rollback, someone who can write `data/` can put back an
   older copy from before the limit.
+
+## What a canary hides
+
+To an agent a canary looks like any other secret in every response: the
+same status, headers, body and fields, whether the call works or is
+refused. What can differ is time. A refused call on a canary (a write by
+a read-only agent, a call over a rate limit, a read by an agent the key
+is limited away from) records the touch before it answers, and the same
+refused call on an ordinary secret records nothing, so it can answer a
+little sooner. Timing that is itself a touch: by the time an agent has
+its answer, the touch is in the audit log and the Inbox, and the alert
+has been sent (or, past the alert rate limit, counted for the summary).
 
 ## What masking catches
 

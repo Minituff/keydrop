@@ -409,3 +409,26 @@ func TestDoctorNotKeydrop(t *testing.T) {
 		t.Errorf("the token went to something that isn't keydrop: %s", f.requests())
 	}
 }
+
+// What to do next starts with a capital, by rune: a message that starts
+// with a multi-byte character comes out whole.
+func TestDoctorNextCapitalised(t *testing.T) {
+	for in, want := range map[string]string{
+		"couldn't reach it": "Couldn't reach it",
+		"élan vital":        "Élan vital",
+		"ünïcode":           "Ünïcode",
+		"→ arrow":           "→ arrow",
+		"Already":           "Already",
+		"\xff bad byte":     "\xff bad byte",
+	} {
+		var b strings.Builder
+		r := &report{w: &b}
+		r.line("FAIL", "server", "detail", in)
+		if got := b.String(); got != "FAIL  server      detail\n      → "+want+"\n" {
+			t.Errorf("%q: %q", in, got)
+		}
+	}
+	if capitalise("") != "" {
+		t.Error("empty")
+	}
+}

@@ -229,7 +229,8 @@ admin can limit a key to some of the tokens that have its namespace.
   and body, and `usable` the same way. A refused reveal, put or ack on a
   limited canary is a touch (Inbox, alert, audit), as every other refused
   call on one is. As for those, only the canary's refusal writes the touch
-  to disk.
+  to disk, so a refused call can differ in time (see
+  [Canary secrets](#canary-secrets)).
 - **Admin only.** The form is on the key's page (CSRF, logged as
   `secret.limit` with the token names). Like a canary it records no history
   entry and leaves `updated_at` alone: agents read the history.
@@ -357,16 +358,25 @@ which are the places keydrop exists to keep secrets out of. So a machine
 ### Canary secrets
 - The admin can mark a secret as a canary: a decoy that no agent should
   ever use, so any use is an alarm. Only the admin's pages show the flag.
-  **To an agent a canary is indistinguishable from a real secret:** the
-  same list entries, the same responses and errors, the same work per
-  call, and no field, header or timing that differs.
+  **To an agent a canary is indistinguishable from a real secret by
+  response:** the same list entries, and for every call the same status,
+  headers, body and fields, refused calls included. Calls that succeed do
+  the same work too: a read of any secret records its last read, so it
+  writes the state file either way. A refused call is where time can
+  differ: on a canary it records the touch, a write to the state file,
+  before it answers, and on an ordinary secret it writes nothing, so it
+  answers measurably sooner. That held for every refused call on a canary
+  before per-key limits (a read token's write, a call over a rate limit),
+  and now also for a token limited away from the key. It isn't hidden on
+  purpose: the probe is itself the touch, so by the time an agent has
+  timed the answer, the alarm has gone off.
 - A touch is any agent call on the canary, refused ones included: a
   reveal or `run`, an ack, a write, a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
   from the UI. A canary can be limited like any key, and stays
-  indistinguishable (see [Per-key limits](#per-key-limits)). Limitation: `keydrop vars` lists variable values
+  indistinguishable by response (see [Per-key limits](#per-key-limits)). Limitation: `keydrop vars` lists variable values
   without recording a touch, so if an agent's write turns a canary into a
   variable, from then on only calls on that name count.
 - The Inbox keeps one entry per (canary, token): first and last touch, a
@@ -388,7 +398,11 @@ which are the places keydrop exists to keep secrets out of. So a machine
   same budget, and shows the webhook's answer. Other alerts are sent asynchronously, from
   one goroutine with a queue of 32 and a 5-second timeout: at most one
   alert per canary and token every 10 minutes, and a global budget of 5
-  at once then one a minute. What's over the budget is counted and sent
+  at once then one a minute. [Inbox alerts](#inbox-alerts) wait in a
+  queue of their own, which the goroutine takes only when no security
+  alert is waiting, so a security alert waits at most for the one message
+  being posted when it arrives: up to the timeout, or longer if the
+  webhook answers 429 (see below). What's over the budget is counted and sent
   as one summary later. A 429 is waited out for its `Retry-After`, at
   most 30 seconds and twice. Refused token collects use the same path;
   [Inbox alerts](#inbox-alerts) use it too, on a budget of their own.
@@ -436,8 +450,11 @@ waits on them.
 - **Notices can't cost a security alert anything.** They go through the
   one alerter but have their own budget (3 at once, then one per 2
   minutes), spent *instead of* the security budget, never as well, and
-  may fill at most half the 32-slot queue, so canary alerts always have
-  room. Notices over the budget are counted and sent as one summary of
+  wait in a queue of their own (16 slots), which the one sender takes only
+  when no security alert is waiting. So canary alerts always have room,
+  and never wait behind queued notices; one can wait for the single
+  message being posted when it arrives (up to 5 seconds, or up to twice
+  30 seconds more if the webhook answers 429). Notices over the budget are counted and sent as one summary of
   their own, on the notice budget. Each kind is sent at most once per key
   per 10 minutes, by kind and token name, so an agent asking for five
   keys sends one notice.
@@ -447,7 +464,7 @@ waits on them.
   budget of their own again (2 at once, then one per 5 minutes), a
   dedupe map of their own (by the address's source group, the same /64
   grouping as the pairing caps), a summary of their own ("N more machines
-  asked to pair"), and at most a quarter of the queue. So a flood of
+  asked to pair"), and at most half the notice queue. So a flood of
   pairing requests can't spend the budget, fill the map or take the
   queue room that a token's request, renewal or flag notice needs; it
   only delays other pairing notices. Each map is bounded: past 10,000
@@ -495,14 +512,21 @@ has the server tell the alert webhook ahead of time.
 - **One digest per check.** Every key newly due goes in one message,
   soonest first, at most 8 named and the rest counted, so a namespace of
   keys sharing a date can't flood the channel.
-- **On the notice path.** The digest spends the notices' budget and half
-  the queue, never the security budget, so it can't delay a canary alert.
+- **On the notice path.** The digest spends the notices' budget and waits
+  in their queue, never the security budget or queue, so it can't hold up
+  a canary alert beyond the one message being posted.
   If it can't be queued (budget spent, or no webhook), nothing is marked
   and the next check tries again with the same keys; it isn't added to the
   held-notice summary, which would lose the names. Pairing notices have
   their own budget, so a flood of them can't delay it; agents' own
   requests, renewals and flags can, hour by hour, and the Secrets page
   still marks the keys.
+- **Agents can move the date.** A token that can write a key can set or
+  clear its `expires` (a write token on any key in its namespaces, an add
+  token on the keys it created), so it can stop the warning for that key
+  or make it come again. It can already replace the value, and the
+  change log and audit log show the write; the Secrets page shows the
+  date it set.
 - **Names and dates only.** `ns/NAME` and how far off the date is, built by
   the server: never a value, and never a description or usage, which an
   agent may have written. The link (to `/`, which needs the admin's login)
