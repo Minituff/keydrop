@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -252,4 +256,117 @@ func heldBack(a *alerter) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.held
+}
+
+// The Settings choice wins over KEYDROP_ALERT_INBOX once made, on or off;
+// "default" goes back to the variable. The form is an audit-logged admin
+// form.
+func TestInboxAlertsSetting(t *testing.T) {
+	for _, env := range []bool{false, true} {
+		h := newHarness(t)
+		h.setup()
+		wh := h.inboxAlerts("")
+		h.srv.cfg.AlertInbox = env
+		n := 0
+		// sends reports whether a request by a new token sends a notice.
+		sends := func() bool {
+			t.Helper()
+			n++
+			name := fmt.Sprintf("bot%d", n)
+			tok := h.createToken(name, "lab")
+			if code, _, _ := h.api("POST", "/api/v1/requests", tok, map[string]string{"namespace": "lab", "name": "KEY_" + fmt.Sprint(n)}); code != http.StatusCreated {
+				t.Fatalf("request: %d", code)
+			}
+			return strings.Contains(noticesIn(wh.all(h.srv.alerts)), "`"+name+"` is asking")
+		}
+		pressed := func(want string) {
+			t.Helper()
+			_, page := h.get("/settings")
+			if !strings.Contains(page, `value="`+want+`" class="on small" aria-pressed="true"`) {
+				t.Fatalf("env %v: %q isn't the pressed choice", env, want)
+			}
+			if !strings.Contains(page, fmt.Sprintf("Default (%s)", onOff(env))) {
+				t.Fatalf("env %v: the default isn't shown", env)
+			}
+		}
+		pressed("default")
+		if got := sends(); got != env {
+			t.Fatalf("env %v, no choice: notice %v", env, got)
+		}
+		for _, c := range []string{"on", "off"} {
+			if code, _ := h.form("/settings/alert-inbox", url.Values{"inbox": {c}}); code != http.StatusSeeOther {
+				t.Fatalf("env %v, %s: %d", env, c, code)
+			}
+			pressed(c)
+			if got := sends(); got != (c == "on") {
+				t.Fatalf("env %v, %s: notice %v", env, c, got)
+			}
+			if !h.auditHas("settings.alertinbox", c) {
+				t.Fatalf("env %v, %s: not in the audit log", env, c)
+			}
+		}
+		if code, _ := h.form("/settings/alert-inbox", url.Values{"inbox": {"default"}}); code != http.StatusSeeOther {
+			t.Fatalf("env %v, default: %d", env, code)
+		}
+		pressed("default")
+		if got := sends(); got != env {
+			t.Fatalf("env %v, back to the default: notice %v", env, got)
+		}
+		if !h.auditHas("settings.alertinbox", "the default, from KEYDROP_ALERT_INBOX") {
+			t.Fatalf("env %v, default: not in the audit log", env)
+		}
+
+		// Refused: an unknown choice, no CSRF token, no session. Nothing
+		// changes.
+		want := !env
+		h.st.SetInboxAlerts(&want)
+		if code, _ := h.form("/settings/alert-inbox", url.Values{"inbox": {"maybe"}}); code != http.StatusBadRequest {
+			t.Fatalf("unknown choice: %d", code)
+		}
+		if resp := h.post("/settings/alert-inbox", url.Values{"inbox": {"default"}}); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("without csrf: %d", resp.StatusCode)
+		}
+		anon := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := anon.PostForm(h.ts.URL+"/settings/alert-inbox", url.Values{"inbox": {"default"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+			t.Fatalf("logged out: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+		}
+		if on, chosen := h.st.InboxAlerts(); on != want || !chosen {
+			t.Fatalf("env %v: a refused form changed the setting: %v %v", env, on, chosen)
+		}
+	}
+}
+
+// The startup log says what's in effect and where it came from.
+func TestInboxAlertsStartupLog(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	h := newHarness(t)
+	on, off := true, false
+	for _, c := range []struct {
+		env    bool
+		choice *bool
+		want   string
+	}{
+		{false, nil, ""},
+		{true, nil, "Inbox alerts: on (KEYDROP_ALERT_INBOX)"},
+		{false, &on, "Inbox alerts: on (set in Settings)"},
+		{true, &off, "Inbox alerts: off (turned off in Settings, which wins over KEYDROP_ALERT_INBOX)"},
+		{false, &off, ""},
+	} {
+		if err := h.st.SetInboxAlerts(c.choice); err != nil {
+			t.Fatal(err)
+		}
+		buf.Reset()
+		New(Config{AlertInbox: c.env, AlertWebhook: "https://hooks.example.com/fake-hook"}, h.st, h.srv.audit)
+		got := buf.String()
+		if c.want == "" && strings.Contains(got, "Inbox alerts") || !strings.Contains(got, c.want) {
+			t.Fatalf("env %v, choice %v: %q", c.env, c.choice, got)
+		}
+	}
 }

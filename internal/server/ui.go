@@ -130,6 +130,7 @@ var flashes = map[string]string{
 	"alerttest":      "Test alert delivered: the webhook accepted it. Look for it in the channel below.",
 	"webhookset":     "Webhook saved. Send a test alert to check it.",
 	"webhookremoved": "Webhook removed.",
+	"alertinbox":     "Inbox alerts setting saved.",
 }
 
 type page map[string]any
@@ -1110,7 +1111,11 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["AlertNtfyHint"] = format == formatDiscord && (s.cfg.AlertFormat == "" || s.cfg.AlertFormat == formatAuto)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
 	data["AlertEnv"] = s.cfg.AlertWebhook != ""
-	data["AlertInbox"] = s.cfg.AlertInbox
+	on, chosen := s.inboxAlertsOn()
+	data["InboxOn"], data["InboxEnv"], data["InboxChoice"] = on, s.cfg.AlertInbox, "default"
+	if chosen {
+		data["InboxChoice"] = onOff(on)
+	}
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }

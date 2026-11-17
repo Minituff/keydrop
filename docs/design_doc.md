@@ -302,18 +302,25 @@ which are the places keydrop exists to keep secrets out of. So a machine
 
 ### Inbox alerts
 An agent that asks (pairing, `request` then `wait`, renewal, a flag) blocks
-on a human who has no reason to look at the Inbox. With
-`KEYDROP_ALERT_INBOX=true` the alerter also posts a notice when a pairing,
-a key request (single or batch), a renewal request (only when a new one is
+on a human who has no reason to look at the Inbox. With Inbox alerts on
+(in Settings, or `KEYDROP_ALERT_INBOX=true`) the alerter also posts a
+notice when a pairing, a key request (single or batch), a renewal request (only when a new one is
 created) or a flag is stored. Not notes or description proposals: nothing
 waits on them.
 
-- **Opt-in, and an env var for now.** A Settings toggle would be a new
-  field in the state file, so a new MAC view and a migration story, for
-  something that grants nothing. Settings shows whether it's on, read-only.
-  The webhook can be added or removed in Settings at runtime, so whether
-  one is configured is checked at send time; the startup log says when the
-  variable is on without one.
+- **Opt-in, and the admin's call in Settings.** Settings has On, Off and
+  Default; Default (nothing chosen) follows `KEYDROP_ALERT_INBOX`, off
+  unless set. A choice made in Settings wins over the variable, on or off,
+  as a webhook added there does, so the person looking at the page
+  decides what it says. It's stored as `notify.inbox` in the state file,
+  under `mac7` (see [Data format history](#data-format-history)), so v0.1.3
+  still opens the data and ignores it. It neither grants nor restricts
+  access, so it isn't tied to the key check: stripping `notify` and `mac7`
+  together only puts it back to Default. Changing it is a CSRF-checked
+  admin form, logged as `settings.alertinbox`. Whether a webhook is
+  configured is checked at send time, since it too can change in Settings;
+  the startup log says what's in effect and where it came from, and when
+  it's on without a webhook.
 - **Notices can't cost a security alert anything.** `/api/v1/pair` needs
   no credential, so anyone on the network can cause notices. They go
   through the one alerter but have their own budget (3 at once, then one
@@ -863,7 +870,7 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | `v6View()` | 903db72 (v0.1.3) | none yet | |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, chosen in Settings) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again |
 | `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the

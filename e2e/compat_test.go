@@ -235,3 +235,79 @@ func TestRollbackV5(t *testing.T) {
 	in.start(t, binary) // and it opens with it on again
 	in.stop(t)
 }
+
+// TestRollbackV6 turns Inbox alerts on in Settings, with self-upgrade and
+// the webhook set too, so the file has mac6 and mac7. The release before
+// (v0.1.3) starts on the data as it is, keeps self-upgrade and the
+// webhook, drops the setting when it rewrites the file; this one then
+// starts on what it wrote, with Inbox alerts back to KEYDROP_ALERT_INBOX
+// (unset: off), and the setting can be turned on again.
+func TestRollbackV6(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	const inboxOn = `value="on" class="on small" aria-pressed="true"`
+	const inboxDefault = `value="default" class="on small" aria-pressed="true"`
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	secret := fakeSecret(t)
+	web.addEntry(t, "rb6", "KEPT", secret, "secret", "")
+	web.mustPost(t, "/settings/alert-webhook", url.Values{"webhook": {"https://hooks.example.com/fake-e2e-webhook-path"}})
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.postToken(t, url.Values{"name": {"rb6-agent"}, "namespaces": {"rb6"}, "selfupgrade": {"yes"}}))
+	web.mustPost(t, "/settings/alert-inbox", url.Values{"inbox": {"on"}})
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) {
+		t.Fatal("Inbox alerts not shown as on")
+	}
+	data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json"))
+	for _, f := range []string{`"notify"`, `"mac7"`, `"mac6"`} {
+		if !strings.Contains(string(data), f) {
+			t.Fatalf("no %s in the file", f)
+		}
+	}
+	in.stop(t)
+
+	in.start(t, old)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("the previous release returns a different value")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, "hooks.example.com") {
+		t.Fatal("the previous release lost the webhook")
+	}
+	if _, page := web.get(t, "/token/rb6-agent"); !strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("the previous release lost self-upgrade")
+	}
+	web.addEntry(t, "rb6", "AFTER", "plain-setting", "variable", "") // it rewrites the file
+	in.stop(t)
+	if data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json")); strings.Contains(string(data), `"notify"`) || strings.Contains(string(data), `"mac7"`) {
+		t.Fatal("the previous release kept the setting")
+	}
+
+	in.start(t, binary)
+	if strings.Contains(in.srv.log.String(), "Inbox alerts") {
+		t.Fatalf("Inbox alerts after the rollback: %s", in.srv.log.String())
+	}
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("this release returns a different value after the previous one rewrote the file")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxDefault) || !strings.Contains(page, "Inbox alerts: <strong>off</strong>") || !strings.Contains(page, "hooks.example.com") {
+		t.Fatal("Settings after the previous release's rewrite")
+	}
+	if _, page := web.get(t, "/token/rb6-agent"); !strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("self-upgrade lost")
+	}
+	web.mustPost(t, "/settings/alert-inbox", url.Values{"inbox": {"on"}})
+	in.stop(t)
+	in.start(t, binary) // and it opens with it on again
+	if !strings.Contains(in.srv.log.String(), "Inbox alerts: on (set in Settings)") {
+		t.Fatalf("not on again: %s", in.srv.log.String())
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) {
+		t.Fatal("Inbox alerts not shown as on again")
+	}
+	in.stop(t)
+}

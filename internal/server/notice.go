@@ -2,12 +2,14 @@ package server
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 )
 
-// Inbox alerts (KEYDROP_ALERT_INBOX): a short notice to the alert webhook
-// when something starts waiting for the admin, so an agent blocked on
-// `keydrop wait` isn't waiting on an Inbox nobody is looking at.
+// Inbox alerts (Settings, or KEYDROP_ALERT_INBOX until a choice is made
+// there): a short notice to the alert webhook when something starts
+// waiting for the admin, so an agent blocked on `keydrop wait` isn't
+// waiting on an Inbox nobody is looking at.
 //
 // A notice is built by the server from names and addresses only: never a
 // value or token, and never text an agent or a pairing client wrote (a
@@ -16,11 +18,28 @@ import (
 // pairing code: the admin compares the code on the page with the one on
 // the agent's terminal, and the webhook channel mustn't be a third source.
 
+// inboxAlertsOn reports whether Inbox alerts are on, and whether that was
+// chosen in Settings: the admin's choice there wins once made, on or off,
+// as a webhook added there does; until then KEYDROP_ALERT_INBOX decides.
+func (s *Server) inboxAlertsOn() (on, chosen bool) {
+	if on, chosen := s.store.InboxAlerts(); chosen {
+		return on, true
+	}
+	return s.cfg.AlertInbox, false
+}
+
+func inboxSource(chosen bool) string {
+	if chosen {
+		return "set in Settings"
+	}
+	return "KEYDROP_ALERT_INBOX"
+}
+
 // inboxNotice sends text, ended with a link to path when
 // KEYDROP_PUBLIC_URL is configured, at most once per key per alertEvery.
 // Call it only after the change it announces was stored.
 func (s *Server) inboxNotice(key, text, path, page string) {
-	if !s.cfg.AlertInbox || !s.alerts.configured() {
+	if on, _ := s.inboxAlertsOn(); !on || !s.alerts.configured() {
 		return
 	}
 	if !s.alerts.allowNotice(key, s.now()) {
@@ -55,4 +74,32 @@ func (s *Server) noticeRenewal(token string) {
 
 func (s *Server) noticeFlag(token, ref string) {
 	s.inboxNotice("flag\x00"+token, fmt.Sprintf("keydrop: `%s` flagged `%s`. See why", token, ref), "/inbox", "Inbox")
+}
+
+// handleAlertInbox turns Inbox alerts on or off, or ("default") forgets the
+// choice so KEYDROP_ALERT_INBOX decides again.
+func (s *Server) handleAlertInbox(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	var choice *bool
+	switch r.PostFormValue("inbox") {
+	case "on":
+		on := true
+		choice = &on
+	case "off":
+		off := false
+		choice = &off
+	case "default":
+	default:
+		s.renderSettings(w, r, se, http.StatusBadRequest, "Choose on, off or the default for Inbox alerts.")
+		return
+	}
+	if err := s.store.SetInboxAlerts(choice); err != nil {
+		s.renderSettings(w, r, se, http.StatusInternalServerError, "Couldn't save the Inbox alerts setting: "+err.Error()+".")
+		return
+	}
+	detail := onOff(s.cfg.AlertInbox) + " (the default, from KEYDROP_ALERT_INBOX)"
+	if choice != nil {
+		detail = onOff(*choice)
+	}
+	s.event(r, "admin", "settings.alertinbox", "", detail)
+	http.Redirect(w, r, "/settings?msg=alertinbox", http.StatusSeeOther)
 }

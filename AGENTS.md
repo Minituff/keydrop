@@ -103,7 +103,7 @@ made-up data.
   canaries) must not be strippable: tie it to a sealed key check the way
   `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in
   `TestOlderReleaseReadsNewerFile`. The e2e suite starts the older
-  releases (`rollbackCommit` through `v5RollbackCommit`) on data this one wrote. A fix-up of data the
+  releases (`rollbackCommit` through `v6RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
   only on a file whose MAC verified, and may change only what that
   release could also have written, or `ext`.

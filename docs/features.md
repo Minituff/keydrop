@@ -207,14 +207,16 @@ you add one, or press **Make it a canary** on a secret's page.
 ## Inbox alerts
 
 An agent that asks for something waits for you, but nothing tells you it's
-asking. Set `KEYDROP_ALERT_INBOX=true` and the alert webhook also gets a short
-notice when a machine asks to pair, an agent asks for a key (`keydrop
-request`) or a new token, or an agent flags a key. For example: ``keydrop:
+asking. Turn on **Inbox alerts** in Settings and the alert webhook also
+gets a short notice when a machine asks to pair, an agent asks for a key
+(`keydrop request`) or a new token, or an agent flags a key. For example: ``keydrop:
 `deploy-bot` is asking for `lab/CLOUDFLARE_TOKEN`. Fill it in:
 https://secrets.example.com/inbox``.
 
 - **Off by default,** and it needs an alert webhook (Settings or
-  `KEYDROP_ALERT_WEBHOOK`). Settings shows whether it's on.
+  `KEYDROP_ALERT_WEBHOOK`). Settings has On, Off and Default; Default
+  follows `KEYDROP_ALERT_INBOX` in keydrop's container, so you can also
+  turn it on there. Once you choose On or Off in Settings, that wins.
 - **Quiet:** one notice per agent (per address, for pairing) every 10
   minutes; the Inbox shows the rest. Notices have their own small rate limit,
   separate from canary alerts, so a flood of pairing requests can't hold up a

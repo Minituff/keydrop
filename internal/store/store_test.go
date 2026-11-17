@@ -555,9 +555,13 @@ func must(t *testing.T, err error) {
 func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	dir := t.TempDir()
 	downgraded(t, dir)
+	s0, err := Open(dir, key32())
+	must(t, err)
+	on := true
+	must(t, s0.SetInboxAlerts(&on))
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
-	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`} {
+	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`, `"notify"`, `"mac7"`} {
 		if !bytes.Contains(data, []byte(f)) {
 			t.Fatalf("no %s in the file", f)
 		}
@@ -589,6 +593,9 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	}
 	if sec, _ := s2.GetSecret("lab", "DECOY"); sec.Canary || s2.st.Canary != nil {
 		t.Fatal("canary survived")
+	}
+	if _, chosen := s2.InboxAlerts(); chosen {
+		t.Fatal("the Inbox alerts setting survived")
 	}
 }
 

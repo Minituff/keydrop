@@ -61,7 +61,8 @@ type Config struct {
 	AlertFormat string
 	// AlertInbox (KEYDROP_ALERT_INBOX) also sends a short notice to the
 	// webhook when something starts waiting for the admin: a pairing, a
-	// key request, a renewal or a flag.
+	// key request, a renewal or a flag. It's the default: once the admin
+	// turns Inbox alerts on or off in Settings, that wins.
 	AlertInbox bool
 	// Now replaces the clock; nil is time.Now. Only the e2e tests' build
 	// (tag e2eclock) sets it.
@@ -207,11 +208,13 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	if s.alerts.configured() {
 		go s.alerts.destination(false) // so Settings needn't wait for it
 	}
-	switch {
-	case cfg.AlertInbox && s.alerts.configured():
-		log.Printf("Inbox alerts: on (KEYDROP_ALERT_INBOX)")
-	case cfg.AlertInbox:
-		log.Printf("Inbox alerts are on (KEYDROP_ALERT_INBOX) but need an alert webhook: add one in Settings or set KEYDROP_ALERT_WEBHOOK")
+	switch on, chosen := s.inboxAlertsOn(); {
+	case on && s.alerts.configured():
+		log.Printf("Inbox alerts: on (%s)", inboxSource(chosen))
+	case on:
+		log.Printf("Inbox alerts are on (%s) but need an alert webhook: add one in Settings or set KEYDROP_ALERT_WEBHOOK", inboxSource(chosen))
+	case chosen && cfg.AlertInbox:
+		log.Printf("Inbox alerts: off (turned off in Settings, which wins over KEYDROP_ALERT_INBOX)")
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		if st.AdminConfigured() {
@@ -321,6 +324,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/alert-test", s.admin(s.handleAlertTest))
 	m.HandleFunc("POST /settings/alert-webhook", s.admin(s.handleAlertWebhook))
 	m.HandleFunc("POST /settings/alert-webhook/remove", s.admin(s.handleAlertWebhookRemove))
+	m.HandleFunc("POST /settings/alert-inbox", s.admin(s.handleAlertInbox))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))

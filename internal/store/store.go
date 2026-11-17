@@ -326,10 +326,11 @@ type state struct {
 	// Each token's SelfUpgrade came in the release after MAC5, and MAC6
 	// covers it; see v5View.
 	MAC6 []byte `json:"mac6,omitempty"`
-	// MAC7 covers the fields that came in the release after MAC6 (the one
-	// released as v0.1.3), which checks MAC6 over everything it parses;
-	// see v6View.
-	MAC7 []byte `json:"mac7,omitempty"`
+	// Notify (the notification settings chosen in Settings) came in the
+	// release after MAC6 (v0.1.3), which checks MAC6 over everything it
+	// parses, so MAC7 covers it; see v6View and notify.go.
+	Notify *NotifySettings `json:"notify,omitempty"`
+	MAC7   []byte          `json:"mac7,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -426,12 +427,13 @@ func (st *state) v5View() state {
 func (st *state) v6View() state {
 	c := *st
 	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	c.Notify = nil
 	return c
 }
 
 // hasNewer7 reports whether any field outside v6View is set.
 func (st *state) hasNewer7() bool {
-	return false
+	return st.Notify != nil
 }
 
 // hasNewer6 reports whether any field outside v5View, and inside v6View,
@@ -516,6 +518,10 @@ func (st *state) clone() state {
 			cp := *v
 			c.Groups[k] = &cp
 		}
+	}
+	if st.Notify != nil {
+		n := st.Notify.clone()
+		c.Notify = &n
 	}
 	return c
 }
