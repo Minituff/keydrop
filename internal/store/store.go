@@ -326,6 +326,10 @@ type state struct {
 	// Each token's SelfUpgrade came in the release after MAC5, and MAC6
 	// covers it; see v5View.
 	MAC6 []byte `json:"mac6,omitempty"`
+	// MAC7 covers the fields that came in the release after MAC6 (the one
+	// released as v0.1.3), which checks MAC6 over everything it parses;
+	// see v6View.
+	MAC7 []byte `json:"mac7,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -398,10 +402,10 @@ func (st *state) v4View() state {
 // The token map is a copy; everything else is shared with st: don't write
 // through it.
 func (st *state) v5View() state {
-	c := *st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
-	c.Tokens = make(map[string]*Token, len(st.Tokens))
-	for k, v := range st.Tokens {
+	c := st.v6View()
+	tokens := c.Tokens // st's map: v6View copies nothing
+	c.Tokens = make(map[string]*Token, len(tokens))
+	for k, v := range tokens {
 		cp := *v
 		cp.SelfUpgrade = false
 		c.Tokens[k] = &cp
@@ -409,7 +413,29 @@ func (st *state) v5View() state {
 	return c
 }
 
-// hasNewer6 reports whether any field outside v5View is set.
+// v6View is the state as the release with MAC6 (v0.1.3) sees it: the
+// fields after it and MAC7 dropped, the MACs empty. Marshalled, it's
+// byte-for-byte what that release marshals for its MAC6, so it still
+// verifies a file this one wrote. It's the innermost view: every older one
+// starts from it. A shallow copy, sharing every map and pointer with st:
+// don't write through it.
+//
+// A field added before MAC7 has shipped is zeroed here and named in
+// hasNewer7. Once a release that checks MAC7 has shipped, the next field
+// needs a v7View inside this one and an eighth MAC instead.
+func (st *state) v6View() state {
+	c := *st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	return c
+}
+
+// hasNewer7 reports whether any field outside v6View is set.
+func (st *state) hasNewer7() bool {
+	return false
+}
+
+// hasNewer6 reports whether any field outside v5View, and inside v6View,
+// is set.
 func (st *state) hasNewer6() bool {
 	for _, v := range st.Tokens {
 		if v.SelfUpgrade {
@@ -510,6 +536,7 @@ type Store struct {
 	mac4Key []byte
 	mac5Key []byte
 	mac6Key []byte
+	mac7Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -663,6 +690,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s.mac4Key = s.DeriveKey("state mac v4")
 	s.mac5Key = s.DeriveKey("state mac v5")
 	s.mac6Key = s.DeriveKey("state mac v6")
+	s.mac7Key = s.DeriveKey("state mac v7")
 	return s, nil
 }
 
@@ -701,6 +729,10 @@ func (s *Store) load(data []byte) error {
 		}
 		// And for self-upgrade, under MAC6.
 		if (s.st.hasNewer6() || s.st.MAC6 != nil) && !hmac.Equal(s.st.MAC6, s.mac6()) {
+			return ErrIntegrity
+		}
+		// And for the fields after MAC6, under MAC7.
+		if (s.st.hasNewer7() || s.st.MAC7 != nil) && !hmac.Equal(s.st.MAC7, s.mac7()) {
 			return ErrIntegrity
 		}
 	}
@@ -771,11 +803,17 @@ func (s *Store) mac5() []byte {
 	return macOf(s.mac5Key, &c)
 }
 
-// mac6 is the HMAC of the whole state with the MAC fields empty.
+// mac6 is the HMAC of v6View: everything the release with MAC6 knows.
 func (s *Store) mac6() []byte {
-	c := s.st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+	c := s.st.v6View()
 	return macOf(s.mac6Key, &c)
+}
+
+// mac7 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac7() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	return macOf(s.mac7Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -874,7 +912,7 @@ func (s *Store) save() error {
 }
 
 func (s *Store) write(v4 bool) error {
-	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6 = s.mac(), nil, nil, nil, nil, nil
+	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6, s.st.MAC7 = s.mac(), nil, nil, nil, nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
 	}
@@ -889,6 +927,9 @@ func (s *Store) write(v4 bool) error {
 	}
 	if s.st.hasNewer6() {
 		s.st.MAC6 = s.mac6()
+	}
+	if s.st.hasNewer7() {
+		s.st.MAC7 = s.mac7()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {

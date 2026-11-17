@@ -92,11 +92,13 @@ made-up data.
   format), `mac2` covers `v2View()` (the 265e513 format, which checks
   `mac2` over everything it parses), `mac3` covers
   `v3View()` (the 5f2f64e format), `mac4` covers `v4View()` (the 631f015
-  format), `mac5` covers `v5View()` (the 8acec14 format) and `mac6` covers
-  everything. A new optional field goes outside every older view. This
-  release checks `mac6` over all it parses, so once it has shipped, the
-  next new field needs a `v6View` that zeroes it and a seventh MAC, the
-  same way `v5View`/`mac6` were added. Never add a plain new field an existing
+  format), `mac5` covers `v5View()` (the 8acec14 format), `mac6` covers
+  `v6View()` (the 903db72 format: v0.1.3) and `mac7` covers
+  everything. A new optional field goes outside every older view. Until a
+  release that checks `mac7` has shipped, a new field joins `mac7`: zero
+  it in `v6View` and name it in `hasNewer7`. Once one has, the next new
+  field needs a `v7View` that zeroes it and an eighth MAC, the same way
+  `v6View`/`mac7` were added. Never add a plain new field an existing
   MAC covers. A field that restricts access (like expiry, rotations,
   canaries) must not be strippable: tie it to a sealed key check the way
   `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in

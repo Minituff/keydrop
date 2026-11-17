@@ -863,7 +863,8 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | everything | this one | | |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | none yet | |
+| `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the
   MAC or any of those fields is present, it must verify. Stripping every
