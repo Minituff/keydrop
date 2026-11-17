@@ -38,7 +38,8 @@ made-up data.
   POST with the CSRF token), never in a list, a URL or a redirect. Agents
   get secrets only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a
   token. Both are audit-logged, and those are the only two ways a secret
-  leaves the server. A view that can't be written to the audit log fails:
+  leaves the server. Older values (the history) are never shown: the admin
+  restores one, then presses "Show value". A view that can't be written to the audit log fails:
   no record, no value (`audit.Record`). **Variables** (`Secret.Variable`) are the deliberate
   exception: their values appear in lists and API responses, reads aren't
   logged, and `run` doesn't mask them. Any code that shows a value must

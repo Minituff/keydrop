@@ -560,9 +560,12 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	on := true
 	must(t, s0.SetInboxAlerts(&on))
 	must(t, s0.SetExpiryAlertDays(30))
+	for _, v := range []string{"h1", "h2", "h3"} {
+		must(t, s0.PutValue("lab", "HIST", []byte(v), nil))
+	}
 	path := filepath.Join(dir, stateFile)
 	data, _ := os.ReadFile(path)
-	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`, `"notify"`, `"expiry_days"`, `"mac7"`} {
+	for _, f := range []string{`"ext"`, `"add"`, `"history"`, `"mac2"`, `"fixups"`, `"mac3"`, `"groups"`, `"settings"`, `"group"`, `"batch"`, `"notify"`, `"expiry_days"`, `"versions"`, `"mac7"`} {
 		if !bytes.Contains(data, []byte(f)) {
 			t.Fatalf("no %s in the file", f)
 		}
@@ -575,7 +578,14 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	if !bytes.Equal(old.MAC, s.oldMAC(old)) {
 		t.Fatal("the older release would refuse this file")
 	}
-	// The older release saves: newer fields gone, its MAC.
+	// The older release rolls HIST back (h2 current, h3 previous) and
+	// saves: newer fields gone, its MAC.
+	h := old.Secrets["lab/HIST"]
+	cur, err := s.open(h.Value, aad("lab", "HIST", "value"))
+	must(t, err)
+	prev, err := s.open(h.Previous, aad("lab", "HIST", "previous"))
+	must(t, err)
+	h.Value, h.Previous = s.seal(prev, aad("lab", "HIST", "value")), s.seal(cur, aad("lab", "HIST", "previous"))
 	old.MAC = s.oldMAC(old)
 	rewritten, _ := json.MarshalIndent(&old, "", "  ")
 	os.WriteFile(path, rewritten, 0o600)
@@ -597,6 +607,18 @@ func TestOlderReleaseReadsNewerFile(t *testing.T) {
 	}
 	if _, chosen := s2.InboxAlerts(); chosen || s2.ExpiryAlertDays() != 0 {
 		t.Fatal("the notify settings survived")
+	}
+	// The history went with the rewrite; current and previous are what the
+	// older release left, and saving builds history again.
+	if got := current(t, s2, "lab", "HIST"); got != "h2/s" {
+		t.Fatalf("HIST after the older release rolled it back: %s", got)
+	}
+	if got := strings.Join(olderPlain(t, s2, "lab", "HIST"), " "); got != "h3/s" {
+		t.Fatalf("HIST's older values after the older release rolled it back: %s", got)
+	}
+	must(t, s2.PutValue("lab", "HIST", []byte("h4"), nil))
+	if got := strings.Join(olderPlain(t, s2, "lab", "HIST"), " "); got != "h2/s h3/s" {
+		t.Fatalf("HIST's older values after a new save: %s", got)
 	}
 }
 

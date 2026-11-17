@@ -18,7 +18,7 @@ replacement for Vault or Infisical in a team.
 
 | | |
 |---|---|
-| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
+| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name and its place (current, previous or an older value), so values can't be swapped between records or slots. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses, and is replaced on a schedule (unless set to never). |
 | Renewal | Approved by the admin only. Approval replaces the token; the new one is kept sealed with the master key until the agent collects it with the old token, from the address that asked, within 7 days. The Inbox flags a request made from an address other than the token's last one; a collect from another address is refused, logged and alerted. |
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. Pairing and renewal are the only ways a token is handed to an agent. |
@@ -33,7 +33,8 @@ replacement for Vault or Infisical in a team.
 
 Someone with a copy of `data/` but not the master key can't:
 
-- read any secret or variable value, or the authenticator seed;
+- read any secret or variable value, current or older, or the
+  authenticator seed;
 - read the TLS private key (`tls.key` is sealed), so they can't pose as
   the server that agents have pinned. **The exception** is a copy made after
   `keydrop downgrade-data`, or before `keydrop upgrade-data`, which holds

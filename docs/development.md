@@ -151,4 +151,3 @@ change too.
 - Trusted proxy-header auth (Authelia, Authentik), left out so far because a
   misconfigured proxy would bypass the login
 - Optional per-secret allowlists inside a namespace
-- Version history beyond one previous value

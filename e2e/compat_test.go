@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -311,6 +312,97 @@ func TestRollbackV6(t *testing.T) {
 	web = login(t, in)
 	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) {
 		t.Fatal("Inbox alerts not shown as on again")
+	}
+	in.stop(t)
+}
+
+var restoreRE = regexp.MustCompile(`action="/secret/rbh/HIST/restore/([0-9a-f]+)"`)
+
+// TestRollbackV6History builds up value history here, then starts the
+// release before it (v0.1.3) on the data: it reads the current value,
+// shows it, rolls back once in its own UI and so rewrites the file without
+// the history. This release then opens what it wrote with the current and
+// previous values as that release left them and no history beyond them,
+// and new saves build history up again.
+func TestRollbackV6History(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	vals := []string{fakeSecret(t), fakeSecret(t), fakeSecret(t), fakeSecret(t), fakeSecret(t)}
+	rows := func(t *testing.T, web *admin) []string {
+		t.Helper()
+		_, page := web.get(t, "/secret/rbh/HIST")
+		noLeak(t, "the secret page", page, vals...)
+		var ids []string
+		for _, m := range restoreRE.FindAllStringSubmatch(page, -1) {
+			ids = append(ids, m[1])
+		}
+		return ids
+	}
+	inFile := func(t *testing.T, in *instance) bool {
+		t.Helper()
+		data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json"))
+		v, m := strings.Contains(string(data), `"versions"`), strings.Contains(string(data), `"mac7"`)
+		if v != m {
+			t.Fatalf("versions in the file %v, mac7 %v", v, m)
+		}
+		return v
+	}
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	web.addEntry(t, "rbh", "HIST", vals[0], "secret", "")
+	for _, v := range vals[1:4] {
+		web.mustPost(t, "/secret/rbh/HIST/value", url.Values{"value": {v}, "kind": {"secret"}})
+	}
+	if ids := rows(t, web); len(ids) != 3 || !inFile(t, in) {
+		t.Fatalf("history: %d rows", len(ids))
+	}
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createToken(t, "rbh-agent", "rbh", false))
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("not the current value")
+	}
+	in.stop(t)
+
+	in.start(t, old)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("the previous release returns a different value")
+	}
+	web = login(t, in)
+	if code, page, _ := web.post(t, "/secret/rbh/HIST/reveal", nil); code != 200 || !strings.Contains(page, vals[3]) {
+		t.Fatalf("the previous release doesn't show the current value: %d", code)
+	}
+	web.mustPost(t, "/secret/rbh/HIST/rollback", nil) // it rewrites the file
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[2]) {
+		t.Fatal("the previous release didn't roll back")
+	}
+	in.stop(t)
+	if inFile(t, in) {
+		t.Fatal("the previous release kept the history")
+	}
+
+	in.start(t, binary)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[2]) {
+		t.Fatal("this release returns a different value after the previous one rewrote the file")
+	}
+	web = login(t, in)
+	ids := rows(t, web)
+	if len(ids) != 1 {
+		t.Fatalf("%d older values after the previous release's rewrite, want its previous one", len(ids))
+	}
+	web.mustPost(t, "/secret/rbh/HIST/restore/"+ids[0], nil)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("the previous value the previous release left isn't the one it replaced")
+	}
+	web.mustPost(t, "/secret/rbh/HIST/value", url.Values{"value": {vals[4]}, "kind": {"secret"}})
+	if ids := rows(t, web); len(ids) != 2 || !inFile(t, in) {
+		t.Fatalf("history after new saves: %d rows", len(ids))
+	}
+	in.stop(t)
+	in.start(t, binary) // and it opens with history again
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[4]) {
+		t.Fatal("not the newest value")
 	}
 	in.stop(t)
 }

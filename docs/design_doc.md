@@ -79,8 +79,47 @@ the keys should be able to check one. Instead:
 - Every view is audit-logged (`secret.reveal`, "web UI"), isn't shown if
   that record can't be written, and updates
   "last read", the same as an agent read.
-- You can still replace a value, roll back to the previous one (one level
-  of history), or delete it.
+- You can still replace a value, restore one of its older values, or
+  delete it.
+
+### Value history
+One previous value wasn't enough: two bad saves in a row (a wrong paste,
+then another; an agent's `put`, then the admin's fix of the wrong key) and
+the last good value was gone. Each key now keeps its last five older
+values (`MaxVersions`) beyond the current one.
+
+- **Listed, never shown.** The secret page lists them, newest first, as
+  "replaced 3d ago · saved by admin · secret", each with a Restore
+  button. There's no way to see an older value as it is: restore it, then
+  press Show value, which is the ordinary logged view. So Show value and
+  the agents' reveal stay the only two ways a value leaves the server.
+- **Restoring is a save.** The restored value becomes current and the one
+  it replaces goes to the front of the list, so a restore never loses a
+  value (the count doesn't change; only a new save pushes the oldest
+  out). Each value keeps its own kind and who saved it, so restoring an
+  old secret over a variable brings it back as a secret, and a variable
+  restored over a canary unmarks it, as any change to a variable does.
+- **Addressed by ID, not by place.** Every older value has a random ID,
+  kept as it moves down the list. Restore posts that ID (CSRF token,
+  admin middleware), so a page that's out of date can't restore a
+  different value; an ID that isn't kept any more is refused, changing
+  nothing. The old "Roll back" route still works and restores the newest.
+- **Logged.** A restore is `secret.rollback` in the audit log, with which
+  one it was ("older value 2 of 5, a secret, replaced …, saved by
+  token:ci"), never anything about the value. The change log agents read
+  says "rolled back", whichever it was.
+- **Admin only.** Agents can't list older values, restore one, or tell how
+  many there are: nothing in the API or the CLI changed, and a key's API
+  responses are the same byte for byte with or without history, canaries
+  included. Deleting a key deletes its history. Making a key a canary, or
+  ordinary again, keeps its history, as it always kept the previous value.
+- **What it doesn't protect against.** A write token can still replace a
+  key, and five writes in a row push every value the admin saved out of
+  the history; it's for mistakes, not for an agent that's out to destroy
+  a key. The audit log and the change log still show every write, and a
+  backup of `data/` is still the only copy that an agent can't reach.
+  Older values of the keys a token created count towards its storage cap,
+  as the previous value always did, until the admin saves over the key.
 
 Each secret has a description ("what this is for and what to do with it"),
 an optional usage hint and an optional expiry date. The description is the
@@ -573,8 +612,8 @@ every read logged, no way to just look). So an entry is either a
   so a generated password can't land in a list. The same goes for the
   admin's Replace form, which makes you choose on a variable: otherwise an
   agent could stage a variable and ask for a real key to be pasted into
-  it. The previous value keeps
-  its own kind, so rolling back after a kind change can't bring back an
+  it. Each older value keeps
+  its own kind, so restoring one after a kind change can't bring back an
   old secret as a variable. The API reads the kind under the same lock as
   the value, so a kind change mid-read can't skip the audit log.
 
@@ -849,7 +888,13 @@ that depend on it. Exit 1 if any failed.
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated
   data binds the ciphertext to its namespace, name and field, so values
-  can't be moved between records by editing the file.
+  can't be moved between records by editing the file. The field is
+  `value`, `previous`, or `version:ID` for an older value in `versions`
+  (ID random, made when the value enters the history and kept while it
+  moves down the list, so the list shifts without resealing). An older
+  value can't be swapped with another, moved to another key, or put in
+  `previous`. Moving a value between fields decrypts and re-seals it, and
+  one that won't decrypt makes the change fail rather than drop it.
 - The master key comes from a file (a Docker secret) or an env var, and is
   never written to the data directory. A key-check blob detects a wrong
   master key at startup instead of failing later.
@@ -914,7 +959,7 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings); per-secret `versions` (value history) | Yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off, history beyond `previous` is gone |
 | `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the
@@ -933,6 +978,20 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   work, canaries become ordinary secrets, the canary Inbox entries go; the
   audit log keeps everything) and lists by name what it dropped; run again,
   it goes back to the v1 key check.
+- **Value history and `previous`.** `previous` (with `previous_variable`)
+  stays the newest older value, written exactly as before, so v0.1.3
+  still rolls back one step. `versions` describes it (ID, when it was
+  replaced, who saved it) and holds only the values older than it, plus
+  who saved the current value. It's written once a key has a value
+  replaced, so a key with one value has none and a file with none has no
+  `mac7`. An older build rewrites the whole file on every save, so it
+  can't leave `versions` describing a `previous` it changed: whatever it
+  did (a rollback, a save), the file it writes has the current value and
+  `previous` as it left them and no `versions`; this one then shows that
+  `previous` as the only older value (its date and saver unknown) and
+  builds history again from the next save. History grants and restricts
+  nothing, so it isn't tied to the key check: stripping `versions` with
+  `mac7` (and nothing else under it set) loses only the history.
 - When an older build rewrites the file it drops the fields it doesn't know;
   keys and their values stay. The e2e suite starts the older builds on data
   this one wrote, lets them rewrite it, and opens the result.

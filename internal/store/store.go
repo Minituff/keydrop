@@ -137,6 +137,10 @@ type Secret struct {
 	// came after Group and is outside v3View (see there). Only secrets
 	// can be canaries: it's cleared when the entry becomes a variable.
 	Canary bool `json:"canary,omitempty"`
+	// Versions is the value history beyond Previous, which stays the
+	// newest older value (see versions.go). Outside v6View, under MAC7.
+	// Admin-only: it never leaves the store (see copySecret).
+	Versions *ValueHistory `json:"versions,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -433,6 +437,7 @@ func (st *state) v6View() state {
 		c.Secrets = make(map[string]*Secret, len(st.Secrets))
 		for k, v := range st.Secrets {
 			cp := *v
+			cp.Versions = nil
 			c.Secrets[k] = &cp
 		}
 	}
@@ -441,7 +446,15 @@ func (st *state) v6View() state {
 
 // hasNewer7 reports whether any field outside v6View is set.
 func (st *state) hasNewer7() bool {
-	return st.Notify != nil
+	if st.Notify != nil {
+		return true
+	}
+	for _, v := range st.Secrets {
+		if v.Versions != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNewer6 reports whether any field outside v5View, and inside v6View,
@@ -983,7 +996,7 @@ func key(ns, name string) string { return ns + "/" + name }
 
 func copySecret(sec *Secret) Secret {
 	c := *sec
-	c.Value, c.Previous = nil, nil // ciphertext never leaves the store
+	c.Value, c.Previous, c.Versions = nil, nil, nil // ciphertext never leaves the store
 	if len(sec.Value) > 0 {
 		c.Value = []byte{1} // keeps HasValue() meaningful on copies
 	}
@@ -1115,8 +1128,9 @@ func (s *Store) GetSecret(ns, name string) (Secret, bool) {
 	return copySecret(sec), true
 }
 
-// PutValue creates or replaces a secret's value. The old value is kept as
-// Previous so a bad paste can be rolled back. meta is applied if non-nil.
+// PutValue creates or replaces a secret's value. The old value is kept in
+// the history (as Previous, the newest older value) so a bad paste can be
+// rolled back. meta is applied if non-nil.
 func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
 	_, err := s.putValue(ns, name, value, meta, true, nil)
 	return err
@@ -1235,7 +1249,7 @@ func (s *Store) checkTokenCaps(name string, newKey bool, size int) error {
 	for _, sec := range s.st.Secrets {
 		if sec.creator() == name && len(sec.Value) > 0 {
 			keys++
-			bytes += len(sec.Value) + len(sec.Previous)
+			bytes += len(sec.Value) + len(sec.Previous) + sec.olderBytes()
 		}
 	}
 	if newKey && keys >= MaxKeysPerToken || bytes > MaxBytesPerToken {
@@ -1292,19 +1306,18 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 			}
 		}
 	}
-	var prev []byte
-	if res.Existed {
-		var err error
-		if prev, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
-			return res, err
+	if ok {
+		// The current value, if any, becomes the newest older one, with its
+		// own kind; the oldest drops off past MaxVersions.
+		list := s.withCurrent(sec, sec.olderValues(), now)
+		if len(list) > 0 || sec.Versions != nil {
+			if err := s.setOlder(sec, list, actor); err != nil {
+				return res, err
+			}
 		}
-	}
-	if !ok {
+	} else {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
 		s.st.Secrets[key(ns, name)] = sec
-	}
-	if prev != nil {
-		sec.Previous, sec.PreviousVariable = prev, sec.Variable
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
 	sec.Pending, sec.New, sec.AckedBy, sec.UpdatedAt = false, true, nil, now
@@ -1484,37 +1497,6 @@ func (s *Store) Delete(ns, name string) error {
 	}
 	delete(s.st.Secrets, key(ns, name))
 	s.record(Event{Namespace: ns, Name: name, Action: "deleted", Actor: "admin"})
-	return s.commit(snap)
-}
-
-// Rollback swaps the current and previous values.
-func (s *Store) Rollback(ns, name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := s.st.clone()
-	sec, ok := s.st.Secrets[key(ns, name)]
-	if !ok {
-		return ErrNotFound
-	}
-	if len(sec.Previous) == 0 {
-		return ErrNoPrevious
-	}
-	var cur []byte
-	if len(sec.Value) > 0 {
-		var err error
-		if cur, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
-			return err
-		}
-	}
-	old, err := s.reseal(sec.Previous, ns, name, "previous", "value")
-	if err != nil {
-		return err
-	}
-	sec.Value, sec.Previous = old, cur
-	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
-	sec.dropCanaryIfVariable()
-	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, s.now().UTC()
-	s.record(Event{Namespace: ns, Name: name, Action: "rolled back", Actor: "admin", Detail: sec.Kind()})
 	return s.commit(snap)
 }
 

@@ -53,6 +53,7 @@ var funcs = template.FuncMap{
 		}
 		return t.UTC().Format("2006-01-02")
 	},
+	"ago": func(t time.Time) string { return humanAgo(time.Since(t)) },
 	"since": func(t *time.Time) string {
 		if t == nil {
 			return "never"
@@ -100,7 +101,7 @@ func init() {
 var flashes = map[string]string{
 	"saved":          "Saved.",
 	"details":        "Details saved.",
-	"rolledback":     "Rolled back to the previous value.",
+	"restored":       "Restored. The value it replaced is now the newest older value.",
 	"deleted":        "Deleted.",
 	"revoked":        "Token revoked.",
 	"theme":          "Appearance saved for this browser.",
@@ -746,7 +747,7 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 		ext = *sec.Ext
 	}
 	s.render(w, r, "secret", status, se, page{
-		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
+		"Title": sec.Ref(), "S": sec, "Versions": s.store.Versions(ns, name), "MaxVersions": store.MaxVersions,
 		"Readers": readers, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
 		"GroupList": s.store.Groups(ns), "InGroup": s.store.GroupAssignments()[sec.Ref()],
 		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
@@ -840,18 +841,48 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 	s.back(w, r, "details")
 }
 
+// handleRollback restores the newest older value: the route from before
+// the history, kept so nothing that posts to it breaks.
 func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.restore(w, r, se, "")
+}
+
+// handleRestore restores the older value named by its ID, never by its
+// place in the list, so a page that's out of date can't restore another.
+// The value isn't shown: Show value, logged as ever, does that.
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.restore(w, r, se, r.PathValue("id"))
+}
+
+func (s *Server) restore(w http.ResponseWriter, r *http.Request, se *session, id string) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	old, _ := s.store.GetSecret(ns, name)
-	if err := s.store.Rollback(ns, name); err != nil {
+	v, of, err := s.store.Restore(ns, name, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
+		return
+	case errors.Is(err, store.ErrNoVersion):
+		s.renderSecret(w, r, se, http.StatusConflict, err.Error())
+		return
+	case err != nil:
 		s.renderSecret(w, r, se, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.event(r, "admin", "secret.rollback", ns+"/"+name, "")
+	// Which one, by age and what's known of it; never anything about the
+	// value.
+	detail := fmt.Sprintf("older value %d of %d, a %s", v.Age, of, v.Kind())
+	if !v.ReplacedAt.IsZero() {
+		detail += ", replaced " + v.ReplacedAt.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	if v.By != "" {
+		detail += ", saved by " + v.By
+	}
+	s.event(r, "admin", "secret.rollback", ns+"/"+name, detail)
 	if now, _ := s.store.GetSecret(ns, name); now.Variable != old.Variable {
 		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(now.Variable))
 	}
-	s.back(w, r, "rolledback")
+	s.back(w, r, "restored")
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, _ string, se *session) {

@@ -7,7 +7,15 @@ Everything keydrop does. For the short version, see the [overview](index.md).
 Paste a value with a description of what it's for. Later you can:
 
 - view it (press **Show value**; every view is logged),
-- replace it, roll back to the previous value, or delete it.
+- replace it, restore one of its last five values, or delete it.
+
+The secret page lists the older values, newest first: when each was
+replaced, who saved it (you or an agent) and its kind, never the value.
+**Restore** makes one current again, and the current value moves into the
+list, so restoring loses nothing. To look at an old value, restore it and
+press **Show value**. Agents can't see the list or restore from it. It's
+for mistakes: an agent with write permission that replaces a key five
+times in a row pushes your values out of it, so keep backups of `data/`.
 
 Lists show names and descriptions only, never values. The page is built for
 phones and uses no JavaScript. **Settings → Appearance** picks System, Light

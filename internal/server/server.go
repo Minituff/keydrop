@@ -306,6 +306,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /secret/{ns}/{name}/value", s.admin(s.handleSetValue))
 	m.HandleFunc("POST /secret/{ns}/{name}/meta", s.admin(s.handleSetMeta))
 	m.HandleFunc("POST /secret/{ns}/{name}/rollback", s.admin(s.handleRollback))
+	m.HandleFunc("POST /secret/{ns}/{name}/restore/{id}", s.admin(s.handleRestore))
 	m.HandleFunc("POST /secret/{ns}/{name}/delete", s.admin(s.handleDelete))
 	m.HandleFunc("POST /secret/{ns}/{name}/status", s.admin(s.handleSetStatus))
 	m.HandleFunc("POST /secret/{ns}/{name}/flags/{id}/resolve", s.admin(s.handleResolveFlag))
