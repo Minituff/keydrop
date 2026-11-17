@@ -353,18 +353,30 @@ never need to see them.
 Recommended: run `keydrop history --since 72h --quiet` at the start of
 every session. It prints the keys created, replaced or marked in the last
 three days, and nothing when nothing changed, so each session starts
-knowing what changed. In Claude Code, ask the person before adding this
-hook to `.claude/settings.json`:
+knowing what changed. In Claude Code, also run `keydrop guard` before each
+shell command: it blocks one that would print a value (`keydrop get
+--raw`, `--no-mask`, `keydrop run -- env`) and says what to do instead. It
+needs no network or token. Ask the person before adding these hooks to
+`.claude/settings.json`:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "keydrop guard" } ] }
     ]
   }
 }
 ```
+
+Before adding the guard, check that this CLI has it: `keydrop guard
+--command ls` must print nothing and exit 0. A keydrop from before the
+guard exits 2 there, and as a hook that would block every command, so
+leave the guard out until `keydrop upgrade`. If `keydrop` isn't on the
+`PATH` Claude Code runs hooks with, use its full path in both commands.
 
 Several agents running as the same user on one machine share its token.
 To tell them apart in keydrop's log, each can set its own label, for
@@ -375,7 +387,7 @@ environment. It's a label, not a permission.
 
 Tell the person what's set up: the server's address, the name, namespaces
 and permission they approved for you, and whether you added the
-instructions and the session hook.
+instructions and the hooks.
 <!-- END agent setup -->
 
 ## Doing it by hand
@@ -388,37 +400,70 @@ step 9 above into its `CLAUDE.md` or `AGENTS.md`.
 
 ## Claude Code hooks
 
-The setup above suggests a `SessionStart` hook: whatever `keydrop history`
-prints becomes context at the start of the session. A `PreToolUse` guard is
-worth adding as well, under `hooks` in `.claude/settings.json`:
+The setup above suggests two hooks. Together, in `.claude/settings.json`
+(the same file is in the repository as
+[`examples/claude-code/settings.json`](https://github.com/Minituff/keydrop/blob/main/examples/claude-code/settings.json)):
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [ { "type": "command", "command": "keydrop-guard" } ]
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "keydrop guard" } ] }
+    ]
+  }
 }
 ```
 
-- **PreToolUse guard:** a small script that blocks commands that would print
-  a value. For example, `keydrop-guard`:
+If `keydrop` isn't on the `PATH` Claude Code runs hooks with, use its full
+path, such as `~/.local/bin/keydrop`. Check that your CLI has the guard
+first: `keydrop guard --command ls` must exit 0. A CLI from before it exits
+2 ("unknown command"), which as a hook blocks every shell command; run
+`keydrop upgrade` first.
 
-  ```sh
-  #!/bin/sh
-  # Reads the tool call JSON on stdin; exit 2 blocks it and shows stderr to Claude.
-  cmd=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["tool_input"].get("command",""))')
-  case "$cmd" in
-    *"keydrop get"*"--raw"*|*"keydrop"*"--no-mask"*)
-      echo "Blocked: this would print a secret value. Use keydrop run instead." >&2; exit 2 ;;
-  esac
-  exit 0
-  ```
+- **SessionStart:** whatever `keydrop history` prints becomes context at
+  the start of the session: what changed in the last three days, or
+  nothing.
+- **PreToolUse guard:** `keydrop guard` reads the tool call Claude Code
+  sends on stdin and blocks a shell command that would print a value. Claude
+  sees a one-line reason that says what to do instead (it never repeats the
+  command, which could hold a pasted value). It needs no token, config or
+  network, so it works on a machine that isn't paired yet, and it comes
+  with the CLI, so `keydrop upgrade` keeps it current. It blocks:
+    - `keydrop get … --raw`, in any spelling the CLI accepts (`-raw`,
+      `--raw=true`);
+    - `--no-mask` on a keydrop command (for `run`, among run's own flags,
+      not the command's);
+    - `keydrop run … -- CMD` where CMD prints what run gave it: `env`,
+      `printenv`, `set`, `export -p`/`declare -p`, or `echo`/`printf` of a
+      variable that run set (`-e NAME`, `-e VAR=NAME`), directly or in a
+      `sh -c` script.
+
+    It finds these when keydrop is called by path (`./keydrop`,
+    `~/.local/bin/keydrop`), after `sudo`, `env VAR=x`, `command`, `exec`,
+    `nohup`, `nice`, `timeout` or `time`, and anywhere in a compound
+    command: after `&&`, `||`, `;` or `|`, inside `$(…)`, backticks or
+    `<(…)`, in a `sh -c`/`bash -c` string, after `eval`, or in a heredoc
+    fed to a shell. A mention that isn't a command passes: `echo "never use
+    keydrop get --raw"`, `grep -- --no-mask docs/`, a commit message, a
+    quoted heredoc written to a file.
+
+    It doesn't catch what it would need a real shell to see: keydrop under
+    another name or through a variable (`$KD get X --raw`), a heredoc piped
+    to a shell (`cat <<EOF | sh`), `ssh host 'keydrop get X --raw'`,
+    `xargs`, a script file, or a program that prints its environment some
+    other way (`python -c 'print(os.environ)'`). A shell command it can't
+    read, or input that isn't a Bash tool call, is let through, so a broken
+    guard never stops every command. Other agents can call it as
+    `keydrop guard --command 'CMD'`: exit 2 means blocked, with the reason
+    on stderr.
 
 The guard is a guard-rail for honest mistakes, not a security boundary (see
-the [threat model](security.md)).
+the [threat model](security.md)): an agent set on getting a value can
+write a script that prints it. Masking in `keydrop run` still applies to
+whatever the guard lets through.
 
 ## Health checks
 

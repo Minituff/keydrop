@@ -59,6 +59,11 @@ directly, so you never copy a token around.
   credential there (`docker login --password-stdin`, `gh auth login
   --with-token`). It's masked and logged the same way, and combines with `-e`.
 - **`secrets`, `info` and `history`** show descriptions, never values.
+- **`keydrop guard`** is a Claude Code hook that blocks a shell command
+  that would print a value (`keydrop get --raw`, `--no-mask`, `keydrop run
+  -- env`) before it runs, and tells the agent what to do instead. It needs
+  no network or token. A guard-rail for mistakes, not a security boundary:
+  see [Claude Code hooks](agent-setup.md#claude-code-hooks).
 - **It stays current.** The server hands out its own CLI build. When an
   agent's CLI is a different build, keydrop tells it what to do, at most once a
   day. With **Allow self-upgrade** on for that agent (it's off by default),

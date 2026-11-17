@@ -386,7 +386,29 @@ log, not for access control.
   at `run -e`. `get --to-file` (0600) covers config files; with `--force`
   it writes a new 0600 file and renames it into place, so it never keeps a
   looser mode or writes through a symlink. `get --raw` exists for the rare
-  pipe, and is easy to block with an agent hook.
+  pipe, and `keydrop guard` blocks it in an agent's session.
+- **`keydrop guard`** is a Claude Code `PreToolUse` hook (or, with
+  `--command`, a check any agent's wrapper can call). It's a subcommand
+  rather than a script because the CLI is already on every agent machine,
+  at the server's version, and keeps itself current with `keydrop
+  upgrade`; a script would need its own way there, its own version, and
+  python or jq to read the hook's JSON. It reads at most 1 MiB, needs no
+  token, config or network, and never builds the API client, so it's fast
+  and works before pairing. It blocks `get --raw`, `--no-mask`, and `run --
+  CMD` where CMD dumps the environment (`env`, `printenv`, `set`, `export
+  -p`) or echoes a variable that run set. It reads the command with a
+  small shell tokeniser: quotes, `&&`/`||`/`;`/`|`, `$(…)` and backticks,
+  heredocs, `sh -c` strings, `eval`, and wrappers like `sudo` and `env`,
+  so a mention in an argument (`echo "… --raw"`, a commit message) passes
+  while an invocation anywhere in the command doesn't. Nesting is capped at
+  eight levels shared between `$(…)` and `sh -c`, which keeps the work
+  linear in the input. It fails open: bad JSON, too much input or another
+  tool passes, since a guard that broke would block every shell command in
+  the session, and it's a guard-rail for honest mistakes, not a boundary.
+  It misses what needs a real shell: keydrop through a variable or another
+  name, a heredoc piped into `sh`, `ssh`, `xargs`, script files, and
+  programs that print their environment some other way. Its reason is fixed
+  text and never repeats the command, which may hold a pasted value.
 - Everything the CLI prints that came from the server (descriptions,
   usage, variable values on a terminal, names, error messages) has control
   characters, terminal escapes and bidirectional overrides shown as

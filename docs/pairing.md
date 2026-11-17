@@ -119,7 +119,8 @@ once a day, if it doesn't match the server's.
 ## What to read next
 
 The rules to give the agent (for its `CLAUDE.md` or `AGENTS.md`), a
-session-start history hook and a guard against `--raw` are in
+session-start history hook and the `keydrop guard` hook that blocks
+commands printing a value are in
 [docs/agent-setup.md](agent-setup.md).
 [docs/design_doc.md](design_doc.md) explains how keydrop is built and
 why.
