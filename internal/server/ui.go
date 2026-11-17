@@ -1107,6 +1107,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["AlertDest"] = s.alerts.destination(false)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
 	data["AlertEnv"] = s.cfg.AlertWebhook != ""
+	data["AlertInbox"] = s.cfg.AlertInbox
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }

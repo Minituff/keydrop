@@ -57,6 +57,10 @@ type Config struct {
 	// Discord-compatible), unless one is set in Settings. Empty: no alerts
 	// without one. It's never logged or shown.
 	AlertWebhook string
+	// AlertInbox (KEYDROP_ALERT_INBOX) also sends a short notice to the
+	// webhook when something starts waiting for the admin: a pairing, a
+	// key request, a renewal or a flag.
+	AlertInbox bool
 	// Now replaces the clock; nil is time.Now. Only the e2e tests' build
 	// (tag e2eclock) sets it.
 	Now func() time.Time
@@ -198,6 +202,12 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	}
 	if s.alerts.configured() {
 		go s.alerts.destination(false) // so Settings needn't wait for it
+	}
+	switch {
+	case cfg.AlertInbox && s.alerts.configured():
+		log.Printf("Inbox alerts: on (KEYDROP_ALERT_INBOX)")
+	case cfg.AlertInbox:
+		log.Printf("Inbox alerts are on (KEYDROP_ALERT_INBOX) but need an alert webhook: add one in Settings or set KEYDROP_ALERT_WEBHOOK")
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		if st.AdminConfigured() {

@@ -497,6 +497,7 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	if b.Description != "" || b.Usage != "" {
 		s.event(r, actor(t), "secret.propose", b.Namespace+"/"+b.Name, "description")
 	}
+	s.noticeRequest(t.Name, b.Namespace, []string{b.Name})
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
@@ -567,6 +568,7 @@ func (s *Server) apiRequestBatch(w http.ResponseWriter, r *http.Request, t store
 	if strings.TrimSpace(b.Group) != "" {
 		s.event(r, actor(t), "group.propose", refs[0], "a group name for the batch")
 	}
+	s.noticeRequest(t.Name, b.Namespace, b.Names)
 	out := map[string]any{"refs": refs, "batch": id}
 	if len(urls) > 0 {
 		out["urls"] = urls
@@ -698,6 +700,12 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 	s.audit.Add(audit.Event{Actor: actor(t), Action: "secret.flag", Target: sec.Ref(), Text: text, IP: s.clientIP(r)})
 	if hit != nil {
 		s.canaryTouched(r, *hit)
+	} else {
+		// A flag on a canary sends the canary alert only: it already says
+		// the canary was flagged, by whom, and is the one that matters. The
+		// agent can't tell: both are sent in the background, after the
+		// flag is stored, and the response below is the same either way.
+		s.noticeFlag(t.Name, sec.Ref())
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref()})
 }

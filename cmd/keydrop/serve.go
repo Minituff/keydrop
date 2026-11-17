@@ -344,6 +344,7 @@ func cmdServer(args []string) error {
 
 	cfg := server.Config{
 		AlertWebhook:   webhook,
+		AlertInbox:     envBool("KEYDROP_ALERT_INBOX", false),
 		Now:            testClock,
 		PublicURL:      publicURL,
 		PublicURLGuess: guessed,
