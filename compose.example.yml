@@ -30,6 +30,9 @@ services:
       # Post to the alert webhook (Settings or KEYDROP_ALERT_WEBHOOK) when
       # an agent is waiting for you: pairing, a key request, renewal, a flag.
       # KEYDROP_ALERT_INBOX: "true"
+      # Alert body: auto (Slack for hooks.slack.com, else Discord), discord,
+      # slack, or text (plain text, for ntfy).
+      # KEYDROP_ALERT_FORMAT: text
     secrets:
       - keydrop_master_key
     volumes:

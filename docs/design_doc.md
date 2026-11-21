@@ -262,9 +262,7 @@ which are the places keydrop exists to keep secrets out of. So a machine
   Entries are capped at 100; past that, new ones are only counted (the
   audit log has them all). The admin dismisses entries.
 - **Alerts** go to the webhook added in Settings, or else
-  `KEYDROP_ALERT_WEBHOOK` (Discord-compatible: a JSON
-  `{"content": ...}` with `allowed_mentions` empty, so a name can't ping
-  anyone). The body names the canary, the token, the address and the
+  `KEYDROP_ALERT_WEBHOOK`. The body names the canary, the token, the address and the
   time, never a value or a token. The URL is a credential: it's never
   logged, shown, put in an error or the audit log. One added in Settings
   is sealed (AES-GCM, its own AAD) in the `alerts` field under MAC5 and
@@ -282,6 +280,20 @@ which are the places keydrop exists to keep secrets out of. So a machine
   as one summary later. A 429 is waited out for its `Retry-After`, at
   most 30 seconds and twice. Refused token collects use the same path;
   [Inbox alerts](#inbox-alerts) use it too, on a budget of their own.
+- **Alert formats** (`KEYDROP_ALERT_FORMAT`, nothing in the state file):
+  `discord` is a JSON `{"content": ...}` with `allowed_mentions` empty, so
+  a name can't ping anyone; `slack` is `{"text": ...}` with `&`, `<` and
+  `>` escaped as Slack asks, so nothing becomes a mention or a link (names
+  can't hold them, but an address can: an IPv6 zone from
+  `X-Forwarded-For` is free text); `text` is the message as a plain body
+  without the backticks, for ntfy. `auto` picks `slack` only for an https
+  URL on `hooks.slack.com` and `discord` otherwise, which is what every
+  release before it sent. It never guesses ntfy: self-hosted ntfy runs on
+  any host and path, and a wrong guess would quietly break a receiver that
+  takes the Discord body. The queue holds the message text and the body
+  is built when it's posted, from the URL and format then in use, so an
+  alert queued before the webhook changes in Settings goes out in the new
+  webhook's shape.
 - **Revoke on read** (Settings, off by default) revokes a token the moment
   it touches a canary. It stops a stolen token at once, but it also
   tells whoever holds the token that the secret was a trap (their next

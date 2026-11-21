@@ -179,11 +179,15 @@ you add one, or press **Make it a canary** on a secret's page.
 - **You find out.** The log marks it *canary*, and the **Inbox** shows one
   entry per canary and token until you dismiss it.
 - **Alerts.** With an alert webhook set, keydrop posts an alert, rate-limited
-  so a burst can't flood the channel. Add a Discord webhook URL in
-  **Settings** (it's stored encrypted and never shown again), or set
+  so a burst can't flood the channel. Add a Discord, Slack or ntfy webhook
+  URL in **Settings** (it's stored encrypted and never shown again), or set
   `KEYDROP_ALERT_WEBHOOK`. One added in Settings wins, and removing it falls
   back to the variable. **Send test alert** says whether the webhook accepted
   it.
+    - Discord and Slack (`https://hooks.slack.com/services/…`) URLs work as
+      they are.
+    - ntfy: use the topic's URL (`https://ntfy.example.com/keydrop`) and set
+      `KEYDROP_ALERT_FORMAT=text`, which sends the alert as plain text.
 - **Revoking on touch.** Settings can also revoke a token that reads a canary.
   It's off by default, because the revocation tells whoever holds the token
   which secret was the canary.

@@ -53,10 +53,12 @@ type Config struct {
 	// DirectURL reaches keydrop itself rather than through a proxy, for the
 	// pinned install command, e.g. https://10.0.0.5:8443.
 	DirectURL string
-	// AlertWebhook is where canary alerts are POSTed ({"content": ...},
-	// Discord-compatible), unless one is set in Settings. Empty: no alerts
-	// without one. It's never logged or shown.
+	// AlertWebhook is where canary alerts are POSTed, unless one is set in
+	// Settings. Empty: no alerts without one. It's never logged or shown.
 	AlertWebhook string
+	// AlertFormat (KEYDROP_ALERT_FORMAT) is the body's shape for whichever
+	// webhook is in use: auto (or ""), discord, slack or text.
+	AlertFormat string
 	// AlertInbox (KEYDROP_ALERT_INBOX) also sends a short notice to the
 	// webhook when something starts waiting for the admin: a pairing, a
 	// key request, a renewal or a flag.
@@ -188,6 +190,7 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		polls:       newRateLimit(pollsPerMinute, time.Minute),
 		alerts:      newAlerter(cfg.AlertWebhook),
 	}
+	s.alerts.format = cfg.AlertFormat
 	if cfg.Now != nil {
 		s.now = cfg.Now
 	}

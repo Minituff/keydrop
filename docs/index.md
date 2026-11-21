@@ -81,7 +81,7 @@ sequenceDiagram
 | 🗂️ **Namespaces and per-agent tokens** | Each agent sees only its namespaces, with read, add or write permission. |
 | 🤝 **Pairing, not pasting tokens** | `keydrop pair` prints a link; you check the code and approve on your phone. |
 | 📬 **Agents can ask** | `keydrop request NAME` puts a request in your Inbox; the agent waits until you fill it in. |
-| 🐤 **Canaries** | Decoy keys no agent should touch. A read shows in your Inbox and can alert Discord. |
+| 🐤 **Canaries** | Decoy keys no agent should touch. A read shows in your Inbox and can alert Discord, Slack or ntfy. |
 | 🔁 **Tokens rotate themselves** | The agent asks for its new token; you approve with one tap. |
 | 📜 **Audit log** | Every login, change and secret read: which agent, which key, which command. |
 | 🪶 **Small enough to audit** | One container and one CLI, written in Go with **no third-party dependencies**. |

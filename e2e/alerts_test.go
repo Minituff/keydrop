@@ -89,3 +89,29 @@ func TestInboxAlerts(t *testing.T) {
 		in.stop(t)
 	}
 }
+
+// TestAlertFormatText: with KEYDROP_ALERT_FORMAT=text (ntfy), a canary
+// read reaches the webhook as plain text: no JSON, no backticks.
+func TestAlertFormatText(t *testing.T) {
+	sink, hook := newAlertSink(t)
+	in := newInstance(t, binary)
+	in.extra = []string{"KEYDROP_ALERT_WEBHOOK=" + hook, "KEYDROP_ALERT_FORMAT=text"}
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	web.mustPost(t, "/secrets", url.Values{"namespace": {"fmt"}, "name": {"BAIT"}, "value": {fakeSecret(t)}, "kind": {"secret"}, "canary": {"yes"}})
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, "sent as: <strong>plain text</strong>") {
+		t.Fatal("Settings doesn't say alerts go as plain text")
+	}
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createTokenPerm(t, "reader", "fmt", "read"))
+	g.valueHash(t, "BAIT")
+	got := sink.wait(t, "canary fmt/BAIT was read by token reader")
+	sink.mu.Lock()
+	ctype := sink.types[0]
+	sink.mu.Unlock()
+	if strings.ContainsAny(got, "`{}\"") || ctype != "text/plain; charset=utf-8" {
+		t.Fatalf("got %q (%s)", got, ctype)
+	}
+	in.stop(t)
+}

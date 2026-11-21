@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/minituff/keydrop/internal/server"
@@ -73,5 +74,20 @@ func TestUpgradeDowngradeData(t *testing.T) {
 	t.Setenv("KEYDROP_DATA_DIR", filepath.Join(t.TempDir(), "typo"))
 	if err := cmdUpgradeData(nil); err == nil {
 		t.Fatal("upgrade-data on an empty directory")
+	}
+}
+
+// An unknown KEYDROP_ALERT_FORMAT stops the server, naming the allowed
+// values and not the value given (which could be a pasted webhook URL).
+func TestAlertFormatInvalid(t *testing.T) {
+	t.Setenv("KEYDROP_DATA_DIR", t.TempDir())
+	t.Setenv("KEYDROP_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)))
+	t.Setenv("KEYDROP_MASTER_KEY_FILE", "")
+	t.Setenv("KEYDROP_TLS", "off")
+	t.Setenv("KEYDROP_ALERT_WEBHOOK", "https://hooks.example.com/fake-format-webhook-path")
+	t.Setenv("KEYDROP_ALERT_FORMAT", "https://hooks.example.com/fake-format-webhook-path")
+	err := cmdServer(nil)
+	if err == nil || !strings.Contains(err.Error(), "auto, discord, slack or text") || strings.Contains(err.Error(), "fake-format") {
+		t.Fatalf("got %v", err)
 	}
 }

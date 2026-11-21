@@ -132,8 +132,7 @@ func (a *alerter) test(content string) error {
 	if !ok {
 		return errAlertBudget
 	}
-	body, _ := json.Marshal(map[string]any{"content": content, "allowed_mentions": map[string]any{"parse": []string{}}})
-	_, err := a.postOnce(body)
+	_, err := a.postOnce(content)
 	return err
 }
 
