@@ -48,8 +48,10 @@ type APISecret struct {
 	// Group is the group the admin put the key in, or its auto group (by
 	// name prefix). Absent: ungrouped.
 	Group *APIGroup `json:"group,omitempty"`
-	// ValueBy names the agent that wrote a variable's value. That value is
-	// text from another agent, unapproved, and treated as untrusted.
+	// ValueBy names the agent that wrote a variable's value, or is
+	// store.UnknownAuthor when nobody recorded who did. Either way that
+	// value is agent text, unapproved, and treated as untrusted. The new
+	// value didn't raise APILevel: every CLI quotes any value_by already.
 	ValueBy string `json:"value_by,omitempty"`
 	// Usable is false, and only present, when the admin limited the key to
 	// other agents: this token sees it but can't read, replace or ack it.

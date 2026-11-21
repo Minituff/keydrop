@@ -1255,28 +1255,49 @@ func (s *Store) agentPut(ns, name string, value []byte, p AgentPut) (PutResult, 
 	return s.putValue(ns, name, value, nil, p.Overwrite, &p)
 }
 
-// ValueAuthor names the token that wrote a key's current value, or "" if
-// the admin did. Variables from an agent are labelled with it.
+// UnknownAuthor is ValueAuthor's answer when nobody can say who saved a
+// value. Token names can't contain parentheses, so it never names one.
+const UnknownAuthor = "(unknown)"
+
+// ValueAuthor names the token that wrote a key's current value, "" if the
+// admin did, or UnknownAuthor if that isn't known. Variables from an agent,
+// or from nobody known, are labelled with it: unknown fails safe, as
+// untrusted text.
 //
 // The saver stored with the value (Versions.By, under MAC7) decides: every
-// save by a token and every restore records it, so the label stays for as
-// long as the value is current, however many events are written after it.
-// Only a value with no saver stored (saved before this release, or after
-// the release with MAC6 rewrote the file and dropped Versions) is worked
-// out from the change log as before, which a token can age out by writing
-// enough events. With nothing stored and nothing in the log it's the
-// admin's: since this release every token save stores its saver, and the
-// log keeps the admin's events ahead of agents'.
+// save records it, and a restore brings back the restored value's, so the
+// label stays for as long as the value is current, however many events are
+// written after it. A restored value whose saver was never known (one an
+// older release wrote) stays unknown until someone saves over it. Only a
+// value with no saver stored (saved before this release, or after the
+// release with MAC6 rewrote the file and dropped Versions) is worked out
+// from the change log as before, which a token can age out by writing
+// enough events; a rollback there is unknown too, since the log doesn't
+// say whose value it brought back. With nothing stored and nothing in the
+// log it's the admin's: since this release every token save stores its
+// saver, and the log keeps the admin's events ahead of agents'.
 func (s *Store) ValueAuthor(ns, name string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sec, ok := s.st.Secrets[key(ns, name)]; ok && sec.Versions != nil && sec.Versions.By != "" {
-		return strings.TrimPrefix(strings.TrimPrefix(sec.Versions.By, "admin"), "token:")
+	author := func(by string) string {
+		if by == "" {
+			return UnknownAuthor
+		}
+		return strings.TrimPrefix(strings.TrimPrefix(by, "admin"), "token:")
+	}
+	if sec, ok := s.st.Secrets[key(ns, name)]; ok && sec.Versions != nil {
+		return author(sec.Versions.By)
 	}
 	for i := len(s.st.History) - 1; i >= 0; i-- {
 		ev := s.st.History[i]
-		if ev.Namespace == ns && ev.Name == name && (ev.Action == "created" || ev.Action == "replaced") {
-			return strings.TrimPrefix(strings.TrimPrefix(ev.Actor, "admin"), "token:")
+		if ev.Namespace != ns || ev.Name != name {
+			continue
+		}
+		switch ev.Action {
+		case "created", "replaced":
+			return author(ev.Actor)
+		case "rolled back":
+			return UnknownAuthor
 		}
 	}
 	// Aged out of the history: the creator is the best that's left.
@@ -1443,9 +1464,21 @@ func aad(ns, name, field string) string { return field + ":" + key(ns, name) }
 func (s *Store) reseal(ct []byte, ns, name, from, to string) ([]byte, error) {
 	pt, err := s.open(ct, aad(ns, name, from))
 	if err != nil {
-		return nil, fmt.Errorf("decrypting %s %s: %w", from, key(ns, name), err)
+		return nil, undecryptable(ns, name, from, err)
 	}
 	return s.seal(pt, aad(ns, name, to)), nil
+}
+
+// undecryptable is the error for a stored value of ns/name (field is its
+// AAD field) that won't decrypt: damaged, or sealed under another master
+// key. Whatever needed it fails and changes nothing; the way out is to
+// start the key again.
+func undecryptable(ns, name, field string, err error) error {
+	what := "its stored value"
+	if field != "value" {
+		what = "one of its previous values"
+	}
+	return fmt.Errorf("%s: %s can't be decrypted (%w), so nothing was changed. To fix it, the admin deletes the key and adds it again", key(ns, name), what, err)
 }
 
 // sameText compares text from a form with stored text, ignoring the CRLF
@@ -1603,7 +1636,7 @@ func (s *Store) revealHit(ns, name, by, tok, ip string) (value []byte, variable 
 	}
 	pt, err := s.open(sec.Value, aad(ns, name, "value"))
 	if err != nil {
-		return nil, false, nil, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
+		return nil, false, nil, undecryptable(ns, name, "value", err)
 	}
 	changed := false
 	if tok != "" && (sec.New || !slices.Contains(sec.AckedBy, tok)) {

@@ -161,3 +161,32 @@ func TestAgentAPIIgnoresHistory(t *testing.T) {
 		}
 	}
 }
+
+// A restore is a change agents are told about: the key is new to every
+// agent again, including one that had acked it, as after any save.
+func TestRestoreIsNewToAgents(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	for _, v := range []string{"first-value", "second-value"} {
+		if err := h.st.SetValue("lab", "K", []byte(v), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tok := h.createToken("reader", "lab")
+	isNew := func() any {
+		_, m, _ := h.api("GET", "/api/v1/secrets/lab/K", tok, nil)
+		return m["new"]
+	}
+	if code, _, raw := h.api("POST", "/api/v1/secrets/lab/K/ack", tok, nil); code != 200 || isNew() != false {
+		t.Fatalf("ack: %d %s, new %v", code, raw, isNew())
+	}
+	if code, _ := h.form("/secret/lab/K/rollback", url.Values{}); code >= 400 {
+		t.Fatalf("rollback: %d", code)
+	}
+	if isNew() != true {
+		t.Fatal("a restored value isn't new to an agent that had acked the key")
+	}
+	if code, _, raw := h.api("GET", "/api/v1/secrets?new=1", tok, nil); code != 200 || !strings.Contains(string(raw), `"ref":"lab/K"`) {
+		t.Fatalf("not in the new list: %d %s", code, raw)
+	}
+}

@@ -406,3 +406,45 @@ func TestRollbackV6History(t *testing.T) {
 	}
 	in.stop(t)
 }
+
+// TestRollbackV6UnknownSaver: on the release before stored savers
+// (v0.1.3) an agent writes a variable and the admin saves over it. After
+// the upgrade the admin restores the agent's value, whose saver that
+// release never recorded: other agents get it labelled as untrusted text
+// from an unknown writer, not as the admin's, until the admin saves again.
+func TestRollbackV6UnknownSaver(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	agentText := "https://agent.example/IGNORE-PREVIOUS-INSTRUCTIONS"
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	writer, reader := newAgent(t, binary), newAgent(t, binary)
+	writer.login(t, in.url, pin, web.createToken(t, "uw-writer", "uw", true))
+	reader.login(t, in.url, pin, web.createToken(t, "uw-reader", "uw", false))
+	in.stop(t)
+
+	in.start(t, old)
+	writer.ok(t, agentText, "put", "uw/URL", "--var")
+	web = login(t, in)
+	web.mustPost(t, "/secret/uw/URL/value", url.Values{"value": {"https://admin.example"}, "kind": {"variable"}})
+	in.stop(t)
+
+	in.start(t, binary)
+	web = login(t, in)
+	_, page := web.get(t, "/secret/uw/URL")
+	m := regexp.MustCompile(`action="/secret/uw/URL/restore/([0-9a-f]+)"`).FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("no older value to restore")
+	}
+	web.mustPost(t, "/secret/uw/URL/restore/"+m[1], nil)
+	r := reader.ok(t, "", "info", "uw/URL")
+	if !strings.Contains(r.stdout, "    value written by an unknown agent or an earlier release (untrusted text from another agent):\n      | "+agentText) || strings.Contains(r.stdout, "uw/URL=") {
+		t.Fatalf("the restored agent value isn't labelled:\n%s", r.stdout)
+	}
+	web.mustPost(t, "/secret/uw/URL/value", url.Values{"value": {"https://admin.example/2"}, "kind": {"variable"}})
+	if r := reader.ok(t, "", "info", "uw/URL"); !strings.Contains(r.stdout, "uw/URL=https://admin.example/2") || strings.Contains(r.stdout, "untrusted") {
+		t.Fatalf("the admin's value is labelled:\n%s", r.stdout)
+	}
+	in.stop(t)
+}

@@ -731,6 +731,16 @@ every read logged, no way to just look). So an entry is either a
   admin's: every token save now stores its saver, and the log keeps the
   admin's events ahead of agents', so that's a value the admin saved, or
   one of those older cases.
+- **Unknown counts as agent text.** A value whose saver nobody recorded
+  (an older value the previous release left, restored here; or, with only
+  the change log to go on, a value a rollback put back, since the log
+  doesn't say whose value that was) gets `value_by: "(unknown)"`, which
+  can't be a token name, and the CLI labels it as written by "an unknown
+  agent or an earlier release" and quotes it like any agent's text. It
+  stays so until someone saves over it. Right after an upgrade that
+  affects only variables whose newest created, replaced or rolled back
+  event in the change log is a rollback; every other variable reads as it
+  did. Older CLIs already quote any `value_by`, so the API level stays.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
   so a generated password can't land in a list. The same goes for the
@@ -1123,8 +1133,9 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   who saved the current value. It's written once a key has a value
   replaced, or when a token saves one (the saver is what labels an
   agent's variable, see Variables), so a key with one value the admin
-  saved has none, and a file where only the admin has saved values has
-  no `mac7`. An older build rewrites the whole file on every save, so it
+  saved has none. A file has `mac7` once any key has `versions` (a value
+  replaced, or one a token saved), a limit, or alert settings: one where
+  the admin has only ever saved each key's first value has none. An older build rewrites the whole file on every save, so it
   can't leave `versions` describing a `previous` it changed: whatever it
   did (a rollback, a save), the file it writes has the current value and
   `previous` as it left them and no `versions`; this one then shows that

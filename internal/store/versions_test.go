@@ -650,6 +650,165 @@ func TestValueAuthorAfterV6Release(t *testing.T) {
 	}
 }
 
+// v0.1.3 data: an agent's variable, then the admin's value over it. That
+// release recorded no savers, so after the upgrade the agent's value, as an
+// older one, has none. Restored, it's of unknown origin, which fails safe:
+// labelled as agent text, never read as the admin's (as the change log's
+// older "replaced" by the admin would say). The same with only the log to
+// go on, after the release with MAC6 rewrote the file: a rollback there
+// doesn't say whose value it brought back. Variables that weren't rolled
+// back still resolve through the log as before, and the admin's save makes
+// the value the admin's again.
+func TestValueAuthorRestoredUnknown(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, key32())
+	must(t, err)
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	tok := *s.st.Tokens["writer"]
+	for _, n := range []string{"URL", "OTHER"} {
+		_, err = s.AgentPut("lab", n, []byte("agent-text"), AgentPut{Token: tok, Variable: true})
+		must(t, err)
+	}
+	must(t, s.SetValue("lab", "URL", []byte("admin-text"), true))
+	must(t, s.PutValue("lab", "ADMIN", []byte("admin-only"), &Meta{Variable: true}))
+	asV6Wrote(t, s)
+	s, err = Open(dir, key32())
+	must(t, err)
+	for n, want := range map[string]string{"URL": "", "OTHER": "writer", "ADMIN": ""} {
+		if by := s.ValueAuthor("lab", n); by != want {
+			t.Fatalf("%s right after the upgrade: %q, want %q", n, by, want)
+		}
+	}
+	rows := s.Versions("lab", "URL")
+	if len(rows) != 1 || rows[0].By != "" {
+		t.Fatalf("the agent's value as v0.1.3 left it: %+v", rows)
+	}
+	_, _, err = s.Restore("lab", "URL", rows[0].ID)
+	must(t, err)
+	if v, _ := s.VariableValue("lab", "URL"); string(v) != "agent-text" {
+		t.Fatalf("restored %q", v)
+	}
+	if by := s.ValueAuthor("lab", "URL"); by != UnknownAuthor {
+		t.Fatalf("restored value of unknown origin: %q", by)
+	}
+	s, err = Open(dir, key32())
+	must(t, err)
+	if by := s.ValueAuthor("lab", "URL"); by != UnknownAuthor {
+		t.Fatalf("reopened: %q", by)
+	}
+	// The release with MAC6 drops the stored saver; the log's newest
+	// change to the key is the rollback.
+	asV6Wrote(t, s)
+	s, err = Open(dir, key32())
+	must(t, err)
+	if by := s.ValueAuthor("lab", "URL"); by != UnknownAuthor {
+		t.Fatalf("from the change log, after a rollback: %q", by)
+	}
+	if by := s.ValueAuthor("lab", "OTHER"); by != "writer" {
+		t.Fatalf("a variable nobody rolled back: %q", by)
+	}
+	must(t, s.SetValue("lab", "URL", []byte("admin-again"), true))
+	if by := s.ValueAuthor("lab", "URL"); by != "" {
+		t.Fatalf("after the admin's save: %q", by)
+	}
+}
+
+// Restore, then save, on a file as the release with MAC6 wrote it: the
+// value restored keeps its unknown saver into the history, and the value
+// it replaced keeps the saver the change log gives it.
+func TestRestoreThenSaveOnV6File(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, key32())
+	must(t, err)
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	_, err = s.AgentPut("lab", "K", []byte("A"), AgentPut{Token: *s.st.Tokens["writer"]})
+	must(t, err)
+	must(t, s.SetValue("lab", "K", []byte("B"), false))
+	asV6Wrote(t, s)
+	s, err = Open(dir, key32())
+	must(t, err)
+	_, _, err = s.Restore("lab", "K", "")
+	must(t, err)
+	byOf := func() string {
+		var by []string
+		for _, r := range s.Versions("lab", "K") {
+			by = append(by, "["+r.By+"]")
+		}
+		return strings.Join(by, " ")
+	}
+	if got := byOf(); got != "[admin]" {
+		t.Fatalf("after the restore: %s", got)
+	}
+	must(t, s.SetValue("lab", "K", []byte("C"), false))
+	if got := strings.Join(olderPlain(t, s, "lab", "K"), " "); got != "A/s B/s" {
+		t.Fatalf("older values: %s", got)
+	}
+	if got := byOf(); got != "[] [admin]" {
+		t.Fatalf("after a save over the restored value: %s", got)
+	}
+	// The same rollback with the file then written by that release, which
+	// drops the stored saver: the change log's newest event for the key is
+	// the rollback, which doesn't say whose value it brought back, so the
+	// value it put in place goes into the history as unknown, not as the
+	// admin's whose "replaced" is further back.
+	dir = t.TempDir()
+	s, err = Open(dir, key32())
+	must(t, err)
+	_, err = s.CreateToken("writer", []string{"lab"}, PermWrite, nil)
+	must(t, err)
+	_, err = s.AgentPut("lab", "K", []byte("A"), AgentPut{Token: *s.st.Tokens["writer"]})
+	must(t, err)
+	must(t, s.SetValue("lab", "K", []byte("B"), false))
+	must(t, s.Rollback("lab", "K"))
+	asV6Wrote(t, s)
+	s, err = Open(dir, key32())
+	must(t, err)
+	must(t, s.SetValue("lab", "K", []byte("C"), false))
+	if got := strings.Join(olderPlain(t, s, "lab", "K"), " "); got != "A/s B/s" {
+		t.Fatalf("older values, rolled back by that release: %s", got)
+	}
+	if got := byOf(); got != "[] []" {
+		t.Fatalf("savers, rolled back by that release: %s", got)
+	}
+}
+
+// A restore that fails part way, because an older value it has to move
+// won't decrypt, puts everything back; and the error says what to do.
+func TestRestoreFailureChangesNothing(t *testing.T) {
+	s, _ := historyStore(t, t.TempDir())
+	must(t, s.PutValue("lab", "OTHER", []byte("o1"), nil))
+	must(t, s.PutValue("lab", "OTHER", []byte("o2"), nil))
+	s.mu.Lock()
+	// Sealed for another key: setOlder moves the current value into
+	// Previous before it gets to resealing this one.
+	s.st.Secrets["lab/K"].Previous = s.st.Secrets["lab/OTHER"].Previous
+	s.mu.Unlock()
+	before := stateJSON(s)
+	for i, r := range s.Versions("lab", "K") {
+		_, _, err := s.Restore("lab", "K", r.ID)
+		if err == nil || !strings.Contains(err.Error(), "lab/K: one of its previous values can't be decrypted") || !strings.Contains(err.Error(), "the admin deletes the key and adds it again") {
+			t.Fatalf("restore row %d: %v", i+1, err)
+		}
+		if stateJSON(s) != before {
+			t.Fatalf("a failed restore of row %d changed the state", i+1)
+		}
+	}
+	if err := s.SetValue("lab", "K", []byte("new"), false); err == nil || stateJSON(s) != before {
+		t.Fatalf("save: %v", err)
+	}
+	must(t, s.Delete("lab", "K")) // the way out
+	// The current value: reading it says the same.
+	s2, _ := historyStore(t, t.TempDir())
+	s2.mu.Lock()
+	s2.st.Secrets["lab/K"].Value = s2.st.Secrets["lab/K"].Previous
+	s2.mu.Unlock()
+	if _, _, err := s2.Reveal("lab", "K", "test"); err == nil || !strings.Contains(err.Error(), "lab/K: its stored value can't be decrypted") {
+		t.Fatalf("reveal: %v", err)
+	}
+}
+
 // When an agent saves, the history keeps only each agent's newest older
 // value: a run of writes by one token can't push the admin's older values
 // out, and holds at most two of its values on the key (current and one
