@@ -67,10 +67,13 @@ const (
 type alerter struct {
 	client *http.Client
 	now    func() time.Time
-	queue  chan string // security alert texts; the body is built when posted
-	noteQ  chan string // Inbox notice texts, sent after any security alert
+	queue  chan queued // security alerts; the body is built when posted
+	noteQ  chan queued // Inbox notices, sent after any security alert
 	once   sync.Once
 	wg     sync.WaitGroup // alerts queued and not yet sent, for tests
+	// flushEvery is how often run sends the summaries of what was held
+	// back: alertRefill, so each has budget; tests make it shorter.
+	flushEvery time.Duration
 
 	mu         sync.Mutex
 	url        string               // set with setURL; read with webhook
@@ -86,6 +89,14 @@ type alerter struct {
 	heldNotice int                  // notices over theirs, for their own summary
 	heldPair   int                  // pairing notices over theirs, likewise
 	sleep      func(time.Duration)
+}
+
+// queued is a message waiting for the sender. done, if set, is told on
+// the sender's goroutine whether it was delivered, before the message
+// counts as sent (wg).
+type queued struct {
+	text string
+	done func(delivered bool)
 }
 
 // bucket is a token bucket: burst at once, then one per refill.
@@ -119,8 +130,9 @@ func newAlerter(webhook string) *alerter {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		now:        time.Now,
-		queue:      make(chan string, alertQueue),
-		noteQ:      make(chan string, alertQueue/2),
+		queue:      make(chan queued, alertQueue),
+		noteQ:      make(chan queued, alertQueue/2),
+		flushEvery: alertRefill,
 		last:       map[string]time.Time{},
 		lastNotice: map[string]time.Time{},
 		lastPair:   map[string]time.Time{},
@@ -230,7 +242,7 @@ func (a *alerter) send(content string) {
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.budget.take(a.now()) || !a.enqueue(a.queue, content) {
+	if !a.budget.take(a.now()) || !a.enqueue(a.queue, queued{text: content}) {
 		a.held++
 	}
 }
@@ -241,19 +253,20 @@ func (a *alerter) send(content string) {
 // queue ahead of a security alert. Pairing notices may fill only half of
 // it, so no number of pairing requests can spend or crowd out an agent's
 // notice. What's over is counted for one summary per class.
-func (a *alerter) notice(c noticeClass, content string) { a.queueNotice(c, content, true) }
+func (a *alerter) notice(c noticeClass, content string) { a.queueNotice(c, content, true, nil) }
 
 // queueNotice is notice, and reports whether content was queued. Without
 // count, what's over isn't counted for the summary: the caller keeps it
-// and tries again later (the expiry digest).
-func (a *alerter) queueNotice(c noticeClass, content string, count bool) bool {
+// and tries again later (the expiry digest). done, if set, is told
+// whether a queued notice was delivered (see queued).
+func (a *alerter) queueNotice(c noticeClass, content string, count bool, done func(bool)) bool {
 	if !a.configured() {
 		return false
 	}
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.noticeRoom(c) && a.take(c) && a.enqueue(a.noteQ, content) {
+	if a.noticeRoom(c) && a.take(c) && a.enqueue(a.noteQ, queued{content, done}) {
 		return true
 	}
 	if count {
@@ -277,10 +290,10 @@ func (a *alerter) noticeRoom(c noticeClass) bool {
 }
 
 // enqueue queues one message on q without blocking. Needs a.mu.
-func (a *alerter) enqueue(q chan string, content string) bool {
+func (a *alerter) enqueue(q chan queued, m queued) bool {
 	a.wg.Add(1)
 	select {
-	case q <- content:
+	case q <- m:
 		return true
 	default:
 		a.wg.Done()
@@ -292,23 +305,27 @@ func (a *alerter) enqueue(q chan string, content string) bool {
 // summary of what was held back, when the budget allows one. A security
 // alert still waits for the message being posted when it arrives.
 func (a *alerter) run() {
-	tick := time.NewTicker(alertRefill)
+	tick := time.NewTicker(a.flushEvery)
 	defer tick.Stop()
 	for {
-		var content string
+		var m queued
 		select {
-		case content = <-a.queue:
+		case m = <-a.queue:
 		default:
 			select {
-			case content = <-a.queue:
-			case content = <-a.noteQ:
+			case m = <-a.queue:
+			case m = <-a.noteQ:
 			case <-tick.C:
 				a.flushHeld()
 				continue
 			}
 		}
-		if err := a.post(content); err != nil {
+		err := a.post(m.text)
+		if err != nil {
 			log.Printf("alert webhook: %v", err)
+		}
+		if m.done != nil {
+			m.done(err == nil)
 		}
 		a.wg.Done()
 	}
@@ -321,7 +338,7 @@ func (a *alerter) flushHeld() {
 	defer a.mu.Unlock()
 	now := a.now()
 	if a.held > 0 && a.budget.take(now) &&
-		a.enqueue(a.queue, fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)) {
+		a.enqueue(a.queue, queued{text: fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)}) {
 		a.held = 0
 	}
 	things := "things are"
@@ -329,7 +346,7 @@ func (a *alerter) flushHeld() {
 		things = "thing is"
 	}
 	if a.heldNotice > 0 && a.noticeRoom(agentNotice) && a.notices.take(now) &&
-		a.enqueue(a.noteQ, fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)) {
+		a.enqueue(a.noteQ, queued{text: fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)}) {
 		a.heldNotice = 0
 	}
 	machines := "machines"
@@ -337,7 +354,7 @@ func (a *alerter) flushHeld() {
 		machines = "machine"
 	}
 	if a.heldPair > 0 && a.noticeRoom(pairNotice) && a.pairs.take(now) &&
-		a.enqueue(a.noteQ, fmt.Sprintf("keydrop: %d more %s asked to pair; see keydrop's Agents page.", a.heldPair, machines)) {
+		a.enqueue(a.noteQ, queued{text: fmt.Sprintf("keydrop: %d more %s asked to pair; see keydrop's Agents page.", a.heldPair, machines)}) {
 		a.heldPair = 0
 	}
 }

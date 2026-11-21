@@ -195,6 +195,7 @@ events first.
   secrets and variables with a value; not requests still waiting for one,
   and not canaries. It names keys and dates only, never a value or a
   description, and needs a webhook (Settings or `KEYDROP_ALERT_WEBHOOK`).
+  If the webhook doesn't take the message, the next check sends it again.
   Changing a key's date warns again for the new one. keydrop keeps what it
   has announced in memory, so after a restart it announces the keys already
   in the window once more. An agent that can write a key can also set or
@@ -258,8 +259,8 @@ https://secrets.example.com/inbox``.
   `KEYDROP_ALERT_WEBHOOK`). Settings has On, Off and Default; Default
   follows `KEYDROP_ALERT_INBOX` in keydrop's container, so you can also
   turn it on there. Once you choose On or Off in Settings, that wins.
-- **Quiet:** one notice per agent (per address, for pairing) every 10
-  minutes; the Inbox shows the rest. Notices have their own small rate limit,
+- **Quiet:** one notice of each kind (request, renewal, flag) per agent
+  every 10 minutes, and one per address (per /64 for IPv6) for pairing; the Inbox shows the rest. Notices have their own small rate limit,
   separate from canary alerts, and wait behind them, so a flood of pairing
   requests can't use up or queue ahead of a canary alert; one is sent as
   soon as the message being posted when it arrives is done (a few seconds,

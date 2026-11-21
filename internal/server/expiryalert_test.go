@@ -222,6 +222,83 @@ func TestExpiryAlertsBudget(t *testing.T) {
 	}
 }
 
+// A digest whose POST fails isn't marked as announced: the next check
+// queues it again, once, so a webhook that's down for a while doesn't
+// lose the warning, and one that stays down gets one attempt per check,
+// never a retry loop. Once one is delivered it isn't sent again.
+func TestExpiryDigestFailedPostRetried(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	wh, c := h.expiryAlerts(14, "")
+	h.expiringKey("lab", "CF_TOKEN", c.now().Add(3*day), false)
+	setFail := func(on bool) {
+		wh.mu.Lock()
+		wh.fail = on
+		wh.mu.Unlock()
+	}
+	posts := func() int {
+		wh.all(h.srv.alerts) // waits for the sender
+		wh.mu.Lock()
+		defer wh.mu.Unlock()
+		return wh.posts
+	}
+	setFail(true)
+	for i := 1; i <= 3; i++ {
+		h.srv.checkExpiry()
+		if n := posts(); n != i {
+			t.Fatalf("check %d with the webhook down: %d posts", i, n)
+		}
+		c.add(time.Hour)
+	}
+	time.Sleep(50 * time.Millisecond) // nothing more without a check
+	if n := posts(); n != 3 {
+		t.Fatalf("%d posts after three checks", n)
+	}
+	setFail(false)
+	var got []string
+	for range 48 {
+		got = append(got, wh.check(h)...)
+		c.add(time.Hour)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "`lab/CF_TOKEN` (in 2 days)") {
+		t.Fatalf("after the webhook came back: %q", got)
+	}
+	// Past its date it's announced again, as when nothing failed.
+	c.add(3 * day)
+	if got := wh.check(h); len(got) != 1 || !strings.Contains(got[0], "`lab/CF_TOKEN` (expired") {
+		t.Fatalf("past its date: %q", got)
+	}
+}
+
+// The timer, not only a kick, runs the check: first after the first
+// interval, then every interval.
+func TestExpiryChecksOnTimer(t *testing.T) {
+	h := newHarness(t)
+	h.setup()
+	wh, c := h.expiryAlerts(14, "")
+	h.expiringKey("lab", "CF_TOKEN", c.now().Add(3*day), false)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.srv.runExpiryChecks(ctx, 10*time.Millisecond, time.Hour); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		wh.mu.Lock()
+		got := append([]string(nil), wh.bodies...)
+		wh.mu.Unlock()
+		if len(got) > 0 {
+			if len(got) != 1 || !strings.Contains(got[0], "`lab/CF_TOKEN`") {
+				t.Fatalf("got %q", got)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no digest from the timer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // The form is a CSRF-checked, audit-logged admin form, and it asks the
 // background loop for a check, which stops with its context.
 func TestExpiryAlertsSettingAndLoop(t *testing.T) {

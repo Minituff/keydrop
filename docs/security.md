@@ -97,7 +97,9 @@ is limited away from) records the touch before it answers, and the same
 refused call on an ordinary secret records nothing, so it can answer a
 little sooner. Timing that is itself a touch: by the time an agent has
 its answer, the touch is in the audit log and the Inbox, and the alert
-has been sent (or, past the alert rate limit, counted for the summary).
+is queued to be sent (or, past the alert rate limit, counted for the
+summary). A repeat by the same token on the same canary within 10
+minutes is neither sent nor counted: the first alert already said it.
 
 ## What masking catches
 

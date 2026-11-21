@@ -409,8 +409,9 @@ which are the places keydrop exists to keep secrets out of. So a machine
   at once then one a minute. [Inbox alerts](#inbox-alerts) wait in a
   queue of their own, which the goroutine takes only when no security
   alert is waiting, so a security alert waits at most for the one message
-  being posted when it arrives: up to the timeout, or longer if the
-  webhook answers 429 (see below). What's over the budget is counted and sent
+  being posted when it arrives: up to the timeout, or, if the webhook
+  answers 429, up to three attempts of 5 seconds each plus two waits of
+  up to 30 seconds, about 75 seconds in all (see below). What's over the budget is counted and sent
   as one summary later. A 429 is waited out for its `Retry-After`, at
   most 30 seconds and twice. Refused token collects use the same path;
   [Inbox alerts](#inbox-alerts) use it too, on a budget of their own.
@@ -461,8 +462,9 @@ waits on them.
   wait in a queue of their own (16 slots), which the one sender takes only
   when no security alert is waiting. So canary alerts always have room,
   and never wait behind queued notices; one can wait for the single
-  message being posted when it arrives (up to 5 seconds, or up to twice
-  30 seconds more if the webhook answers 429). Notices over the budget are counted and sent as one summary of
+  message being posted when it arrives (up to 5 seconds, or about 75
+  seconds in all if the webhook answers 429: three attempts of up to 5
+  seconds and two waits of up to 30). Notices over the budget are counted and sent as one summary of
   their own, on the notice budget. Each kind is sent at most once per key
   per 10 minutes, by kind and token name, so an agent asking for five
   keys sends one notice.
@@ -475,8 +477,9 @@ waits on them.
   asked to pair"), and at most half the notice queue. So a flood of
   pairing requests can't spend the budget, fill the map or take the
   queue room that a token's request, renewal or flag notice needs; it
-  only delays other pairing notices. Each map is bounded: past 10,000
-  keys a notice is refused rather than grow it, and counted in its
+  only delays other pairing notices. Each map is bounded: once it holds
+  more than 10,000 keys, none of them older than 10 minutes, a notice for
+  a new key is refused rather than grow it, and counted in its
   class's summary, so it isn't lost silently. The agents' map is keyed by
   token names, which only the admin makes.
 - **Server-built text only.** A notice names the token, `ns/NAME`, a
@@ -525,7 +528,12 @@ has the server tell the alert webhook ahead of time.
   a canary alert beyond the one message being posted.
   If it can't be queued (budget spent, or no webhook), nothing is marked
   and the next check tries again with the same keys; it isn't added to the
-  held-notice summary, which would lose the names. Pairing notices have
+  held-notice summary, which would lose the names. If it's queued but the
+  POST fails (after the usual 429 retries), the sender tells the check,
+  which unmarks the keys it named (unless a later check has changed their
+  marks), so the next hourly check or kick sends them again: one attempt
+  per check, never a retry loop. The sender calls back holding no lock of
+  its own, and the callback takes only the check's lock. Pairing notices have
   their own budget, so a flood of them can't delay it; agents' own
   requests, renewals and flags can, hour by hour, and the Secrets page
   still marks the keys.

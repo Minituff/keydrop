@@ -107,12 +107,39 @@ func (s *Server) checkExpiry() {
 		marks[sec.Ref()] = m
 		due = append(due, sec)
 	}
-	// Notices' budget and queue, never the security alerts'. If
-	// it isn't queued, nothing is marked and the next check tries again.
-	if len(due) > 0 && !s.alerts.queueNotice(agentNotice, s.expiryDigest(due, days, now), false) {
-		return
+	// Notices' budget and queue, never the security alerts'. If it isn't
+	// queued, nothing is marked and the next check tries again; if it's
+	// queued but not delivered, what it announced is unmarked when the
+	// post fails, so the next check (hourly, or a kick) queues it again.
+	if len(due) > 0 {
+		sent := map[string]expiryMark{}
+		for _, sec := range due {
+			sent[sec.Ref()] = marks[sec.Ref()]
+		}
+		undo := func(delivered bool) {
+			if !delivered {
+				s.unmarkExpiry(sent)
+			}
+		}
+		if !s.alerts.queueNotice(agentNotice, s.expiryDigest(due, days, now), false, undo) {
+			return
+		}
 	}
 	s.expiryMarks = marks
+}
+
+// unmarkExpiry forgets the marks a digest that wasn't delivered set, unless
+// a later check has changed them since. It runs on the alert sender's
+// goroutine, holding expiryMu only: checkExpiry takes expiryMu, then the
+// alerter's lock, and the sender holds neither while it calls this.
+func (s *Server) unmarkExpiry(sent map[string]expiryMark) {
+	s.expiryMu.Lock()
+	defer s.expiryMu.Unlock()
+	for ref, m := range sent {
+		if cur, ok := s.expiryMarks[ref]; ok && cur.expires.Equal(m.expires) && cur.stage == m.stage {
+			delete(s.expiryMarks, ref)
+		}
+	}
 }
 
 // expiryDigest is the message for due, soonest (or longest expired) first.
