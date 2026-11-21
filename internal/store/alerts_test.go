@@ -134,5 +134,5 @@ func TestAlertFieldsIntegrity(t *testing.T) {
 	}, ErrIntegrity)
 	// Both dropped is what the release before writes: it opens, without
 	// the webhook (the server then uses KEYDROP_ALERT_WEBHOOK).
-	try("both dropped", func(raw map[string]any) { delete(raw, "alerts"); delete(raw, "mac5") }, nil)
+	try("both dropped", func(raw map[string]any) { stripV7(raw); delete(raw, "alerts"); delete(raw, "mac5") }, nil)
 }

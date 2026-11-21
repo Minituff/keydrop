@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -570,12 +571,53 @@ func TestSameAddress(t *testing.T) {
 		{"10.0.0.1", "10.0.0.2", false},
 		{"fe80::1%eth0", "fe80::1%eth0", true},
 		{"fe80::1%eth0", "fe80::1%eth1", false},
-		{"fe80::1", "fe80::1%<!channel>", false},
+		// A zone on one side only: stored by the release before forwarded
+		// addresses lost theirs, the same client now arrives without.
+		{"fe80::1%eth0", "fe80::1", true},
+		{"fe80::1", "fe80::1%<!channel>", true},
+		{"fe80::2%eth0", "fe80::1", false},
 		{"unknown", "unknown", true},
 		{"10.0.0.1", "10.0.0.1x", false},
 	} {
 		if got := sameAddress(c.a, c.b); got != c.want {
 			t.Errorf("sameAddress(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// Addresses the previous release stored in another spelling (an
+// IPv4-mapped address, a zone a proxy passed on) are the same client this
+// release reports canonically: collect works, and the Inbox doesn't call
+// it "used from elsewhere".
+func TestUpgradeAddressSpellings(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	s, err := Open(t.TempDir(), key32())
+	must(t, err)
+	s.now = func() time.Time { return now }
+	for _, c := range []struct{ stored, now string }{
+		{"::ffff:10.0.0.1", "10.0.0.1"},
+		{"fe80::1%eth0", "fe80::1"},
+	} {
+		name := "bot" + strconv.Itoa(len(s.st.Tokens))
+		plain, err := s.CreateTokenExpiring(name, []string{"lab"}, PermRead, nil, 30)
+		must(t, err)
+		_, _, err = s.RequestRenewal(name, c.stored)
+		must(t, err)
+		_, err = s.RotateToken(name, 30)
+		must(t, err)
+		old, err := s.LookupTokenForRenewal(plain, c.now)
+		must(t, err)
+		if _, _, err := s.CollectRotation(old, c.now); err != nil {
+			t.Fatalf("collect from %s, asked from %s: %v", c.now, c.stored, err)
+		}
+		s.mu.Lock()
+		s.st.Tokens[name].LastUsedFrom = c.stored
+		s.mu.Unlock()
+		if got := s.AddressesOtherThan(name, c.now); len(got) != 0 {
+			t.Fatalf("%s used from %s: elsewhere %q", name, c.stored, got)
+		}
+		if got := s.AddressesOtherThan(name, "10.0.0.9"); len(got) != 1 {
+			t.Fatalf("another address: %q", got)
 		}
 	}
 }

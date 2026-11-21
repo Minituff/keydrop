@@ -44,8 +44,11 @@ func cmdMCP(args []string) error {
 	out := os.Stdout
 	os.Stdout = os.Stderr
 	defer func() { os.Stdout = out }()
-	return serveMCP(os.Stdin, out, newClient)
+	return serveMCP(os.Stdin, out, mcpConnect)
 }
+
+// mcpConnect builds the client for each tool call; a test replaces it.
+var mcpConnect = newClient
 
 type rpcRequest struct {
 	ID     json.RawMessage `json:"id"`
@@ -101,10 +104,14 @@ func serveMCP(in io.Reader, out io.Writer, connect func() (*client.Client, error
 				werr = reply(req.ID, nil, &rpcError{-32600, "invalid request"})
 				break
 			}
-			result, e := handleMCP(req, connect)
-			if len(req.ID) > 0 { // a notification gets no reply
-				werr = reply(req.ID, result, e)
+			if len(req.ID) == 0 {
+				// A notification gets no reply, so it mustn't do anything
+				// either: a tool called this way would act unseen. The
+				// only ones a client sends are notifications/*.
+				break
 			}
+			result, e := handleMCP(req, connect)
+			werr = reply(req.ID, result, e)
 		}
 		if werr != nil {
 			return werr
@@ -175,7 +182,7 @@ func handleMCP(req rpcRequest, connect func() (*client.Client, error)) (any, *rp
 		}
 		return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "isError": err != nil}, nil
 	case "notifications/initialized":
-		return map[string]any{}, nil // a notification: never answered
+		return map[string]any{}, nil // sent with an id by mistake: harmless
 	}
 	return nil, &rpcError{-32601, "method not found: " + clean(req.Method, false)}
 }

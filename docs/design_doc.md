@@ -79,8 +79,58 @@ the keys should be able to check one. Instead:
 - Every view is audit-logged (`secret.reveal`, "web UI"), isn't shown if
   that record can't be written, and updates
   "last read", the same as an agent read.
-- You can still replace a value, roll back to the previous one (one level
-  of history), or delete it.
+- You can still replace a value, restore one of its older values, or
+  delete it.
+
+### Value history
+One previous value wasn't enough: two bad saves in a row (a wrong paste,
+then another; an agent's `put`, then the admin's fix of the wrong key) and
+the last good value was gone. Each key now keeps its last five older
+values (`MaxVersions`) beyond the current one.
+
+- **Listed, never shown.** The secret page lists them, newest first, as
+  "replaced 3d ago · saved by admin · secret", each with a Restore
+  button. There's no way to see an older value as it is: restore it, then
+  press Show value, which is the ordinary logged view. So Show value and
+  the agents' reveal stay the only two ways a value leaves the server.
+- **Restoring is a save.** The restored value becomes current and the one
+  it replaces goes to the front of the list, so a restore never loses a
+  value (the count doesn't change; only a new save pushes the oldest
+  out). Each value keeps its own kind and who saved it, so restoring an
+  old secret over a variable brings it back as a secret, and a variable
+  restored over a canary unmarks it, as any change to a variable does.
+- **Addressed by ID, not by place.** Every older value has a random ID,
+  kept as it moves down the list. Restore posts that ID (CSRF token,
+  admin middleware), so a page that's out of date can't restore a
+  different value; an ID that isn't kept any more is refused, changing
+  nothing. The old "Roll back" route still works and restores the newest.
+- **Logged.** A restore is `secret.rollback` in the audit log, with which
+  one it was ("older value 2 of 5, a secret, replaced …, saved by
+  token:ci"), never anything about the value. The change log agents read
+  says "rolled back", whichever it was.
+- **Admin only.** Agents can't list older values, restore one, or tell how
+  many there are: nothing in the API or the CLI changed, and a key's API
+  responses are the same byte for byte with or without history, canaries
+  included. Deleting a key deletes its history. Making a key a canary, or
+  ordinary again, keeps its history, as it always kept the previous value.
+- **One place per agent.** When a token saves a value, the history keeps
+  only each agent's newest older value; the admin's older values, and
+  those whose saver isn't known, all stay. So a run of writes by one
+  token takes one place (its last-but-one value can still be restored),
+  not all five, and holds at most two of its values on a key, current
+  included, which bounds what a token can store on keys it didn't create
+  (those don't count towards its cap). The admin's own saves and restores
+  never drop anything this way: the admin's five-deep history is the
+  point.
+- **What it doesn't protect against.** A write token can still replace a
+  key, and k tokens with write access to it take k places, so they push
+  out all but the admin's newest 5−k older values (two tokens alternating
+  leave the newest three; five leave none). It's for mistakes, not for
+  agents that are out to destroy a key. The audit log and the change log
+  still show every write, and a backup of `data/` is still the only copy
+  that an agent can't reach. Older values of the keys a token created
+  count towards its storage cap, as the previous value always did, until
+  the admin saves over the key.
 
 Each secret has a description ("what this is for and what to do with it"),
 an optional usage hint and an optional expiry date. The description is the
@@ -118,6 +168,7 @@ changes a token's permission under **Agents**.
   the names don't leak.
 - Grants are per namespace, not per secret, so permissions stay easy to
   follow. A shared namespace granted to two tokens covers keys both need.
+  The one narrowing inside a namespace is a key's limit (next section).
 - Agents never get admin rights. Only the human (in the UI) creates
   tokens, changes grants or sees every namespace.
 - A token is a 0600 file per Unix user, so two users on one machine can
@@ -130,6 +181,75 @@ changes a token's permission under **Agents**.
   Namespaces and token names stay lower-case, so a ref like
   `homelab/GITHUB_PAT` reads unambiguously. The UI upper-cases what's typed,
   since a phone keyboard defaults to lower case.
+
+### Per-key limits
+People made a namespace per agent just to keep one sensitive key (a
+registrar key, a root cloud credential) from the other agents. Instead, the
+admin can limit a key to some of the tokens that have its namespace.
+
+- **It limits use, not visibility.** A token with the namespace but off the
+  list still sees the key in lists, `info`, history and `expiring`, exactly
+  as before; it can't reveal it (so `run` and `get` fail), put over it at
+  any permission (an add token over a key it created included), or ack it
+  (ack marks a value as seen, which a token that can't read it shouldn't).
+  Those get 403 naming only the asking token. Names inside a granted
+  namespace are visible by design, and hiding them would leak anyway: a
+  409 on put or request would say a hidden name exists. Flag, status, note
+  and request stay allowed: they carry no value, and flag and status are
+  how an agent reports a problem with a key it can see. The one exception
+  is the status `replaced-by`, refused with the same 403: it points the
+  agents that may use the key at another one (they get a warning naming
+  it when they read the key), which is not a barred token's call to make.
+  `leaked`, `expired`, `revoked` and `ok` stay allowed.
+- **Agents can tell.** Metadata gains `"usable": false` only for a token off
+  the list; for every other key and token the answer is byte-identical to
+  before. `keydrop secrets`, `info` and the MCP tools say *limited to other
+  agents*. A value the token can never read is never `new` to it, so
+  `secrets --new` doesn't list it forever. `APILevel` went to 4 for the
+  field; `MinCLILevel` didn't move: an older CLI ignores it and prints the
+  403 like any other error.
+- **Order of checks.** The namespace check comes first (404, or 403 for a
+  put), then the rate limits, then the limit, in the store, under the same
+  lock as the value. So a refused reveal counts towards the reveal limit,
+  can't be used to hammer, and is logged as `secret.read.denied` (with the
+  agent's purpose) in the main log, like the read it replaces. A refused
+  put, ack or `replaced-by` isn't logged, like other refused writes; a
+  refused `replaced-by` counts towards the flag, status and note limit,
+  as any status does.
+- **An empty list means no agent, never everyone.** A revoked token comes
+  off every list (forgetToken), so a new token given its name, by hand or by
+  pairing again with *Replace*, doesn't inherit the access; a list left
+  empty stays a limit. A renewal keeps the token's name and so its place. A
+  token that loses a namespace comes off the lists of that namespace's
+  keys, so a list only names tokens that have the namespace and the page
+  shows who can really use the key; granting it back doesn't restore the
+  place. There's no token rename.
+- **Secrets only.** A variable's value is in every list, so a limit on one
+  would mean nothing. The store refuses to limit a variable and to make a
+  limited key a variable by any path (the admin's value or details forms,
+  restoring an older variable value, filling a request, an agent's put
+  with `variable`); lift the limit first. A pending request can be limited:
+  it's just a key.
+- **Canaries.** The check doesn't look at the canary flag, so a limited canary
+  and a limited ordinary secret give every token the same status, headers
+  and body, and `usable` the same way. A refused reveal, put, ack or
+  `replaced-by` on a limited canary is a touch (Inbox, alert, audit), as every other refused
+  call on one is. As for those, only the canary's refusal writes the touch
+  to disk, so a refused call can differ in time (see
+  [Canary secrets](#canary-secrets)).
+- **Admin only.** The form is on the key's page (CSRF, logged as
+  `secret.limit` with the token names). It must say `only=yes` or
+  `only=no`; anything else (a form that lost the choice) is a 400 that
+  changes nothing, so it can never lift a limit by accident. Like a canary it records no history
+  entry and leaves `updated_at` alone: agents read the history.
+- **Not strippable.** See [Data format history](#data-format-history): the
+  first limit seals `keydrop-key-check:v7`, so deleting the limits (with
+  `mac7`) doesn't give a loadable file, and v0.1.3 refuses the data until
+  `downgrade-data` removes them.
+- Not covered by the admin's views: older values, expiry alerts, the Inbox,
+  duplicate-value warnings and restore are admin-only and unchanged. A key
+  an add token created still counts towards its storage cap after it's
+  limited away from it.
 
 ### Pairing
 Pasting a token means it passes through a clipboard, a chat or a terminal,
@@ -246,15 +366,25 @@ which are the places keydrop exists to keep secrets out of. So a machine
 ### Canary secrets
 - The admin can mark a secret as a canary: a decoy that no agent should
   ever use, so any use is an alarm. Only the admin's pages show the flag.
-  **To an agent a canary is indistinguishable from a real secret:** the
-  same list entries, the same responses and errors, the same work per
-  call, and no field, header or timing that differs.
+  **To an agent a canary is indistinguishable from a real secret by
+  response:** the same list entries, and for every call the same status,
+  headers, body and fields, refused calls included. Calls that succeed do
+  the same work too: a read of any secret records its last read, so it
+  writes the state file either way. A refused call is where time can
+  differ: on a canary it records the touch, a write to the state file,
+  before it answers, and on an ordinary secret it writes nothing, so it
+  answers measurably sooner. That held for every refused call on a canary
+  before per-key limits (a read token's write, a call over a rate limit),
+  and now also for a token limited away from the key. It isn't hidden on
+  purpose: the probe is itself the touch, so by the time an agent has
+  timed the answer, the alarm has gone off.
 - A touch is any agent call on the canary, refused ones included: a
   reveal or `run`, an ack, a write, a status, a flag or a note (a write that turns it into a variable
   still counts, and keeps the flag). Each one writes an audit entry marked
   canary, updates the Inbox and sends an alert. An agent can't clear the
   flag; only the admin clears it, or turns the secret into a variable
-  from the UI. Limitation: `keydrop vars` lists variable values
+  from the UI. A canary can be limited like any key, and stays
+  indistinguishable by response (see [Per-key limits](#per-key-limits)). Limitation: `keydrop vars` lists variable values
   without recording a touch, so if an agent's write turns a canary into a
   variable, from then on only calls on that name count.
 - The Inbox keeps one entry per (canary, token): first and last touch, a
@@ -276,7 +406,12 @@ which are the places keydrop exists to keep secrets out of. So a machine
   same budget, and shows the webhook's answer. Other alerts are sent asynchronously, from
   one goroutine with a queue of 32 and a 5-second timeout: at most one
   alert per canary and token every 10 minutes, and a global budget of 5
-  at once then one a minute. What's over the budget is counted and sent
+  at once then one a minute. [Inbox alerts](#inbox-alerts) wait in a
+  queue of their own, which the goroutine takes only when no security
+  alert is waiting, so a security alert waits at most for the one message
+  being posted when it arrives: up to the timeout, or, if the webhook
+  answers 429, up to three attempts of 5 seconds each plus two waits of
+  up to 30 seconds, about 75 seconds in all (see below). What's over the budget is counted and sent
   as one summary later. A 429 is waited out for its `Retry-After`, at
   most 30 seconds and twice. Refused token collects use the same path;
   [Inbox alerts](#inbox-alerts) use it too, on a budget of their own.
@@ -302,29 +437,51 @@ which are the places keydrop exists to keep secrets out of. So a machine
 
 ### Inbox alerts
 An agent that asks (pairing, `request` then `wait`, renewal, a flag) blocks
-on a human who has no reason to look at the Inbox. With
-`KEYDROP_ALERT_INBOX=true` the alerter also posts a notice when a pairing,
-a key request (single or batch), a renewal request (only when a new one is
+on a human who has no reason to look at the Inbox. With Inbox alerts on
+(in Settings, or `KEYDROP_ALERT_INBOX=true`) the alerter also posts a
+notice when a pairing, a key request (single or batch), a renewal request (only when a new one is
 created) or a flag is stored. Not notes or description proposals: nothing
 waits on them.
 
-- **Opt-in, and an env var for now.** A Settings toggle would be a new
-  field in the state file, so a new MAC view and a migration story, for
-  something that grants nothing. Settings shows whether it's on, read-only.
-  The webhook can be added or removed in Settings at runtime, so whether
-  one is configured is checked at send time; the startup log says when the
-  variable is on without one.
-- **Notices can't cost a security alert anything.** `/api/v1/pair` needs
-  no credential, so anyone on the network can cause notices. They go
-  through the one alerter but have their own budget (3 at once, then one
-  per 2 minutes), spent *instead of* the security budget, never as well,
-  and may fill at most half the 32-slot queue, so canary alerts always
-  have room. Notices over the budget are counted and sent as one summary
-  of their own, on the notice budget. Each kind is sent at most once per
-  key per 10 minutes: pairing by the address's source group (the same /64
-  grouping as the pairing caps), the others by kind and token name, so an
-  agent asking for five keys sends one notice. That map is bounded: past
-  10,000 keys, notices are dropped rather than grow it.
+- **Opt-in, and the admin's call in Settings.** Settings has On, Off and
+  Default; Default (nothing chosen) follows `KEYDROP_ALERT_INBOX`, off
+  unless set. A choice made in Settings wins over the variable, on or off,
+  as a webhook added there does, so the person looking at the page
+  decides what it says. It's stored as `notify.inbox` in the state file,
+  under `mac7` (see [Data format history](#data-format-history)), so v0.1.3
+  still opens the data and ignores it. It neither grants nor restricts
+  access, so it isn't tied to the key check: stripping `notify` and `mac7`
+  together only puts it back to Default. Changing it is a CSRF-checked
+  admin form, logged as `settings.alertinbox`. Whether a webhook is
+  configured is checked at send time, since it too can change in Settings;
+  the startup log says what's in effect and where it came from, and when
+  it's on without a webhook.
+- **Notices can't cost a security alert anything.** They go through the
+  one alerter but have their own budget (3 at once, then one per 2
+  minutes), spent *instead of* the security budget, never as well, and
+  wait in a queue of their own (16 slots), which the one sender takes only
+  when no security alert is waiting. So canary alerts always have room,
+  and never wait behind queued notices; one can wait for the single
+  message being posted when it arrives (up to 5 seconds, or about 75
+  seconds in all if the webhook answers 429: three attempts of up to 5
+  seconds and two waits of up to 30). Notices over the budget are counted and sent as one summary of
+  their own, on the notice budget. Each kind is sent at most once per key
+  per 10 minutes, by kind and token name, so an agent asking for five
+  keys sends one notice.
+- **Pairing can't cost an agent's notice anything either.**
+  `/api/v1/pair` needs no credential, so anyone on the network can cause
+  pairing notices, from as many addresses as they have. They have a
+  budget of their own again (2 at once, then one per 5 minutes), a
+  dedupe map of their own (by the address's source group, the same /64
+  grouping as the pairing caps), a summary of their own ("N more machines
+  asked to pair"), and at most half the notice queue. So a flood of
+  pairing requests can't spend the budget, fill the map or take the
+  queue room that a token's request, renewal or flag notice needs; it
+  only delays other pairing notices. Each map is bounded: once it holds
+  more than 10,000 keys, none of them older than 10 minutes, a notice for
+  a new key is refused rather than grow it, and counted in its
+  class's summary, so it isn't lost silently. The agents' map is keyed by
+  token names, which only the admin makes.
 - **Server-built text only.** A notice names the token, `ns/NAME`, a
   count of keys, or the source address, and links to `/inbox` (or
   `/pair/ID`) only when `KEYDROP_PUBLIC_URL` is configured, not guessed;
@@ -342,6 +499,63 @@ waits on them.
   not, is refused with the same 409 and sends nothing.
 - Refused calls send nothing, and notices add no audit entries: the
   events they announce are already logged.
+
+### Expiry alerts
+`keydrop expiring --check` only helps if someone wires it into a health
+check; otherwise the first sign an API key expired is an agent's job
+failing. "Warn me before a key expires" in Settings (Off, 7, 14 or 30 days)
+has the server tell the alert webhook ahead of time.
+
+- **Owned by the server, on the server's clock.** `Server.RunBackground`
+  (started by `keydrop server` with the context that stops it on SIGTERM)
+  checks a minute after start, then hourly, and soon after the setting or
+  the webhook changes. It uses the injectable clock, so tests move time.
+- **Announce on entering, not daily.** A key is announced when it newly
+  comes within the window, and once more when it newly passes its date.
+  The record of what was announced is per key and holds the date it was
+  announced for: a new date re-arms it, as does leaving the window (date
+  removed or moved out, key deleted) and coming back. Turning the setting
+  off forgets it.
+- **In memory, not in the state file.** Recording it there would be a new
+  MAC'd field and another migration for something that grants nothing,
+  and a write every hour. The cost: after a restart keys already in the
+  window are announced once more. That's acceptable; a missed warning isn't.
+- **One digest per check.** Every key newly due goes in one message,
+  soonest first, at most 8 named and the rest counted, so a namespace of
+  keys sharing a date can't flood the channel.
+- **On the notice path.** The digest spends the notices' budget and waits
+  in their queue, never the security budget or queue, so it can't hold up
+  a canary alert beyond the one message being posted.
+  If it can't be queued (budget spent, or no webhook), nothing is marked
+  and the next check tries again with the same keys; it isn't added to the
+  held-notice summary, which would lose the names. If it's queued but the
+  POST fails (after the usual 429 retries), the sender tells the check,
+  which unmarks the keys it named (unless a later check has changed their
+  marks), so the next hourly check or kick sends them again: one attempt
+  per check, never a retry loop. The sender calls back holding no lock of
+  its own, and the callback takes only the check's lock. Pairing notices have
+  their own budget, so a flood of them can't delay it; agents' own
+  requests, renewals and flags can, hour by hour, and the Secrets page
+  still marks the keys.
+- **Agents can move the date.** A token that can write a key can set or
+  clear its `expires` (a write token on any key in its namespaces, an add
+  token on the keys it created), so it can stop the warning for that key
+  or make it come again. It can already replace the value, and the
+  change log and audit log show the write; the Secrets page shows the
+  date it set.
+- **Names and dates only.** `ns/NAME` and how far off the date is, built by
+  the server: never a value, and never a description or usage, which an
+  agent may have written. The link (to `/`, which needs the admin's login)
+  is there only when `KEYDROP_PUBLIC_URL` is configured, not guessed.
+- **Which keys.** Secrets and variables that have a value and a date.
+  Pending requests have nothing to expire yet. Canaries are left out: the
+  channel is the admin's, so naming one leaks nothing to agents, but a
+  decoy's date is there to look real, and nobody renews a decoy. Agents
+  can't observe any of this: no API, CLI or `APILevel` change.
+- The setting is `notify.expiry_days` in the state file, under `mac7` like
+  `notify.inbox`, and like it isn't tied to the key check: stripping
+  `notify` and `mac7` together only turns expiry alerts off. Changing it is
+  a CSRF-checked admin form, logged as `settings.alertexpiry`.
 
 ### Duplicate values
 - When the admin saves a secret whose value equals another secret's, the
@@ -511,19 +725,45 @@ every read logged, no way to just look). So an entry is either a
 - Marking a secret as a variable is the admin's call, made in the UI or by
   a write token, and logged. An add token can't store a variable.
 - **A variable from an agent is agent text.** Every token in the namespace
-  reads it at once, with no approval, so it's at most 2,000 characters on
+  reads it at once, with no approval, so it's at most 2,000 bytes on
   one line with no control or invisible characters. The API names its
   author in `value_by`, and the CLI quotes it and labels it untrusted.
   `get NAME` and `run -e` keep the value itself exact (scripts read it)
   and put the label on stderr instead, naming the agent. Once
   the admin saves the value, the label goes.
+- **The label is stored with the value.** Who saved the current value is
+  kept in the key's `versions` (`by`), written on every save by a token,
+  a key's first value included, and carried by a restore, so restoring an
+  agent's older value brings its label back. It used to be worked out
+  from the change log, which a token can age out: the log keeps 500
+  events per namespace and drops the busiest token's own oldest first, so
+  a few hundred writes to a scratch key made the token's variable read
+  as the admin's. The log is now only the fallback for a value with no
+  saver stored: one saved before this release, or one in a file the
+  previous release (v0.1.3) rewrote, since it drops `versions`. For those
+  it's the old behaviour, label included until the token has written
+  enough to push its event out; the next save stores the saver again.
+  With nothing stored and nothing in the log the value counts as the
+  admin's: every token save now stores its saver, and the log keeps the
+  admin's events ahead of agents', so that's a value the admin saved, or
+  one of those older cases.
+- **Unknown counts as agent text.** A value whose saver nobody recorded
+  (an older value the previous release left, restored here; or, with only
+  the change log to go on, a value a rollback put back, since the log
+  doesn't say whose value that was) gets `value_by: "(unknown)"`, which
+  can't be a token name, and the CLI labels it as written by "an unknown
+  agent or an earlier release" and quotes it like any agent's text. It
+  stays so until someone saves over it. Right after an upgrade that
+  affects only variables whose newest created, replaced or rolled back
+  event in the change log is a rollback; every other variable reads as it
+  did. Older CLIs already quote any `value_by`, so the API level stays.
 - **Kind belongs to each value, and defaults to secret.** A write that
   doesn't say "variable" stores a secret, even over an existing variable,
   so a generated password can't land in a list. The same goes for the
   admin's Replace form, which makes you choose on a variable: otherwise an
   agent could stage a variable and ask for a real key to be pasted into
-  it. The previous value keeps
-  its own kind, so rolling back after a kind change can't bring back an
+  it. Each older value keeps
+  its own kind, so restoring one after a kind change can't bring back an
   old secret as a variable. The API reads the kind under the same lock as
   the value, so a kind change mid-read can't skip the audit log.
 
@@ -640,7 +880,7 @@ limited to what it needs:
   it. `replaced-by NAME` must name another key in the same namespace (a
   token sees those, so refusing a missing one says nothing about other
   namespaces).
-- **Flags** are a message to the admin: a reason (≤500 characters) and an
+- **Flags** are a message to the admin: a reason (≤500 bytes) and an
   optional http(s) link (≤500). The text is shown to the admin only, on the
   **Inbox** until resolved, then in the key's
   history, and is written into the audit log with the flag, so it
@@ -648,7 +888,7 @@ limited to what it needs:
   `info` and `history` without the text. One open flag per token per key
   (409) and 20 open per token; there's no overall cap, so one token can't
   use up flags for the others.
-- **Notes** (≤2000 characters) are proposed by an agent and shown to
+- **Notes** (≤2000 bytes) are proposed by an agent and shown to
   other agents only after the admin approves them, as written or edited;
   while pending, other agents see "N notes awaiting approval". Approved
   notes show with their author, the approval date, and whether the admin
@@ -712,7 +952,10 @@ limits, the audit log) applies unchanged and the server needs no change.
   `upgrade`, which change the machine's setup.
 - **Protocol:** JSON-RPC 2.0, one message per line, answering
   `initialize` (protocol versions 2025-06-18, 2025-03-26 and 2024-11-05),
-  `ping`, `tools/list` and `tools/call`, one request at a time. stdout
+  `ping`, `tools/list` and `tools/call`, one request at a time. A message
+  without an id is a notification, which gets no reply, so it isn't acted
+  on at all: a `tools/call` sent that way would otherwise make a request
+  nobody sees an answer to. stdout
   carries only replies: while it runs, anything else the CLI would print
   there goes to stderr, where its warnings (token expiry, a different
   server build) already go. A line over 1 MiB is answered with an error
@@ -726,6 +969,49 @@ limits, the audit log) applies unchanged and the server needs no change.
   environment sets one, exactly as for the CLI. Nothing marks a call as
   coming through MCP: the calls are the same, and the reveal `purpose`
   the CLI sends for `run` and `get` doesn't arise, since no tool reveals.
+
+### Diagnosing a setup: `keydrop doctor`
+When a command fails, an agent sees one error and has to guess the cause,
+and guessing is how it ends up asking for a token in the chat. `keydrop
+doctor` runs fixed checks in order, one line each with a next step:
+where the configuration comes from (the config directory, and which
+`KEYDROP_*` variables are set, by name) and its ownership checks; the
+server's `/healthz`, unauthenticated, telling DNS, connection refused,
+timeouts, plain http on an https URL, a port that doesn't speak TLS at
+all and "answers, but not like keydrop" apart; the certificate (pinned and matching, or not trusted); the token
+(`whoami`); its name, namespaces, permission and expiry; the version, with
+the same notice every command shows, worded by the self-upgrade setting;
+and the clock against the server's `Date`. A failed check skips the ones
+that depend on it. Exit 1 if any failed.
+
+- **It changes nothing.** It uses `client.Inspect`, a GET without the
+  client's side effects: a 401 doesn't collect and save a renewed token,
+  and a different build doesn't write the once-a-day `version-notice`
+  stamp. It never lists, reads or reveals an entry, so canaries can't
+  tell it ran.
+- **What to do next is doctor's own.** The setup guide tells agents to
+  follow it, so text the server sent (a 403's or 426's message) is shown
+  only in the check's own line, as the server's, and the step after it is a fixed
+  sentence; for a 426 it's `keydrop upgrade`, or, with self-upgrade off
+  for the token, to tell the user. A next step is printed as given, not
+  capitalised, so one that starts with a file name keeps its case.
+- **It fails where commands would.** An untrusted config directory is
+  a failure only when a command would read something from it; with the
+  URL, pin and token all in the environment, commands never do, so it's
+  a warning. A pairing request file is reported as one to keep waiting
+  on only while `keydrop pair` would go on with it (not expired).
+- **A 401 is reported as the server makes it.** Unknown, revoked, replaced
+  and long-expired tokens get the same 401 on purpose. Doctor then asks
+  the renewal status, which still answers in the renewal grace window or
+  for a renewed token not yet collected, so those two cases get their own
+  advice; anything else is "refused, pair again". A refused address is a
+  403 with its own message, so that one is distinguishable.
+- **A pin mismatch is only reported.** The handshake stops before any
+  request, so nothing (no token) reaches that server. Doctor prints the
+  configured pin and the one presented, points at `rotate-tls` and says to
+  get the new pin from the admin. It doesn't offer to trust the presented
+  certificate: if the admin didn't replace it, that's what an interception
+  looks like.
 
 ### Audit log
 - Anyone who can reach keydrop can cause some events without a working
@@ -766,7 +1052,13 @@ limits, the audit log) applies unchanged and the server needs no change.
 ### Storage and encryption
 - Each value is encrypted with AES-256-GCM. The additional authenticated
   data binds the ciphertext to its namespace, name and field, so values
-  can't be moved between records by editing the file.
+  can't be moved between records by editing the file. The field is
+  `value`, `previous`, or `version:ID` for an older value in `versions`
+  (ID random, made when the value enters the history and kept while it
+  moves down the list, so the list shifts without resealing). An older
+  value can't be swapped with another, moved to another key, or put in
+  `previous`. Moving a value between fields decrypts and re-seals it, and
+  one that won't decrypt makes the change fail rather than drop it.
 - The master key comes from a file (a Docker secret) or an env var, and is
   never written to the data directory. A key-check blob detects a wrong
   master key at startup instead of failing later.
@@ -831,7 +1123,8 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
 | `mac3` | `v3View()` | 5f2f64e | `expires_at`, `lifetime`, `renewal`, `rotation`, per-secret `canary`, the `canary` state | **No**: see below |
 | `mac4` | `v4View()` | 631f015 | `alerts` | Yes, with `mac5`: only loses the webhook |
 | `mac5` | `v5View()` | 8acec14 | each token's `self_upgrade` | Yes, with `mac6`: turns self-upgrade off, the cautious default |
-| `mac6` | everything | this one | | |
+| `mac6` | `v6View()` | 903db72 (v0.1.3) | `notify` (Inbox alerts on or off, and the expiry alerts' window, chosen in Settings); per-secret `versions` (value history); per-secret `limit` (the agents that may use a key) | `notify` and `versions` yes, with `mac7`: Inbox alerts follow `KEYDROP_ALERT_INBOX` again, expiry alerts are off, history beyond `previous` is gone. `limit` **no**: see below |
+| `mac7` | everything | this one | | |
 
 - Each newer MAC is written whenever one of its fields is set, and when the
   MAC or any of those fields is present, it must verify. Stripping every
@@ -843,12 +1136,45 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   required whatever the file holds, and only `keydrop downgrade-data` takes
   it back. An older build doesn't know that key check and refuses to start
   ("master key does not match") until `downgrade-data` is run.
-- `downgrade-data` goes back one format per run: from v4 it drops these
+- **Per-key limits restrict access the same way:** stripping a `limit`
+  would let every agent with the namespace use the key. The first save
+  that writes one seals `keydrop-key-check:v7`, which says `mac7` is
+  required, and everything v4 says (`mac4` too). It's checked before
+  the v4 step on every save, so once v7 a save never writes v4 over it,
+  and it stays v7 when the last limit is lifted, as v4 stays when the
+  last expiry goes. v0.1.3 knows only the v1, v2 and v4 key checks, so it
+  refuses the file. Every MAC covers the key check, so an older key check
+  can't be swapped in on its own to make the limits strippable; putting
+  back a whole older copy of the data still works, as above.
+- `downgrade-data` goes back one format per run. From v7 it lifts every
+  key's limit, lists those keys (each is then usable by every agent with
+  its namespace) and puts back the v4 key check, whatever the file holds:
+  v7 implied it. `DowngradeV4` and the step to v1 refuse to run while v7
+  is in place, since their key checks wouldn't protect the limits. From v4 it drops these
   fields (tokens stop expiring, pending renewal requests are dropped, tokens
   with an uncollected rotation are deleted since only the new token would
   work, canaries become ordinary secrets, the canary Inbox entries go; the
   audit log keeps everything) and lists by name what it dropped; run again,
   it goes back to the v1 key check.
+- **Value history and `previous`.** `previous` (with `previous_variable`)
+  stays the newest older value, written exactly as before, so v0.1.3
+  still rolls back one step. `versions` describes it (ID, when it was
+  replaced, who saved it) and holds only the values older than it, plus
+  who saved the current value. It's written once a key has a value
+  replaced, or when a token saves one (the saver is what labels an
+  agent's variable, see Variables), so a key with one value the admin
+  saved has none. A file has `mac7` once any key has `versions` (a value
+  replaced, or one a token saved), a limit, or alert settings: one where
+  the admin has only ever saved each key's first value has none. An older build rewrites the whole file on every save, so it
+  can't leave `versions` describing a `previous` it changed: whatever it
+  did (a rollback, a save), the file it writes has the current value and
+  `previous` as it left them and no `versions`; this one then shows that
+  `previous` as the only older value (its date and saver unknown) and
+  builds history again from the next save. History grants and restricts
+  nothing, so it isn't tied to the key check: stripping `versions` with
+  `mac7` (and nothing else under it set) loses the history, and the
+  stored savers, so an agent's variable is labelled from the change log
+  again, as in that release.
 - When an older build rewrites the file it drops the fields it doesn't know;
   keys and their values stay. The e2e suite starts the older builds on data
   this one wrote, lets them rewrite it, and opens the result.
@@ -914,7 +1240,16 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   IPv6 zone dropped and `::ffff:1.2.3.4` read as `1.2.3.4`: a zone is free
   text the client may have written, and one address spelled several ways
   mustn't look like several clients to the limits. The direct peer's
-  address is used as the kernel reports it.
+  address is used as the kernel reports it. Addresses stored before this
+  (a renewal's, a token's last use) are compared by address, not text:
+  `::ffff:10.0.0.5` is `10.0.0.5`, and a zone on one side only is
+  ignored, so the same client still collects its renewal and isn't
+  "used from elsewhere" after the upgrade. Two different zones still
+  differ. Ignoring a one-sided zone could match two machines with the
+  same link-local address, one seen directly and one only through the
+  proxy; the one off the renewal's link would still need the old token,
+  and being on the network with a chosen link-local address is already
+  enough to spoof one, so the address check guards nothing more there.
 - Turning the authenticator on or off, and changing the password, all
   need the current password, so an unattended logged-in browser isn't
   enough.

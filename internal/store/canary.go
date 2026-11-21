@@ -175,15 +175,21 @@ func (s *Store) RotateToken(name string, days int) (Rotation, error) {
 
 // sameAddress reports whether a and b name the same address, however each
 // is spelled: a renewal recorded before the server canonicalised forwarded
-// addresses (::ffff:1.2.3.4, upper-case hex) must still match the same
-// client after it. The zone still counts, so fe80::1 on two links differs.
+// addresses (::ffff:1.2.3.4, upper-case hex, a zone the proxy passed on)
+// must still match the same client after it, now reported without one. So
+// a zone on only one side doesn't count; two different zones (fe80::1 on
+// two links, both seen directly) still differ.
 func sameAddress(a, b string) bool {
 	x, errX := netip.ParseAddr(a)
 	y, errY := netip.ParseAddr(b)
 	if errX != nil || errY != nil {
 		return a == b
 	}
-	return x.Unmap() == y.Unmap()
+	x, y = x.Unmap(), y.Unmap()
+	if x.Zone() == "" || y.Zone() == "" {
+		x, y = x.WithZone(""), y.WithZone("")
+	}
+	return x == y
 }
 
 // CollectRotation hands over the new token that replaced old. old is the
@@ -596,6 +602,10 @@ func (s *Store) DowngradeV4() (V4Dropped, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var d V4Dropped
+	if s.v7 || s.st.hasLimits() {
+		// Its key check would no longer protect the limits.
+		return d, false, errors.New("downgrade the per-key limits first (DowngradeV7)")
+	}
 	if !s.v4 && !s.st.hasNewer4() {
 		return d, false, nil
 	}

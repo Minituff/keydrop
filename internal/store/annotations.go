@@ -482,7 +482,9 @@ func (s *Store) orRefused(ns, name string, a AgentCtx, action string, hit *Canar
 
 // SetStatus sets a key's status (value "ok" clears it). actor is "admin"
 // or "token:NAME". A token can't change or clear a status the admin set,
-// and its replaced-by must name a key in the same namespace.
+// and its replaced-by must name a key in the same namespace. A token the
+// key is limited away from can still report it leaked, expired or revoked,
+// but not point the agents that may use it at another key (ErrLimited).
 func (s *Store) SetStatus(ns, name, value, replacedBy, actor string) error {
 	_, err := s.setStatus(ns, name, value, replacedBy, actor, nil)
 	return err
@@ -494,6 +496,11 @@ func (s *Store) setStatus(ns, name, value, replacedBy, actor string, by *agentTo
 		return nil, err
 	}
 	return s.annotateBy(ns, name, by, func(sec *Secret, e *SecretExt, now time.Time) error {
+		// First, and from the limit alone, as for a put: a canary answers
+		// the same.
+		if by != nil && st != nil && st.ReplacedBy != "" && !sec.UsableBy(by.Token) {
+			return ErrLimited
+		}
 		if actor != "admin" && e.Status != nil && e.Status.By == "admin" {
 			return ErrAdminStatus
 		}

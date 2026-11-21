@@ -81,7 +81,7 @@ var versionShape = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,64}$`)
 // can't put words in the notice.
 func checkVersion(h http.Header) {
 	srv := h.Get("X-Keydrop-Version")
-	if warnedVersion || !versionShape.MatchString(srv) || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
+	if warnedVersion || VersionNotice(h) == "" {
 		return
 	}
 	warnedVersion = true
@@ -105,24 +105,37 @@ func checkVersion(h http.Header) {
 			}
 		}
 	}
+	fmt.Fprintln(warnTo, "keydrop: "+VersionNotice(h))
+	// Best effort: without the stamp the line just shows again next run.
+	if dirErr == nil && os.MkdirAll(dir, 0o700) == nil {
+		os.WriteFile(stamp, []byte(seen+"\n"), 0o600)
+	}
+}
+
+// VersionNotice is what this CLI says about the server's build, from an
+// authenticated answer's headers, worded by the token's self-upgrade
+// setting; "" when there's nothing to say (same build, a local "dev"
+// build on either side, or no usable version header). checkVersion prints
+// it; `keydrop doctor` shows it without the once-a-day stamp.
+func VersionNotice(h http.Header) string {
+	srv := h.Get("X-Keydrop-Version")
+	if !versionShape.MatchString(srv) || Version == "" || Version == "dev" || srv == "dev" || srv == Version {
+		return ""
+	}
+	off := h.Get(server.HdrSelfUpgrade) == "off"
 	older := false
 	if lvl, err := strconv.Atoi(h.Get(server.HdrAPILevel)); err == nil && lvl < server.APILevel {
 		older = true
 	}
 	switch {
 	case older && off:
-		fmt.Fprintf(warnTo, "keydrop: the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server.\n", srv, Version)
+		return fmt.Sprintf("the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server.", srv, Version)
 	case older:
-		fmt.Fprintf(warnTo, "keydrop: the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server, or run `keydrop upgrade` to match it.\n", srv, Version)
+		return fmt.Sprintf("the server (%s) is older than this CLI (%s); commands it doesn't support will fail. Ask the admin to update the server, or run `keydrop upgrade` to match it.", srv, Version)
 	case off:
-		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes). Self-upgrade is off for this agent, so don't update the CLI yourself: mention it to the user, who can upgrade it or turn self-upgrade on for this agent under Agents.\n", srv, Version)
-	default:
-		fmt.Fprintf(warnTo, "keydrop: the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it: it fetches the server's build, checks it, and keeps the old binary as a .bak.\n", srv, Version)
+		return fmt.Sprintf("the server is %s and this CLI is %s. Nothing breaks (no incompatible changes). Self-upgrade is off for this agent, so don't update the CLI yourself: mention it to the user, who can upgrade it or turn self-upgrade on for this agent under Agents.", srv, Version)
 	}
-	// Best effort: without the stamp the line just shows again next run.
-	if dirErr == nil && os.MkdirAll(dir, 0o700) == nil {
-		os.WriteFile(stamp, []byte(seen+"\n"), 0o600)
-	}
+	return fmt.Sprintf("the server is %s and this CLI is %s. Nothing breaks (no incompatible changes), but run `keydrop upgrade` when convenient to match it: it fetches the server's build, checks it, and keeps the old binary as a .bak.", srv, Version)
 }
 
 // Client is a configured API client.
@@ -327,7 +340,11 @@ func New(baseURL, token, pin string) *Client {
 			InsecureSkipVerify: true, // replaced by the pin check below
 			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
 				if len(raw) == 0 || !strings.EqualFold(server.Fingerprint(raw[0]), pin) {
-					return errors.New("server certificate doesn't match KEYDROP_TLS_PIN")
+					e := &PinMismatchError{Pin: pin}
+					if len(raw) > 0 {
+						e.Got = server.Fingerprint(raw[0])
+					}
+					return e
 				}
 				return nil
 			},
@@ -349,12 +366,22 @@ func New(baseURL, token, pin string) *Client {
 	return &Client{URL: strings.TrimRight(baseURL, "/"), Token: token, HTTP: hc, pin: pin}
 }
 
+// Pin is the configured certificate pin, "" for none. It's public.
+func (c *Client) Pin() string { return c.pin }
+
 // ErrPinNeedsHTTPS: a certificate pin is set but the URL is plain http, so
 // there's no certificate to check.
 var ErrPinNeedsHTTPS = errors.New("a TLS pin is set but the URL isn't https://, so it can't be checked; use the https:// URL")
 
 // ErrRedirectToHTTP: an https server redirected to plain http.
 var ErrRedirectToHTTP = errors.New("the server redirected from https to plain http, which keydrop refuses; fix the server's or proxy's redirect")
+
+// PinMismatchError: the server's certificate isn't the pinned one. Got is
+// the presented certificate's pin (public, like Pin), for comparing with
+// the one the admin has; it's never trusted on its own.
+type PinMismatchError struct{ Pin, Got string }
+
+func (e *PinMismatchError) Error() string { return "server certificate doesn't match KEYDROP_TLS_PIN" }
 
 // APIError is a non-2xx response.
 type APIError struct {
@@ -398,8 +425,31 @@ func (c *Client) do(method, path string, body, out any) error {
 }
 
 func (c *Client) send(method, path string, body []byte, out any) error {
+	_, data, err := c.exchange(method, path, body, true)
+	if err == nil && out != nil {
+		err = json.Unmarshal(data, out)
+	}
+	return err
+}
+
+// Inspect sends one GET and returns the answer's headers and body, for
+// `keydrop doctor`. Unlike every other call it changes nothing: no 401
+// recovery (which can collect a renewed token and save it), no version
+// notice (which writes a stamp file) and no expiry warning. withToken
+// false sends no token. The pin and redirect rules apply as usual.
+func (c *Client) Inspect(path string, withToken bool) (http.Header, []byte, error) {
+	cc := *c
+	if !withToken {
+		cc.Token = ""
+	}
+	return cc.exchange("GET", path, nil, false)
+}
+
+// exchange sends one request. notices: warn about the version and expiry
+// from a successful authenticated answer.
+func (c *Client) exchange(method, path string, body []byte, notices bool) (http.Header, []byte, error) {
 	if c.pin != "" && !strings.HasPrefix(strings.ToLower(c.URL), "https://") {
-		return ErrPinNeedsHTTPS
+		return nil, nil, ErrPinNeedsHTTPS
 	}
 	var rd io.Reader
 	if body != nil {
@@ -407,7 +457,7 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 	}
 	req, err := http.NewRequest(method, c.URL+path, rd)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -421,13 +471,13 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	// Only a successful answer to a request with a token is the keydrop
 	// server speaking to this token: an error page may come from a proxy,
 	// and pairing is unauthenticated.
-	if c.Token != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if notices && c.Token != "" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		checkVersion(resp.Header)
 		c.checkExpiry(resp.Header.Get("X-Keydrop-Token-Expires"))
 	}
@@ -437,12 +487,9 @@ func (c *Client) send(method, path string, body []byte, out any) error {
 		if json.Unmarshal(data, &e) != nil || e.Error == "" {
 			e.Error = string(data)
 		}
-		return &APIError{Status: resp.StatusCode, Message: serverMessage(e.Error)}
+		return resp.Header, nil, &APIError{Status: resp.StatusCode, Message: serverMessage(e.Error)}
 	}
-	if out != nil {
-		return json.Unmarshal(data, out)
-	}
-	return nil
+	return resp.Header, data, nil
 }
 
 // Whoami returns the token's name and grants (cached).
@@ -454,6 +501,16 @@ func (c *Client) Whoami() (*Whoami, error) {
 	if err := c.do("GET", "/api/v1/whoami", nil, &raw); err != nil {
 		return nil, err
 	}
+	w, err := ParseWhoami(raw)
+	if err != nil {
+		return nil, err
+	}
+	c.who = w
+	return w, nil
+}
+
+// ParseWhoami reads a whoami answer.
+func ParseWhoami(raw []byte) (*Whoami, error) {
 	var w Whoami
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &w); err != nil {
@@ -462,7 +519,6 @@ func (c *Client) Whoami() (*Whoami, error) {
 	if json.Unmarshal(raw, &fields) == nil {
 		_, w.ExpiryKnown = fields["expires_at"]
 	}
-	c.who = &w
 	return &w, nil
 }
 

@@ -330,6 +330,8 @@ never need to see them.
   shell). `-e VAR=NAME` sets it under another name.
 - `keydrop secrets` / `keydrop info NAME` show what exists and what each key
   is for. Follow the description: it says what to do with the key.
+- A key marked "limited to other agents" isn't yours to use: don't try to
+  get it another way; tell the user if the task needs it.
 - Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
   lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
   takes them like secrets.
@@ -345,6 +347,9 @@ never need to see them.
   then retry); that only replaces keydrop's own binary, from the paired
   server, so tell the user it ran. With self-upgrade off it says not to
   update it yourself: don't, by any route, and tell the user instead.
+- If a keydrop command fails and its message doesn't say what to do, run
+  `keydrop doctor` and follow what it says. Never work around it (no
+  disabling the pin, no pasted tokens).
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.

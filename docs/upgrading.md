@@ -30,6 +30,37 @@ you revoked or replaced since then comes back: revoked tokens work again, and
 an old admin password does too. If that matters, revoke those tokens and
 change the password again.
 
+### Running an older release on newer data
+
+Without per-key limits, v0.1.3 starts on this release's data directory
+as it is. The first time it saves anything it drops what it doesn't know:
+older values beyond the previous one, the Inbox and expiry alert choices
+in Settings, and the record of which agent saved each value. Back on
+this release, a variable an agent wrote is then labelled as agent text
+the way v0.1.3 labels it, from the change log: an agent that has since
+written a few hundred other changes in the namespace can have pushed
+that out, and the variable reads as yours until it's saved again.
+If you went back and forth, look over your variables' values.
+
+### Rolling back after limiting a key
+
+Once you limit a key to some agents (on its page), releases before
+per-key limits (v0.1.3 and earlier) refuse to start on the data directory,
+with "master key does not match this data directory": otherwise they would
+give those keys to every agent with the namespace. To go back to one
+without restoring a backup, stop keydrop and run, with the same environment
+as the server:
+
+```sh
+docker compose run --rm keydrop downgrade-data
+```
+
+It removes every key's limit and lists those keys: each of them is then
+usable by every agent with its namespace. This release still reads the
+data afterwards, and you can set the limits again. Run `downgrade-data`
+again to go back further (to a release before token expiry and canaries),
+one step per run.
+
 ## Rotating the TLS certificate
 
 Do this if keydrop's TLS private key may have leaked: a plaintext copy of
