@@ -171,13 +171,18 @@ func cmdWhoami(args []string) error {
 	if err != nil {
 		return err
 	}
+	return whoami(os.Stdout, c)
+}
+
+// whoami writes what `keydrop whoami` prints to out.
+func whoami(out io.Writer, c *client.Client) error {
 	w, err := c.Whoami()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s @ %s\nnamespaces: %s\npermission: %s\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), clean(w.Perm(), false))
+	fmt.Fprintf(out, "%s @ %s\nnamespaces: %s\npermission: %s\n", clean(w.Name, false), c.URL, clean(strings.Join(w.Namespaces, ", "), false), clean(w.Perm(), false))
 	if w.ExpiryKnown {
-		fmt.Printf("expires: %s\n", expiresText(w.ExpiresAt, clockNow()))
+		fmt.Fprintf(out, "expires: %s\n", expiresText(w.ExpiresAt, clockNow()))
 	}
 	return nil
 }
@@ -314,19 +319,29 @@ func cmdList(kind string, args []string) error {
 	if err != nil {
 		return err
 	}
+	list, err := listKind(c, kind, *onlyNew, *pending, *ns)
+	if err != nil {
+		return err
+	}
+	printList(os.Stdout, list)
+	return nil
+}
+
+// listKind fetches the list and keeps only entries of kind.
+func listKind(c *client.Client, kind string, onlyNew, pending bool, ns string) ([]client.Secret, error) {
 	q := url.Values{}
-	if *onlyNew {
+	if onlyNew {
 		q.Set("new", "1")
 	}
-	if *pending {
+	if pending {
 		q.Set("pending", "1")
 	}
-	if *ns != "" {
-		q.Set("namespace", *ns)
+	if ns != "" {
+		q.Set("namespace", ns)
 	}
 	all, err := c.List(q)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var list []client.Secret
 	for _, s := range all {
@@ -334,8 +349,7 @@ func cmdList(kind string, args []string) error {
 			list = append(list, s)
 		}
 	}
-	printList(os.Stdout, list)
-	return nil
+	return list, nil
 }
 
 // printList prints secrets under group headings: "[ns: Name]" for the
@@ -430,32 +444,38 @@ func cmdHistory(args []string) error {
 	name := ""
 	if len(pos) == 1 {
 		name = pos[0]
-		if n, nm, ok := strings.Cut(name, "/"); ok {
-			*ns, name = n, nm
-		}
 	}
 	c, err := newClient()
 	if err != nil {
 		return err
 	}
-	events, err := c.History(*ns, name, *limit)
+	return history(os.Stdout, c, *ns, name, *limit, *since, *quiet)
+}
+
+// history writes what `keydrop history` prints to w. name may be
+// namespace/NAME, which overrides ns.
+func history(w io.Writer, c *client.Client, ns, name string, limit int, since time.Duration, quiet bool) error {
+	if n, nm, ok := strings.Cut(name, "/"); ok {
+		ns, name = n, nm
+	}
+	events, err := c.History(ns, name, limit)
 	if err != nil {
 		return err
 	}
 	shown := 0
 	for _, e := range events {
-		if *since > 0 && time.Since(e.At) > *since {
+		if since > 0 && time.Since(e.At) > since {
 			continue
 		}
 		line := e.At.Local().Format("2006-01-02 15:04") + "  " + clean(e.Ref, false) + "  " + clean(e.Action, false)
 		if e.Detail != "" {
 			line += " " + clean(e.Detail, false)
 		}
-		fmt.Println(line + "  by " + clean(e.Actor, false))
+		fmt.Fprintln(w, line+"  by "+clean(e.Actor, false))
 		shown++
 	}
-	if shown == 0 && !*quiet {
-		fmt.Println("(no changes)")
+	if shown == 0 && !quiet {
+		fmt.Fprintln(w, "(no changes)")
 	}
 	return nil
 }
@@ -577,32 +597,37 @@ func cmdRequest(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) == 1 && *group == "" {
-		link, err := c.Request(pos[0], *desc, *use)
+	return request(os.Stdout, c, pos, *desc, *use, *group)
+}
+
+// request asks for refs and writes what `keydrop request` prints to w.
+func request(w io.Writer, c *client.Client, refs []string, desc, use, group string) error {
+	if len(refs) == 1 && group == "" {
+		link, err := c.Request(refs[0], desc, use)
 		if err != nil {
 			return err
 		}
-		fmt.Println("Requested. The human can fill it in here:")
-		fmt.Println(clean(link, false))
-		fmt.Println("Then: keydrop wait " + pos[0])
+		fmt.Fprintln(w, "Requested. The human can fill it in here:")
+		fmt.Fprintln(w, clean(link, false))
+		fmt.Fprintln(w, "Then: keydrop wait "+refs[0])
 		return nil
 	}
-	b, err := c.RequestBatch(pos, *group, *desc, *use)
+	b, err := c.RequestBatch(refs, group, desc, use)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Requested %d key%s together. The human fills them in on one card", len(b.Refs), plural(len(b.Refs)))
+	fmt.Fprintf(w, "Requested %d key%s together. The human fills them in on one card", len(b.Refs), plural(len(b.Refs)))
 	if b.URL != "" {
-		fmt.Println(" here:")
-		fmt.Println(clean(b.URL, false))
+		fmt.Fprintln(w, " here:")
+		fmt.Fprintln(w, clean(b.URL, false))
 	} else {
-		fmt.Println(".")
+		fmt.Fprintln(w, ".")
 	}
-	if *group != "" {
-		fmt.Println("The group you suggested is shown to the human, who decides whether to use it.")
+	if group != "" {
+		fmt.Fprintln(w, "The group you suggested is shown to the human, who decides whether to use it.")
 	}
 	for _, ref := range b.Refs {
-		fmt.Println("Then: keydrop wait " + clean(ref, false))
+		fmt.Fprintln(w, "Then: keydrop wait "+clean(ref, false))
 	}
 	return nil
 }
