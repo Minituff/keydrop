@@ -53,10 +53,17 @@ type Config struct {
 	// DirectURL reaches keydrop itself rather than through a proxy, for the
 	// pinned install command, e.g. https://10.0.0.5:8443.
 	DirectURL string
-	// AlertWebhook is where canary alerts are POSTed ({"content": ...},
-	// Discord-compatible), unless one is set in Settings. Empty: no alerts
-	// without one. It's never logged or shown.
+	// AlertWebhook is where canary alerts are POSTed, unless one is set in
+	// Settings. Empty: no alerts without one. It's never logged or shown.
 	AlertWebhook string
+	// AlertFormat (KEYDROP_ALERT_FORMAT) is the body's shape for whichever
+	// webhook is in use: auto (or ""), discord, slack or text.
+	AlertFormat string
+	// AlertInbox (KEYDROP_ALERT_INBOX) also sends a short notice to the
+	// webhook when something starts waiting for the admin: a pairing, a
+	// key request, a renewal or a flag. It's the default: once the admin
+	// turns Inbox alerts on or off in Settings, that wins.
+	AlertInbox bool
 	// Now replaces the clock; nil is time.Now. Only the e2e tests' build
 	// (tag e2eclock) sets it.
 	Now func() time.Time
@@ -88,6 +95,7 @@ type Server struct {
 	limiter      *auth.Limiter
 	setupLimiter *auth.Limiter
 	mux          *http.ServeMux
+	patterns     []string // every route registered on mux, in order (routes)
 	now          func() time.Time
 	deviceKey    []byte // signs device cookies (see deviceID)
 	started      time.Time
@@ -123,6 +131,12 @@ type Server struct {
 	polls *rateLimit
 	// alerts sends canary alerts to AlertWebhook.
 	alerts *alerter
+
+	// expiryMarks is what the expiry check has announced, by ref; see
+	// expiryalert.go. expiryKick asks RunBackground for a check now.
+	expiryMu    sync.Mutex
+	expiryMarks map[string]expiryMark
+	expiryKick  chan struct{}
 }
 
 // noisyEvents throttles the audit events an unauthenticated client can
@@ -183,7 +197,9 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 		collects:    newRateLimit(collectsPerHour, time.Hour),
 		polls:       newRateLimit(pollsPerMinute, time.Minute),
 		alerts:      newAlerter(cfg.AlertWebhook),
+		expiryKick:  make(chan struct{}, 1),
 	}
+	s.alerts.format = cfg.AlertFormat
 	if cfg.Now != nil {
 		s.now = cfg.Now
 	}
@@ -198,6 +214,14 @@ func New(cfg Config, st *store.Store, al *audit.Log) *Server {
 	}
 	if s.alerts.configured() {
 		go s.alerts.destination(false) // so Settings needn't wait for it
+	}
+	switch on, chosen := s.inboxAlertsOn(); {
+	case on && s.alerts.configured():
+		log.Printf("Inbox alerts: on (%s)", inboxSource(chosen))
+	case on:
+		log.Printf("Inbox alerts are on (%s) but need an alert webhook: add one in Settings or set KEYDROP_ALERT_WEBHOOK", inboxSource(chosen))
+	case chosen && cfg.AlertInbox:
+		log.Printf("Inbox alerts: off (turned off in Settings, which wins over KEYDROP_ALERT_INBOX)")
 	}
 	if !st.AdminConfigured() || cfg.ResetAdmin {
 		if st.AdminConfigured() {
@@ -250,8 +274,18 @@ func randomString(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// routeList registers routes on the server's mux and keeps each pattern in
+// s.patterns, so a test can check docs/openapi.json against the routes the
+// server actually serves.
+type routeList struct{ s *Server }
+
+func (l routeList) HandleFunc(pattern string, h http.HandlerFunc) {
+	l.s.mux.HandleFunc(pattern, h)
+	l.s.patterns = append(l.s.patterns, pattern)
+}
+
 func (s *Server) routes() {
-	m := s.mux
+	m := routeList{s}
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	m.HandleFunc("GET /static/style.css", s.handleCSS)
 	m.HandleFunc("GET /install.sh", s.handleInstallScript)
@@ -272,6 +306,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /secret/{ns}/{name}/value", s.admin(s.handleSetValue))
 	m.HandleFunc("POST /secret/{ns}/{name}/meta", s.admin(s.handleSetMeta))
 	m.HandleFunc("POST /secret/{ns}/{name}/rollback", s.admin(s.handleRollback))
+	m.HandleFunc("POST /secret/{ns}/{name}/restore/{id}", s.admin(s.handleRestore))
 	m.HandleFunc("POST /secret/{ns}/{name}/delete", s.admin(s.handleDelete))
 	m.HandleFunc("POST /secret/{ns}/{name}/status", s.admin(s.handleSetStatus))
 	m.HandleFunc("POST /secret/{ns}/{name}/flags/{id}/resolve", s.admin(s.handleResolveFlag))
@@ -292,11 +327,14 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /tokens/{name}/renew", s.admin(s.handleRenewToken))
 	m.HandleFunc("POST /tokens/{name}/renewal/decline", s.admin(s.handleDeclineRenewal))
 	m.HandleFunc("POST /secret/{ns}/{name}/canary", s.admin(s.handleSetCanary))
+	m.HandleFunc("POST /secret/{ns}/{name}/limit", s.admin(s.handleSetLimit))
 	m.HandleFunc("POST /canary/{id}/dismiss", s.admin(s.handleDismissCanary))
 	m.HandleFunc("POST /settings/canary", s.admin(s.handleCanarySettings))
 	m.HandleFunc("POST /settings/alert-test", s.admin(s.handleAlertTest))
 	m.HandleFunc("POST /settings/alert-webhook", s.admin(s.handleAlertWebhook))
 	m.HandleFunc("POST /settings/alert-webhook/remove", s.admin(s.handleAlertWebhookRemove))
+	m.HandleFunc("POST /settings/alert-inbox", s.admin(s.handleAlertInbox))
+	m.HandleFunc("POST /settings/alert-expiry", s.admin(s.handleAlertExpiry))
 	m.HandleFunc("GET /pair/{id}", s.admin(s.handlePair))
 	m.HandleFunc("POST /pair/{id}/approve", s.admin(s.handlePairApprove))
 	m.HandleFunc("POST /pair/{id}/deny", s.admin(s.handlePairDeny))
@@ -355,10 +393,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// clientIP is the remote address, or the first untrusted hop in
-// X-Forwarded-For when the request came through a trusted proxy. Every
-// X-Forwarded-For line counts: a proxy that adds its own line rather than
-// appending to the client's must not let the client's line decide.
 // noisyEvent records an event that an unauthenticated request can cause
 // (a bad token, a pairing request, a failed login): at most one a minute
 // per address (IPv6: per /64) and action, and 60 a minute overall. What's
@@ -432,6 +466,17 @@ func (s *Server) throttledEvent(r *http.Request, actor, action, target, detail s
 	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r), Unauthenticated: unauth})
 }
 
+// clientIP is the remote address, or the first untrusted hop in
+// X-Forwarded-For when the request came through a trusted proxy. Every
+// X-Forwarded-For line counts: a proxy that adds its own line rather than
+// appending to the client's must not let the client's line decide.
+//
+// A hop comes back in canonical form (lower case, compressed, IPv4-mapped
+// unmapped) with any zone dropped: the hop is text the client may have
+// written, an IPv6 zone is free text (fe80::1%<anything>) and means nothing
+// on another host, and one address spelled several ways mustn't count as
+// several clients. The direct peer is left as the kernel gave it: already
+// canonical, and its zone, if any, is the real interface.
 func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -448,8 +493,9 @@ func (s *Server) clientIP(r *http.Request) string {
 		if err != nil {
 			break
 		}
+		a = a.Unmap().WithZone("")
 		if !s.trusted(a) {
-			return hop
+			return a.String()
 		}
 	}
 	return host

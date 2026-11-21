@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/minituff/keydrop/internal/server"
@@ -73,5 +75,64 @@ func TestUpgradeDowngradeData(t *testing.T) {
 	t.Setenv("KEYDROP_DATA_DIR", filepath.Join(t.TempDir(), "typo"))
 	if err := cmdUpgradeData(nil); err == nil {
 		t.Fatal("upgrade-data on an empty directory")
+	}
+}
+
+// An unknown KEYDROP_ALERT_FORMAT stops the server, naming the allowed
+// values and not the value given (which could be a pasted webhook URL).
+func TestAlertFormatInvalid(t *testing.T) {
+	t.Setenv("KEYDROP_DATA_DIR", t.TempDir())
+	t.Setenv("KEYDROP_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32)))
+	t.Setenv("KEYDROP_MASTER_KEY_FILE", "")
+	t.Setenv("KEYDROP_TLS", "off")
+	t.Setenv("KEYDROP_ALERT_WEBHOOK", "https://hooks.example.com/fake-format-webhook-path")
+	t.Setenv("KEYDROP_ALERT_FORMAT", "https://hooks.example.com/fake-format-webhook-path")
+	err := cmdServer(nil)
+	if err == nil || !strings.Contains(err.Error(), "auto, discord, slack or text") || strings.Contains(err.Error(), "fake-format") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// downgrade-data's first step on data with a limit lifts it and names the
+// key; the next runs go on with the older steps, one per run.
+func TestDowngradeDataLimits(t *testing.T) {
+	dir := t.TempDir()
+	key := bytes.Repeat([]byte{5}, 32)
+	t.Setenv("KEYDROP_DATA_DIR", dir)
+	t.Setenv("KEYDROP_MASTER_KEY", base64.StdEncoding.EncodeToString(key))
+	t.Setenv("KEYDROP_MASTER_KEY_FILE", "")
+	st, err := store.Open(dir, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateToken("one", []string{"lab"}, store.PermRead, nil); err != nil {
+		t.Fatal(err)
+	}
+	st.PutValue("lab", "FAKE_TOKEN", []byte("fake-value-123"), nil)
+	if err := st.SetLimit("lab", "FAKE_TOKEN", true, []string{"one"}); err != nil {
+		t.Fatal(err)
+	}
+	run := func() string {
+		t.Helper()
+		r, w, _ := os.Pipe()
+		stdout := os.Stdout
+		os.Stdout = w
+		err := cmdDowngradeData(nil)
+		os.Stdout = stdout
+		w.Close()
+		out, _ := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("downgrade-data: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	for _, want := range []string{
+		"keys no longer limited (now usable by every agent with their namespace): lab/FAKE_TOKEN\n",
+		"nothing from token expiry or canaries was in use",
+		"key check back in the old format",
+	} {
+		if out := run(); !strings.Contains(out, want) {
+			t.Fatalf("want %q in:\n%s", want, out)
+		}
 	}
 }

@@ -77,10 +77,10 @@ sequenceDiagram
 |---|---|
 | 🙈 **Agents use keys, never see them** | `keydrop run` hands a value to one command and masks it in the output. |
 | 📱 **Phone-first web page** | Paste a key from your phone. No JavaScript, no third-party assets, strict CSP. |
-| 🗂️ **Namespaces and per-agent tokens** | Each agent sees only its namespaces, with read, add or write permission. |
+| 🗂️ **Namespaces and per-agent tokens** | Each agent sees only its namespaces, with read, add or write permission. One key can be limited to some of those agents. |
 | 🤝 **Pairing, not pasting tokens** | `keydrop pair` prints a link; you check the code and approve on your phone. |
 | 📬 **Agents can ask** | `keydrop request NAME` puts a request in your Inbox; the agent waits until you fill it in. |
-| 🐤 **Canaries** | Decoy keys no agent should touch. A read shows in your Inbox and can alert Discord. |
+| 🐤 **Canaries** | Decoy keys no agent should touch. A read shows in your Inbox and can alert Discord, Slack or ntfy. |
 | 🔁 **Tokens rotate themselves** | The agent asks for its new token; you approve with one tap. |
 | 📜 **Audit log** | Every login, change and secret read: which agent, which key, which command. |
 | 🪶 **Small enough to audit** | One container and one CLI, written in Go with **no third-party dependencies**. |
@@ -118,8 +118,9 @@ will be told first, in [docs/agent-setup.md](docs/agent-setup.md).
 Already running keydrop? **Agents → Set up an agent** gives a shorter prompt
 with your server's address and certificate pins filled in.
 
-**By hand:** it's one container. Generate a master key, start
-[`compose.example.yml`](compose.example.yml), and open the link in the log.
+**By hand:** it's one container. Check the image of a release, generate a
+master key, start [`compose.example.yml`](compose.example.yml) with that
+image pinned, and open the link in the log.
 Step by step: [Installing the server](docs/install.md), then
 [Pairing an agent](docs/pairing.md).
 

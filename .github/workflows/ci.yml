@@ -4,11 +4,17 @@ on:
     branches: [main, dev]
   pull_request:
 permissions: {}
+# shell: bash is bash -eo pipefail; a run: step without it has no
+# pipefail, so a pipeline's status would be only its last command's.
+defaults:
+  run:
+    shell: bash
 jobs:
   # The patterns are the maintainer's own host names, so they live in the
   # leak-check environment, which only main and dev may use: a workflow
   # pushed on any other branch can't read them. Pull requests skip this job;
-  # the push to dev or main runs it.
+  # the push to dev or main runs it. In this repository the secret must be
+  # there (KEYDROP_LEAK_REQUIRED); a fork's push skips with a warning.
   leak-check:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -22,6 +28,7 @@ jobs:
       - name: No private details
         env:
           KEYDROP_LEAK_PATTERNS: ${{ secrets.KEYDROP_LEAK_PATTERNS }}
+          KEYDROP_LEAK_REQUIRED: ${{ github.repository == 'Minituff/keydrop' && '1' || '' }}
         run: sh scripts/leak-check.sh
   test:
     runs-on: ubuntu-latest
@@ -69,7 +76,10 @@ jobs:
         run: |
           echo "version=ci-test" >> "$GITHUB_OUTPUT"
           echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+      # The same BuildKit as release.yml, by digest.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .

@@ -39,6 +39,7 @@ func moveClock(t *testing.T, file string, d time.Duration) {
 type alertSink struct {
 	mu     sync.Mutex
 	bodies []string
+	types  []string // each body's Content-Type
 }
 
 func newAlertSink(t *testing.T) (*alertSink, string) {
@@ -47,6 +48,7 @@ func newAlertSink(t *testing.T) (*alertSink, string) {
 		b, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		s.bodies = append(s.bodies, string(b))
+		s.types = append(s.types, r.Header.Get("Content-Type"))
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))

@@ -2,11 +2,36 @@
 
 The [agent setup guide](agent-setup.md) does all of this for you. These are the same steps, done by hand.
 
+## Verify the image
+
+Use a released version, not `latest`, and check that the image is the one
+keydrop's release workflow built before you run it. Pick the newest version
+on the [releases page](https://github.com/Minituff/keydrop/releases) and put
+it in `version` (without the `v`). The check needs the
+[GitHub CLI](https://cli.github.com/), signed in with `gh auth login`.
+
+```sh
+version=1.2.3
+docker pull "ghcr.io/minituff/keydrop:$version"
+image=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/minituff/keydrop:$version")
+gh attestation verify "oci://$image" --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+echo "$image"
+```
+
+If `gh attestation verify` fails, **stop**: don't run that image. If it
+passes, `$image` is that exact image, pinned by its digest
+(`ghcr.io/minituff/keydrop@sha256:…`). The steps below use it, so run them
+in the same terminal.
+
+## Start the server
+
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
 # Generate a key only for a new installation.
-if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+if ( umask 077; set -C; docker run --rm "$image" genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
   echo "Key generation failed or master.key already exists. Stop and investigate."
@@ -22,10 +47,22 @@ Once the key is ready:
 
 ```sh
 curl -O https://raw.githubusercontent.com/minituff/keydrop/main/compose.example.yml
-# edit KEYDROP_PUBLIC_URL and KEYDROP_TLS_HOSTS, then:
+# set image: to the $image you checked, edit KEYDROP_PUBLIC_URL and
+# KEYDROP_TLS_HOSTS, then:
 docker compose -f compose.example.yml up -d
 docker logs keydrop
 ```
+
+Pin the image by its digest in the compose file, so a restart always runs
+the image you checked:
+
+```yaml
+    image: ghcr.io/minituff/keydrop:1.2.3@sha256:…
+```
+
+The version before `@` is only for you to read; Docker uses the digest. To
+upgrade, check the new version the same way and put its digest there (see
+[Upgrading and rolling back](upgrading.md)).
 
 The log prints two things:
 
@@ -78,7 +115,9 @@ More on [what it protects](security.md#what-the-master-key-protects).
 | `KEYDROP_TRUSTED_PROXIES` | — | IPs/CIDRs allowed to set `X-Forwarded-For`, so login limits, allowed sources and pairing see the real client. List only the proxy itself: anything in these ranges can claim any address. |
 | `KEYDROP_RESET_ADMIN` | `false` | Reopen setup to replace the admin password and authenticator. **Remove it once setup is done, and restart:** while it's set, every restart reopens setup and logs a new setup code, so anyone who can read the log could replace the admin login. keydrop logs a warning while it's set. |
 | `KEYDROP_CLI_DIR` | `/cli` in the image | Where the CLI builds the server hands out live (`keydrop-<os>-<arch>.gz` plus `SHA256SUMS`). Unset outside the image: no downloads. |
-| `KEYDROP_ALERT_WEBHOOK` | — | URL that canary alerts (and refused renewal collects) are POSTed to as `{"content": "…"}` (Discord-compatible). Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
+| `KEYDROP_ALERT_WEBHOOK` | — | URL that alerts are POSTed to (Discord, Slack or ntfy; see `KEYDROP_ALERT_FORMAT`): canary touches, refused renewal collects and, when turned on in Settings, Inbox notices and expiry warnings. Sent in the background with a 5 s timeout. Alerts name the secret, token, address and time, never a value or token. The URL itself is a credential: it's never logged or shown, only where it posts. A webhook added in Settings is used instead. |
+| `KEYDROP_ALERT_INBOX` | `false` | The default for Inbox alerts, until you choose On or Off for them in Settings (that choice wins; Default there goes back to this). Inbox alerts also post a short notice to the alert webhook when something starts waiting for you: a machine asking to pair, an agent asking for a key or a new token, or a flag. One of each kind per agent (or per address, per /64 for IPv6, for pairing) every 10 minutes, with its own small rate limit that can't hold up canary alerts. Notices carry names and addresses only, plus a link when `KEYDROP_PUBLIC_URL` is set. Needs a webhook (here or in Settings). |
+| `KEYDROP_ALERT_FORMAT` | `auto` | The alert body, for whichever webhook is in use: `discord` (JSON `{"content": "…"}`, mentions off), `slack` (JSON `{"text": "…"}`), or `text` (the message as a plain-text body, which is what ntfy takes: `https://ntfy.example.com/your-topic`). `auto` uses `slack` for an `https://hooks.slack.com/…` URL and `discord` for anything else; it never guesses ntfy, so set `text` for that. Settings shows which one the webhook gets. Anything else stops the server at start. |
 
 CLI: `KEYDROP_URL`, `KEYDROP_TOKEN` / `KEYDROP_TOKEN_FILE`, `KEYDROP_TLS_PIN`
 override the files written by `keydrop pair` / `keydrop login`. A pin

@@ -90,12 +90,33 @@ the LAN or a VPN. Never expose keydrop to the internet. Ask which address
 agents will use to reach it (an IP such as `192.168.1.50`, and a DNS name
 if there is one).
 
-On that machine:
+Install a released version, never `latest`: the newest on
+https://github.com/Minituff/keydrop/releases unless the person wants
+another. Put it in `version` (without the `v`). On that machine, check the
+image before running it:
+
+```sh
+version=1.2.3
+docker pull "ghcr.io/minituff/keydrop:$version"
+image=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/minituff/keydrop:$version")
+gh attestation verify "oci://$image" --repo Minituff/keydrop \
+  --signer-workflow Minituff/keydrop/.github/workflows/release.yml \
+  --source-ref "refs/tags/v$version"
+echo "$image"
+```
+
+`gh attestation verify` checks that keydrop's release workflow built this
+exact image. If it fails, stop and tell the person. If `gh` isn't installed
+or signed in, give the person these commands to run instead; don't skip
+the check. `$image` is the image pinned by its digest
+(`ghcr.io/minituff/keydrop@sha256:…`), and the commands below use it; if
+your shell doesn't keep variables between commands, put the printed value
+in its place.
 
 ```sh
 mkdir keydrop && cd keydrop
 mkdir data && sudo chown 65532:65532 data
-if ( umask 077; set -C; docker run --rm ghcr.io/minituff/keydrop genkey > master.key ) && [ -s master.key ]; then
+if ( umask 077; set -C; docker run --rm "$image" genkey > master.key ) && [ -s master.key ]; then
   sudo chown 65532:65532 master.key && sudo chmod 400 master.key
 else
   echo "key generation failed or master.key already exists: STOP"
@@ -111,7 +132,8 @@ command failed, stop and tell the person; don't remove or replace the file
 yourself. Don't open or print that file (see step 3). keydrop runs as uid
 65532, so the file and `data/` belong to it.
 
-In `compose.example.yml`, set `KEYDROP_PUBLIC_URL` to the address the
+In `compose.example.yml`, set `image:` to `$image`, so every start runs
+the image you checked. Set `KEYDROP_PUBLIC_URL` to the address the
 person's browser will use (for example `https://192.168.1.50:8443`) and
 `KEYDROP_TLS_HOSTS` to every name and IP agents will use (for example
 `192.168.1.50`). Then:
@@ -251,7 +273,8 @@ values. An empty list is fine for a new install.
   your shell:
   `keydrop run -e GITHUB_PAT -- sh -c 'curl -H "Authorization: Bearer $GITHUB_PAT" https://api.github.com/user'`.
   `-e VAR=NAME` sets `$VAR` instead. If the value shows up in the output,
-  keydrop replaces it with `[keydrop:NAME]`.
+  keydrop replaces it with `[keydrop:NAME]`. For a command that reads a
+  key on stdin: `keydrop run --stdin NAME -- docker login -u USER --password-stdin HOST`.
 - `keydrop vars`, `keydrop get NAME`: settings that aren't secret
   (variables), such as URLs and account IDs, with their values.
 - `keydrop request NAME --desc "what it's for, which scopes, how long it should last"`:
@@ -276,7 +299,7 @@ values. An empty list is fine for a new install.
 Rules:
 
 - Values reach a command only through `keydrop run`, in that command's
-  environment. Never run `keydrop get --raw`, `--no-mask`, `env`,
+  environment or stdin. Never run `keydrop get --raw`, `--no-mask`, `env`,
   `printenv`, or anything else that prints a value.
 - `[keydrop:NAME]` in output is the mask working. Don't try to recover
   the value.
@@ -307,6 +330,8 @@ never need to see them.
   shell). `-e VAR=NAME` sets it under another name.
 - `keydrop secrets` / `keydrop info NAME` show what exists and what each key
   is for. Follow the description: it says what to do with the key.
+- A key marked "limited to other agents" isn't yours to use: don't try to
+  get it another way; tell the user if the task needs it.
 - Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
   lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
   takes them like secrets.
@@ -322,6 +347,9 @@ never need to see them.
   then retry); that only replaces keydrop's own binary, from the paired
   server, so tell the user it ran. With self-upgrade off it says not to
   update it yourself: don't, by any route, and tell the user instead.
+- If a keydrop command fails and its message doesn't say what to do, run
+  `keydrop doctor` and follow what it says. Never work around it (no
+  disabling the pin, no pasted tokens).
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.
@@ -330,18 +358,30 @@ never need to see them.
 Recommended: run `keydrop history --since 72h --quiet` at the start of
 every session. It prints the keys created, replaced or marked in the last
 three days, and nothing when nothing changed, so each session starts
-knowing what changed. In Claude Code, ask the person before adding this
-hook to `.claude/settings.json`:
+knowing what changed. In Claude Code, also run `keydrop guard` before each
+shell command: it blocks one that would print a value (`keydrop get
+--raw`, `--no-mask`, `keydrop run -- env`) and says what to do instead. It
+needs no network or token. Ask the person before adding these hooks to
+`.claude/settings.json`:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "keydrop guard" } ] }
     ]
   }
 }
 ```
+
+Before adding the guard, check that this CLI has it: `keydrop guard
+--command ls` must print nothing and exit 0. A keydrop from before the
+guard exits 2 there, and as a hook that would block every command, so
+leave the guard out until `keydrop upgrade`. If `keydrop` isn't on the
+`PATH` Claude Code runs hooks with, use its full path in both commands.
 
 Several agents running as the same user on one machine share its token.
 To tell them apart in keydrop's log, each can set its own label, for
@@ -352,7 +392,7 @@ environment. It's a label, not a permission.
 
 Tell the person what's set up: the server's address, the name, namespaces
 and permission they approved for you, and whether you added the
-instructions and the session hook.
+instructions and the hooks.
 <!-- END agent setup -->
 
 ## Doing it by hand
@@ -365,37 +405,113 @@ step 9 above into its `CLAUDE.md` or `AGENTS.md`.
 
 ## Claude Code hooks
 
-The setup above suggests a `SessionStart` hook: whatever `keydrop history`
-prints becomes context at the start of the session. A `PreToolUse` guard is
-worth adding as well, under `hooks` in `.claude/settings.json`:
+The setup above suggests two hooks. Together, in `.claude/settings.json`
+(the same file is in the repository as
+[`examples/claude-code/settings.json`](https://github.com/Minituff/keydrop/blob/main/examples/claude-code/settings.json)):
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [ { "type": "command", "command": "keydrop-guard" } ]
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "keydrop guard" } ] }
+    ]
+  }
 }
 ```
 
-- **PreToolUse guard:** a small script that blocks commands that would print
-  a value. For example, `keydrop-guard`:
+If `keydrop` isn't on the `PATH` Claude Code runs hooks with, use its full
+path, such as `~/.local/bin/keydrop`. Check that your CLI has the guard
+first: `keydrop guard --command ls` must exit 0. A CLI from before it exits
+2 ("unknown command"), which as a hook blocks every shell command; run
+`keydrop upgrade` first.
 
-  ```sh
-  #!/bin/sh
-  # Reads the tool call JSON on stdin; exit 2 blocks it and shows stderr to Claude.
-  cmd=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["tool_input"].get("command",""))')
-  case "$cmd" in
-    *"keydrop get"*"--raw"*|*"keydrop"*"--no-mask"*)
-      echo "Blocked: this would print a secret value. Use keydrop run instead." >&2; exit 2 ;;
-  esac
-  exit 0
-  ```
+- **SessionStart:** whatever `keydrop history` prints becomes context at
+  the start of the session: what changed in the last three days, or
+  nothing.
+- **PreToolUse guard:** `keydrop guard` reads the tool call Claude Code
+  sends on stdin and blocks a shell command that would print a value. Claude
+  sees a one-line reason that says what to do instead (it never repeats the
+  command, which could hold a pasted value). It needs no token, config or
+  network, so it works on a machine that isn't paired yet, and it comes
+  with the CLI, so `keydrop upgrade` keeps it current. It blocks:
+    - `keydrop get … --raw`, in any spelling the CLI accepts (`-raw`,
+      `--raw=true`);
+    - `--no-mask` among keydrop's own flags (for `run`, before the command
+      it runs, so `run -e X -- grep --no-mask` passes);
+    - `keydrop run … -- env` (with nothing to run after it) and
+      `keydrop run … -- printenv`, which print what run gave the command.
+
+    It finds these when keydrop is called by name or path (`./keydrop`,
+    `~/.local/bin/keydrop`, `keydrop.exe`), after `VAR=x` assignments and
+    `sudo`, `env`, `command`, `exec`, `nohup` or `time`, and anywhere in a
+    compound command: after `&&`, `||`, `;`, `|`, `&`, a newline or a
+    parenthesis, inside `$(…)` or backticks, and in a `sh -c`, `bash -c`,
+    `zsh -c` or `dash -c` string (also as the command `keydrop run` runs),
+    up to four levels deep. A mention in an argument passes: `echo "never
+    use keydrop get --raw"`, `grep -- --no-mask docs/`, `git commit -m
+    '…'`, `keydrop note X '…'`.
+
+    It reads the command with a small tokeniser, not a shell, so it doesn't
+    catch:
+    - keydrop through a variable or under another name (`$KD get X
+      --raw`), or after a shell keyword (`if`, `!`, `{`, `do`) or a wrapper
+      not listed above (`eval`, `xargs`, `ssh`, `doas`, `timeout`, `nice`);
+    - a wrapper option that takes a value (`sudo -u bob keydrop …`), or a
+      shell option that does before `-c` (`bash -o pipefail -c '…'`);
+    - a heredoc or here-string fed to a shell, or a script file;
+    - other ways of printing a value under `keydrop run`: `echo $NAME`,
+      `printf`, `set`, `export -p`, `env >file`, `python -c
+      'print(os.environ)'`;
+    - anything nested more than four levels deep.
+
+    And it can block too much: it doesn't understand heredocs, so a
+    heredoc line that is a `keydrop get … --raw` command, or has one in
+    backticks or `$(…)`, is blocked even when the heredoc is quoted and
+    nothing in it runs (for example a commit message written with
+    `cat <<'EOF'`). Reword it, or write the text to a file first.
+
+    Input that isn't a Bash tool call, or that it can't read, is let
+    through, so a broken guard never stops every command. Other agents can
+    call it as `keydrop guard --command 'CMD'`: exit 2 means blocked, with
+    the reason on stderr.
 
 The guard is a guard-rail for honest mistakes, not a security boundary (see
-the [threat model](security.md)).
+the [threat model](security.md)): an agent set on getting a value can
+write a script that prints it. Masking in `keydrop run` still applies to
+whatever the guard lets through.
+
+## MCP
+
+The CLI does everything an agent needs; MCP is optional. `keydrop mcp` is
+an [MCP](https://modelcontextprotocol.io) server that makes listing,
+requesting and checking keys discoverable as tools: `keydrop_secrets`,
+`keydrop_vars`, `keydrop_info`, `keydrop_history`, `keydrop_request` and
+`keydrop_whoami`. It uses the machine's pairing, so pair first.
+
+No tool returns a secret's value: a tool result goes into the transcript.
+The agent still uses a key with `keydrop run -e NAME -- CMD` in the shell.
+Variables do come with their values, as in `keydrop vars`.
+
+To register it in Claude Code for one project, put this in the project's
+`.mcp.json` (the same file is in the repository as
+[`examples/claude-code/mcp.json`](https://github.com/Minituff/keydrop/blob/main/examples/claude-code/mcp.json)):
+
+```json
+{
+  "mcpServers": {
+    "keydrop": { "command": "keydrop", "args": ["mcp"] }
+  }
+}
+```
+
+If `keydrop` isn't on the `PATH` Claude Code starts it with, use its full
+path, such as `~/.local/bin/keydrop`. To label its calls in the audit
+log, add `"env": {"KEYDROP_AGENT": "claude"}`. Other MCP clients take the
+same command and argument. Changing state (`flag`, `status`, `note`) and
+waiting (`wait`) stay CLI commands for now.
 
 ## Health checks
 

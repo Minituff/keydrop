@@ -27,9 +27,12 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
                                          secrets masked (-e NAME sets $NAME; VAR=REF renames;
                                          --no-mask turns masking off, and is logged)
+  run --stdin REF [-e REF]... -- CMD    also: pipe one value to CMD's stdin, exactly, no
+                                         newline (docker login --password-stdin)
   secrets [--new] [--pending]           list secrets this token can see (no values;
                                          --new: changed since this token last read it),
-                                         under [namespace: group] headings
+                                         under [namespace: group] headings; a key the admin
+                                         limited to other agents says so, and run refuses it
   vars [--new]                          list variables (non-secret settings) with values
   info REF                              show one entry's details (a secret's value never)
   history [NAME] [--since 72h] [--quiet]
@@ -65,6 +68,10 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   login --url URL [--pin sha256:…]      save the server URL and a pasted token
   whoami                                show the token's name, namespaces, permission and
                                          expiry
+  doctor                                check this machine's setup (config, server, certificate
+                                         pin, token, access, version, clock) and say what to do
+                                         about each problem; changes nothing, reads no secret.
+                                         Exit 1 if a check failed
   renew [--wait] [--timeout 1h]         ask the admin to renew this token before (or up to
                                          30 days after) it expires; --wait waits for the
                                          approval and saves the new token over the token file.
@@ -73,6 +80,14 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          (checked against its SHA256SUMS; the old binary is
                                          kept as .<version>.bak). Run it when keydrop says
                                          the server is a different build
+  guard [--command 'CMD']               a Claude Code PreToolUse hook: reads the hook's JSON
+                                         on stdin and exits 2 (blocking the call) when a
+                                         shell command would print a value: get --raw,
+                                         --no-mask, run -- env or printenv. Needs no token
+                                         or network; --command checks CMD instead
+  mcp                                   an MCP server on stdin/stdout (for an agent's MCP
+                                         config): tools that list keys, show details and
+                                         history, and request keys. Never a secret's value
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
@@ -149,10 +164,16 @@ func main() {
 		err = cmdPair(args)
 	case "whoami":
 		err = cmdWhoami(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	case "renew":
 		err = cmdRenew(args)
 	case "upgrade":
 		err = cmdUpgrade(args)
+	case "guard":
+		err = cmdGuard(args)
+	case "mcp":
+		err = cmdMCP(args)
 	case "version", "--version", "-v":
 		fmt.Println("keydrop", version)
 	case "help", "--help", "-h":

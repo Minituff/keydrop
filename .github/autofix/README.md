@@ -65,7 +65,7 @@ What each is for: `go.dev` lists Go's releases with their sha256 and
 `dl.google.com` serves them (the setup script); `raw.githubusercontent.com`
 serves `go.mod` when the setup runs before the repository is cloned; `github.com`
 and `api.github.com` are git and `gh api`; PyPI is for running the `docs`
-workflow's `pip install mkdocs-material` and `mkdocs build`; the Ubuntu hosts
+workflow's `pip install` of the pinned docs tools and `mkdocs build`; the Ubuntu hosts
 are for `apt-get` when a tool is missing from the image.
 
 There's no Go module proxy or checksum database on the list: keydrop has no Go

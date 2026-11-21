@@ -227,6 +227,7 @@ func (s *Server) apiPairStart(w http.ResponseWriter, r *http.Request) {
 	s.pairMu.Unlock()
 
 	s.noisyEvent(r, "unknown", "pair.request", displayCode(p.Code), "claims host "+p.Host+", user "+p.User)
+	s.noticePairing(ip, p.ID)
 	out := map[string]any{"code": displayCode(p.Code), "path": "/pair/" + p.ID, "poll": poll, "expires_in": int(pairTTL.Seconds())}
 	if s.cfg.PublicURL != "" && !s.cfg.PublicURLGuess {
 		out["link"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/pair/" + p.ID

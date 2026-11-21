@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/minituff/keydrop/internal/audit"
 )
@@ -161,5 +162,27 @@ func TestDiscordWebhookDescribe(t *testing.T) {
 	}
 	if name, _, _ := parseDiscordWebhook([]byte(`{"name":"` + strings.Repeat("é", 200) + `"}`)); len([]rune(name)) != 81 {
 		t.Fatalf("name not capped: %d", len([]rune(name)))
+	}
+}
+
+// The sender sends the summary of what was held back on its own ticker,
+// with nobody calling flushHeld.
+func TestAlerterFlushesOnTicker(t *testing.T) {
+	ts, got := hookServer(t, http.StatusNoContent)
+	a := newAlerter(ts.URL)
+	a.flushEvery = 10 * time.Millisecond
+	a.mu.Lock()
+	a.held = 3
+	a.mu.Unlock()
+	a.send("keydrop: canary `lab/BAIT` was read.") // starts the sender
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(strings.Join(got(), "\n"), "3 more alerts were held back") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no summary from the ticker: %q", got())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if a := newAlerter(ts.URL); a.flushEvery != alertRefill {
+		t.Fatalf("production interval %v", a.flushEvery)
 	}
 }

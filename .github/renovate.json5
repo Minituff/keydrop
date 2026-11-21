@@ -20,6 +20,27 @@
   "platformAutomerge": false,
   "ignoreTests": false,
   "separateMinorPatch": true,
+  // BuildKit and the SBOM scanner are images named in action inputs
+  // (driver-opts, sbom), which no default manager reads. Version and digest
+  // move together, like the base images in the Dockerfile.
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "BuildKit and SBOM scanner images in the workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "image=(?<depName>moby/buildkit):(?<currentValue>v[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "generator=(?<depName>docker/buildkit-syft-scanner):(?<currentValue>[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  // The docs site's tools: docs-requirements.in names them, and
+  // docs-requirements.txt pins them and their dependencies with hashes.
+  // Renovate updates the .in and reruns the command at the top of the .txt.
+  "pip-compile": {
+    "managerFilePatterns": ["/^\\.github/docs-requirements\\.txt$/"]
+  },
   "packageRules": [
     {
       // go.mod and the Dockerfile must move together: scripts/go-version-check.sh
@@ -76,11 +97,41 @@
       "minimumReleaseAge": "7 days"
     },
     {
-      // Workflows aren't in the image, so these never cut a release.
-      "description": "GitHub Actions: low-risk updates merge by themselves",
+      // Workflows aren't in the image, so these never cut a release. Not
+      // digest: actions are pinned by SHA to a version tag, so a new digest
+      // for the same version means upstream moved the tag. A person checks
+      // that before it runs with the release job's rights. The actions share
+      // one PR, and it automerges only if every update in it may.
+      "description": "GitHub Actions: minor and patch merge by themselves; a moved tag (digest only) waits for review",
       "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
+    },
+    {
+      // These run in the job that publishes and signs the image, so a person
+      // looks at every update, after the same week's wait as the actions.
+      "description": "BuildKit and SBOM scanner: reviewed by hand, minimum seven days old",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["moby/buildkit", "docker/buildkit-syft-scanner"],
+      "groupName": "buildkit",
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      // The output file is pip-compile's; reading it as a plain requirements
+      // file too would open a second PR for every pin in it.
+      "description": "Docs tools: only through pip-compile",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": [".github/docs-requirements.txt"],
+      "enabled": false
+    },
+    {
+      // The built site is published, install commands included, so a
+      // person reviews these, after the same week's wait as the actions.
+      "description": "Docs site tools: reviewed by hand, minimum seven days old",
+      "matchManagers": ["pip-compile"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
     }
   ]
 }

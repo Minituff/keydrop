@@ -7,7 +7,7 @@
 //	go test -tags e2e ./e2e/...
 //
 // It builds the binary once, and for the upgrade and rollback tests the
-// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit, v3RollbackCommit, v4RollbackCommit and v5RollbackCommit (needs git history;
+// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit, v3RollbackCommit, v4RollbackCommit, v5RollbackCommit and v6RollbackCommit (needs git history;
 // skipped in a shallow clone).
 package e2e
 
@@ -49,6 +49,13 @@ const v4RollbackCommit = "631f015"
 // v5RollbackCommit is the release before an agent could be allowed to
 // upgrade its own CLI. It opens data with that on, ignoring it.
 const v5RollbackCommit = "8acec14"
+
+// v6RollbackCommit is the release before Inbox alerts could be turned on
+// or off in Settings: the code released as v0.1.3 (the tag is on a
+// Dockerfile-only commit on main after it, not on this history). It checks
+// mac6 over everything it parses, and opens data with the setting,
+// ignoring it.
+const v6RollbackCommit = "903db72"
 
 var (
 	binary   string // the keydrop under test, built by TestMain
@@ -295,6 +302,25 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("env: secret masked %v, variable renamed %v", sawSecret, sawVar)
 		}
 		noLeak(t, "env", r.all(), secret)
+
+		// --stdin: the child reads exactly the value (no newline, none of
+		// keydrop's own stdin), it's masked, and the read is logged.
+		before, _ := in.auditLines(t)
+		r = g.ok(t, "keydrop's own stdin\n", "run", "--stdin", "API_TOKEN", "--", "sh", "-c",
+			`v=$(cat; echo .); v=${v%.}; printf '%s' "$v" | sha256sum; printf '%s\n' "$v"; printf '%s' "$v" | base64; printf '%s' "${API_TOKEN-unset}"`)
+		noLeak(t, "run --stdin", r.all(), secret)
+		want := sha(secret) + "  -\n[keydrop:API_TOKEN]\n"
+		if !strings.HasPrefix(r.stdout, want) || !strings.HasSuffix(r.stdout, "unset") || !strings.Contains(r.stdout, "[keydrop:API_TOKEN]\nunset") {
+			t.Fatalf("run --stdin: %q", r.stdout)
+		}
+		after, _ := in.auditLines(t)
+		if added := strings.TrimPrefix(after, before); !strings.Contains(added, `"secret.read"`) || !strings.Contains(added, "e2e/API_TOKEN") || !strings.Contains(added, "run sh") {
+			t.Fatalf("run --stdin's read isn't in the audit log:\n%s", added)
+		}
+		// A command that exits without reading stdin still passes its code.
+		if r := g.run(t, "", "run", "--stdin", "API_TOKEN", "--", "sh", "-c", "exit 9"); r.code != 9 {
+			t.Fatalf("run --stdin, stdin unread: exit %d, %q", r.code, r.stderr)
+		}
 
 		if got := agent1.valueHash(t, "API_TOKEN"); got != sha(secret) {
 			t.Fatal("the child got a different value than was stored")

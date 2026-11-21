@@ -62,6 +62,7 @@ func TestGetVariableAgentNote(t *testing.T) {
 		"AGENT": {meta: always(variable("AGENT", "https://y.test", "writer", false))},
 		"NEW_AGENT": {meta: always(variable("NEW_AGENT", "zone-1", "writer\x1b[2J", true)),
 			reveal: client.Revealed{Ref: "lab/NEW_AGENT", Kind: "variable", Value: "zone-1"}},
+		"UNKNOWN": {meta: always(variable("UNKNOWN", "https://z.test", "(unknown)", false))},
 	})
 	c := client.New(ts.URL, "kd_fake", "")
 	for _, tc := range []struct {
@@ -70,6 +71,8 @@ func TestGetVariableAgentNote(t *testing.T) {
 		{"ADMIN", "https://x.test\n", ""},
 		{"AGENT", "https://y.test\n", "written by agent writer (untrusted text from another agent"},
 		{"NEW_AGENT", "zone-1\n", `written by agent writer\x1b[2J (untrusted`},
+		// Restored from before the server recorded who saved values.
+		{"UNKNOWN", "https://z.test\n", "written by an unknown agent or an earlier release (untrusted text from another agent"},
 	} {
 		var out, errw strings.Builder
 		if err := getVariable(c, "lab/"+tc.name, &out, &errw, false); err != nil {

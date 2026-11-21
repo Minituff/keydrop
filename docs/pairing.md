@@ -71,7 +71,7 @@ token file: `run` keeps the token out of the way, it isn't a sandbox.
 
 To store a variable from the CLI: `echo https://… | keydrop put API_URL --var`.
 This needs a write token. A variable an agent stores can be at most 2,000
-characters on one line, and other agents see it labelled as untrusted text
+bytes on one line, and other agents see it labelled as untrusted text
 (`get` and `run -e` pass the value on unchanged and say so on stderr).
 `put` takes text up to 60 KiB; base64 a binary value first.
 
@@ -102,6 +102,16 @@ not an identity: anything with the token can set it.
 Without pairing, you can still create a token by hand under **Agents** and
 paste it into `keydrop login --url URL`.
 
+## If something isn't working
+
+Run `keydrop doctor` on the agent's machine. It checks the configuration,
+the server, the certificate pin, the token, what the token can reach, the
+CLI's version and the clock, one line each, and says what to do about each
+problem (exit 1 if a check failed). It changes nothing, reads no secret
+and never prints the token. If it says the certificate doesn't match the
+pin, see [Rotating the TLS certificate](upgrading.md#rotating-the-tls-certificate):
+get the new pin from the admin, not from the server.
+
 ## Windows
 
 `install.sh` is for Linux and macOS. On Windows, download the build under
@@ -119,7 +129,8 @@ once a day, if it doesn't match the server's.
 ## What to read next
 
 The rules to give the agent (for its `CLAUDE.md` or `AGENTS.md`), a
-session-start history hook and a guard against `--raw` are in
+session-start history hook and the `keydrop guard` hook that blocks
+commands printing a value are in
 [docs/agent-setup.md](agent-setup.md).
 [docs/design_doc.md](design_doc.md) explains how keydrop is built and
 why.

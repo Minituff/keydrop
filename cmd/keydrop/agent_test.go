@@ -229,6 +229,13 @@ func TestPrintSecretAgentVariable(t *testing.T) {
 	if strings.Contains(got, "lab/URL=") || !strings.Contains(got, "untrusted text from another agent") || !strings.Contains(got, "      | https://x.test/\\x1b[31m") {
 		t.Fatalf("got %q", got)
 	}
+	// One the server can't attribute is labelled the same way, without
+	// reading like an agent's name.
+	b.Reset()
+	printSecret(&b, client.Secret{Ref: "lab/URL", HasValue: true, Value: &v, ValueBy: "(unknown)"}, false)
+	if got := b.String(); strings.Contains(got, "lab/URL=") || !strings.Contains(got, "    value written by an unknown agent or an earlier release (untrusted text from another agent):\n      | https://x.test/") {
+		t.Fatalf("unknown writer: %q", got)
+	}
 	b.Reset()
 	plain := "https://x.test"
 	printSecret(&b, client.Secret{Ref: "lab/URL", HasValue: true, Value: &plain}, false)

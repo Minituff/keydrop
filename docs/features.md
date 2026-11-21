@@ -7,7 +7,18 @@ Everything keydrop does. For the short version, see the [overview](index.md).
 Paste a value with a description of what it's for. Later you can:
 
 - view it (press **Show value**; every view is logged),
-- replace it, roll back to the previous value, or delete it.
+- replace it, restore one of its last five values, or delete it.
+
+The secret page lists the older values, newest first: when each was
+replaced, who saved it (you or an agent) and its kind, never the value.
+**Restore** makes one current again, and the current value moves into the
+list, so restoring loses nothing. To look at an old value, restore it and
+press **Show value**. Agents can't see the list or restore from it. When
+an agent saves a value, the list keeps only that agent's newest older
+value (and each other agent's), so an agent that replaces a key over and
+over takes one place in the list and your values stay. Several agents
+with write permission working together can still push your oldest values
+out, one place each, so keep backups of `data/`.
 
 Lists show names and descriptions only, never values. The page is built for
 phones and uses no JavaScript. **Settings → Appearance** picks System, Light
@@ -42,6 +53,21 @@ Each token has a permission:
   changed later on the **Agents** page.
 - **Revoking.** Revoking a token clears what it left pending. Its open flags
   stay, marked *token since revoked*.
+- **Limiting one key to some agents.** On a secret's page, **Agents that may
+  use it** chooses between *any agent with the namespace* (the default) and
+  *only* the agents you tick. The others still see the key's name and
+  details, and can still flag it or report it leaked, expired or revoked,
+  but can't read, replace or acknowledge its value, or mark it replaced by
+  another key: `keydrop run` and `get` are refused
+  with a message naming the agent, `keydrop secrets` marks it *limited to
+  other agents*, and every refused read is in the audit log. So one
+  sensitive key (a registrar key, a root cloud credential) can share a
+  namespace with keys every agent uses. Ticking none means no agent may use
+  it. An agent that's revoked, paired again in its place, or loses the
+  namespace comes off the list, and isn't put back on its own. Only secrets
+  can be limited, not variables. The Secrets page marks limited keys. Once
+  you limit a key, going back to an older release needs `keydrop
+  downgrade-data` first ([Upgrading](upgrading.md#rolling-back-after-limiting-a-key)).
 
 ## Pairing
 
@@ -54,7 +80,28 @@ directly, so you never copy a token around.
 - **`keydrop run -e NAME`** puts a secret into one command's environment under
   its own name, and masks it in the command's output. Names are env-var style
   (`CLOUDFLARE_API_TOKEN`), so nothing needs translating.
+- **`keydrop run --stdin NAME`** pipes one value to the command's stdin
+  instead, exactly as stored with no newline added, for tools that read a
+  credential there (`docker login --password-stdin`, `gh auth login
+  --with-token`). It's masked and logged the same way, and combines with `-e`.
 - **`secrets`, `info` and `history`** show descriptions, never values.
+- **`keydrop guard`** is a Claude Code hook that blocks a shell command
+  that would print a value (`keydrop get --raw`, `--no-mask`, `keydrop run
+  -- env`) before it runs, and tells the agent what to do instead. It needs
+  no network or token. A guard-rail for mistakes, not a security boundary:
+  see [Claude Code hooks](agent-setup.md#claude-code-hooks).
+- **`keydrop mcp`** is an optional [MCP](https://modelcontextprotocol.io)
+  server, so an agent can list keys, read their details and history, and
+  request new ones through tools instead of the shell. It has no tool that
+  returns a secret's value: those would land in the transcript. The agent
+  still uses a key with `keydrop run`. See
+  [MCP](agent-setup.md#mcp).
+- **`keydrop doctor`** checks a machine's setup when something isn't
+  working: the config, whether the server answers, the certificate pin,
+  whether the token is accepted (or expired, renewable, refused from this
+  address), what it can reach, the CLI's version and the clock. One line
+  per check, with what to do about each problem. It changes nothing and
+  reads no secret.
 - **It stays current.** The server hands out its own CLI build. When an
   agent's CLI is a different build, keydrop tells it what to do, at most once a
   day. With **Allow self-upgrade** on for that agent (it's off by default),
@@ -120,9 +167,9 @@ So one agent can't flood you or the server:
 
 | What | Limit |
 |---|---|
-| A flag's reason or link | 500 characters, links http(s) only |
-| A note | 2,000 characters |
-| A variable an agent stores | 2,000 characters, on one line |
+| A flag's reason or link | 500 bytes, links http(s) only |
+| A note | 2,000 bytes |
+| A variable an agent stores | 2,000 bytes, on one line |
 | Open flags | One per token per key, and 20 per token |
 | Open requests | 20 per token |
 | Flags, statuses and notes | 60 per token an hour |
@@ -138,6 +185,22 @@ events first.
 
 - **Expiry dates.** `keydrop expiring --check` exits non-zero when keys are
   about to expire, for health checks.
+- **Expiry alerts.** In Settings, "Warn me before a key expires" (Off, 7, 14
+  or 30 days; off by default) has the alert webhook tell you ahead of time:
+  one message when keys come within that many days of their date, and one
+  more when they pass it, for example ``keydrop: 2 keys expire within 14
+  days: `lab/CF_TOKEN` (in 3 days), `lab/GH_PAT` (in 9 days). Renew them:
+  https://secrets.example.com/``. keydrop looks about once an hour and puts
+  every key that's newly due in one message, naming at most 8. It covers
+  secrets and variables with a value; not requests still waiting for one,
+  and not canaries. It names keys and dates only, never a value or a
+  description, and needs a webhook (Settings or `KEYDROP_ALERT_WEBHOOK`).
+  If the webhook doesn't take the message, the next check sends it again.
+  Changing a key's date warns again for the new one. keydrop keeps what it
+  has announced in memory, so after a restart it announces the keys already
+  in the window once more. An agent that can write a key can also set or
+  clear its date, so it can stop the warning for that key, or make it come
+  again; the write is in the history.
 - **Rotation schedule.** Each token is replaced on a schedule you pick when you
   approve or make it ("New token every"): 30, 90 (the default), 180 or 365
   days, or never.
@@ -170,14 +233,46 @@ you add one, or press **Make it a canary** on a secret's page.
 - **You find out.** The log marks it *canary*, and the **Inbox** shows one
   entry per canary and token until you dismiss it.
 - **Alerts.** With an alert webhook set, keydrop posts an alert, rate-limited
-  so a burst can't flood the channel. Add a Discord webhook URL in
-  **Settings** (it's stored encrypted and never shown again), or set
+  so a burst can't flood the channel. Add a Discord, Slack or ntfy webhook
+  URL in **Settings** (it's stored encrypted and never shown again), or set
   `KEYDROP_ALERT_WEBHOOK`. One added in Settings wins, and removing it falls
   back to the variable. **Send test alert** says whether the webhook accepted
   it.
+    - Discord and Slack (`https://hooks.slack.com/services/…`) URLs work as
+      they are.
+    - ntfy: use the topic's URL (`https://ntfy.example.com/keydrop`) and set
+      `KEYDROP_ALERT_FORMAT=text`, which sends the alert as plain text.
 - **Revoking on touch.** Settings can also revoke a token that reads a canary.
   It's off by default, because the revocation tells whoever holds the token
   which secret was the canary.
+
+## Inbox alerts
+
+An agent that asks for something waits for you, but nothing tells you it's
+asking. Turn on **Inbox alerts** in Settings and the alert webhook also
+gets a short notice when a machine asks to pair, an agent asks for a key
+(`keydrop request`) or a new token, or an agent flags a key. For example: ``keydrop:
+`deploy-bot` is asking for `lab/CLOUDFLARE_TOKEN`. Fill it in:
+https://secrets.example.com/inbox``.
+
+- **Off by default,** and it needs an alert webhook (Settings or
+  `KEYDROP_ALERT_WEBHOOK`). Settings has On, Off and Default; Default
+  follows `KEYDROP_ALERT_INBOX` in keydrop's container, so you can also
+  turn it on there. Once you choose On or Off in Settings, that wins.
+- **Quiet:** one notice of each kind (request, renewal, flag) per agent
+  every 10 minutes, and one per address (per /64 for IPv6) for pairing; the Inbox shows the rest. Notices have their own small rate limit,
+  separate from canary alerts, and wait behind them, so a flood of pairing
+  requests can't use up or queue ahead of a canary alert; one is sent as
+  soon as the message being posted when it arrives is done (a few seconds,
+  longer if the webhook asks keydrop to slow down). Pairing notices, which anyone on your network can cause,
+  have a smaller one of their own again, so they can't crowd out your
+  agents' requests and flags either. What's over a limit comes later as
+  one line saying how many more things are waiting.
+- **Names only:** the agent's name, the key's name, the address. Never a
+  value, a token, or anything an agent wrote (a description, a flag's
+  reason). A pairing notice doesn't carry the code: check it on the page
+  against the agent's terminal. The link is there only when
+  `KEYDROP_PUBLIC_URL` is set, and it opens a page that needs you to log in.
 
 ## Duplicate values
 

@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "keydrop": { "command": "keydrop", "args": ["mcp"] }
+  }
+}

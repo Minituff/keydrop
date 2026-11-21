@@ -127,13 +127,12 @@ func (a *alerter) test(content string) error {
 		return errors.New("no webhook is configured")
 	}
 	a.mu.Lock()
-	ok := a.take(a.now())
+	ok := a.budget.take(a.now())
 	a.mu.Unlock()
 	if !ok {
 		return errAlertBudget
 	}
-	body, _ := json.Marshal(map[string]any{"content": content, "allowed_mentions": map[string]any{"parse": []string{}}})
-	_, err := a.postOnce(body)
+	_, err := a.postOnce(content)
 	return err
 }
 

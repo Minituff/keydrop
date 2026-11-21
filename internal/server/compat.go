@@ -18,9 +18,11 @@ import (
 //     cliLevelCommits in e2e/compat_test.go, which runs the oldest CLI at
 //     MinCLILevel against this server.
 //
-// Leave both alone for UI-only or server-internal changes.
+// Leave both alone for UI-only or server-internal changes. Any agent API
+// change also goes in docs/openapi.json, whose info.version is APILevel
+// (TestOpenAPIDocument).
 const (
-	APILevel    = 3 // 3: value_by on variables an agent wrote
+	APILevel    = 4 // 4: usable:false on keys limited to other agents
 	MinCLILevel = 1
 )
 

@@ -1,6 +1,7 @@
 # Cuts a patch release when Renovate merges something that changes what
 # ships. Renovate puts [bump version] in those commits (.github/renovate.json5);
-# anything else on main waits for a tag from the maintainer.
+# anything else on main waits for a tag from the maintainer, including a
+# Renovate PR merged by hand: run release.yml with the next tag for that.
 name: bump-version
 on:
   push:
@@ -11,11 +12,22 @@ permissions: {}
 concurrency:
   group: bump-version
   cancel-in-progress: false
+# shell: bash is bash -eo pipefail; a run: step without it has no
+# pipefail, so a pipeline's status would be only its last command's.
+defaults:
+  run:
+    shell: bash
 jobs:
   bump:
+    # Only a push Renovate made: it merges its own PRs (automergeType pr,
+    # platformAutomerge off), so the push to main is by renovate[bot]. That's
+    # the account that authenticated the push; a commit's author and message
+    # are whatever its writer typed, so the marker alone proves nothing.
     # Any commit in the push: a merge commit's own message doesn't carry the
     # marker from the commit it merged.
-    if: contains(join(github.event.commits.*.message, ' '), '[bump version]')
+    if: >-
+      github.actor == 'renovate[bot]' &&
+      contains(join(github.event.commits.*.message, ' '), '[bump version]')
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the tag

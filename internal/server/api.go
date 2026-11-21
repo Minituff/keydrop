@@ -48,9 +48,15 @@ type APISecret struct {
 	// Group is the group the admin put the key in, or its auto group (by
 	// name prefix). Absent: ungrouped.
 	Group *APIGroup `json:"group,omitempty"`
-	// ValueBy names the agent that wrote a variable's value. That value is
-	// text from another agent, unapproved, and treated as untrusted.
+	// ValueBy names the agent that wrote a variable's value, or is
+	// store.UnknownAuthor when nobody recorded who did. Either way that
+	// value is agent text, unapproved, and treated as untrusted. The new
+	// value didn't raise APILevel: every CLI quotes any value_by already.
 	ValueBy string `json:"value_by,omitempty"`
+	// Usable is false, and only present, when the admin limited the key to
+	// other agents: this token sees it but can't read, replace or ack it.
+	// Absent for every other key, so those answers are as before.
+	Usable *bool `json:"usable,omitempty"`
 }
 
 // APIGroup is an entry's group as agents see it.
@@ -104,6 +110,9 @@ func (s *Server) toAPI(sec store.Secret, tok string, assign map[string]store.Gro
 	// read" (as a canary usually is), isn't this agent's to know.
 	if sec.LastReadBy == tok && tok != "" {
 		a.LastReadAt, a.LastReadBy = sec.LastReadAt, sec.LastReadBy
+	}
+	if !sec.UsableBy(tok) {
+		a.Usable = new(bool)
 	}
 	if e := sec.Ext; e != nil {
 		a.CreatedBy, a.Status, a.DescriptionBy = e.CreatedBy, e.Status, e.DescriptionBy
@@ -300,20 +309,28 @@ func (s *Server) apiReveal(w http.ResponseWriter, r *http.Request, t store.Token
 	if !s.revealAllowed(w, r, t, sec, "reveal") {
 		return
 	}
+	// The purpose is the agent's word, and the Log shows it to the admin.
+	purpose := store.AgentLine(r.URL.Query().Get("purpose"))
+	if purpose != "" {
+		purpose = "agent says: " + purpose
+	}
 	// Reading the value is what makes it no longer new to this token.
 	val, variable, hit, err := s.store.AgentReveal(sec.Namespace, sec.Name, t.Name, s.clientIP(r))
 	switch {
+	case errors.Is(err, store.ErrLimited):
+		// The same for a canary (which is also a touch) as for any key.
+		if hit != nil {
+			s.canaryTouched(r, *hit)
+		}
+		s.event(r, actor(t), "secret.read.denied", sec.Ref(), strings.TrimSuffix("limited to other agents; "+purpose, "; "))
+		limitedError(w, t, sec.Ref())
+		return
 	case errors.Is(err, store.ErrNoValue):
 		apiError(w, http.StatusConflict, sec.Ref()+" has no value yet")
 		return
 	case err != nil:
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	// The purpose is the agent's word, and the Log shows it to the admin.
-	purpose := store.AgentLine(r.URL.Query().Get("purpose"))
-	if purpose != "" {
-		purpose = "agent says: " + purpose
 	}
 	kind := "variable"
 	var unlogged error
@@ -349,7 +366,14 @@ func (s *Server) apiAck(w http.ResponseWriter, r *http.Request, t store.Token) {
 		return
 	}
 	hit, err := s.store.AgentAck(sec.Namespace, sec.Name, s.agentCtx(r, t))
-	if err != nil {
+	if hit != nil && err != nil {
+		s.canaryTouched(r, *hit)
+	}
+	switch {
+	case errors.Is(err, store.ErrLimited):
+		limitedError(w, t, sec.Ref())
+		return
+	case err != nil:
 		apiError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -431,7 +455,10 @@ func (s *Server) apiPut(w http.ResponseWriter, r *http.Request, t store.Token) {
 	case errors.Is(err, store.ErrReadOnly):
 		apiError(w, http.StatusForbidden, "this token can't write to namespace "+ns)
 		return
-	case errors.Is(err, store.ErrVariableNeedsWrite), errors.Is(err, store.ErrTokenCap):
+	case errors.Is(err, store.ErrLimited):
+		limitedError(w, t, ns+"/"+name)
+		return
+	case errors.Is(err, store.ErrVariableNeedsWrite), errors.Is(err, store.ErrTokenCap), errors.Is(err, store.ErrLimitVariable):
 		apiError(w, http.StatusForbidden, err.Error())
 		return
 	case err != nil:
@@ -497,6 +524,7 @@ func (s *Server) apiRequest(w http.ResponseWriter, r *http.Request, t store.Toke
 	if b.Description != "" || b.Usage != "" {
 		s.event(r, actor(t), "secret.propose", b.Namespace+"/"+b.Name, "description")
 	}
+	s.noticeRequest(t.Name, b.Namespace, []string{b.Name})
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": b.Namespace + "/" + b.Name, "url": u})
 }
 
@@ -567,6 +595,7 @@ func (s *Server) apiRequestBatch(w http.ResponseWriter, r *http.Request, t store
 	if strings.TrimSpace(b.Group) != "" {
 		s.event(r, actor(t), "group.propose", refs[0], "a group name for the batch")
 	}
+	s.noticeRequest(t.Name, b.Namespace, b.Names)
 	out := map[string]any{"refs": refs, "batch": id}
 	if len(urls) > 0 {
 		out["urls"] = urls
@@ -698,6 +727,12 @@ func (s *Server) apiFlag(w http.ResponseWriter, r *http.Request, t store.Token) 
 	s.audit.Add(audit.Event{Actor: actor(t), Action: "secret.flag", Target: sec.Ref(), Text: text, IP: s.clientIP(r)})
 	if hit != nil {
 		s.canaryTouched(r, *hit)
+	} else {
+		// A flag on a canary sends the canary alert only: it already says
+		// the canary was flagged, by whom, and is the one that matters. The
+		// agent can't tell: both are sent in the background, after the
+		// flag is stored, and the response below is the same either way.
+		s.noticeFlag(t.Name, sec.Ref())
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ref": sec.Ref()})
 }
@@ -718,6 +753,10 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token
 	if err != nil {
 		if hit != nil {
 			s.canaryTouched(r, *hit)
+		}
+		if errors.Is(err, store.ErrLimited) { // replaced-by, from a token off the key's list
+			limitedError(w, t, sec.Ref())
+			return
 		}
 		annotationError(w, sec, err)
 		return
@@ -778,6 +817,12 @@ func (s *Server) revealAllowed(w http.ResponseWriter, r *http.Request, t store.T
 	s.throttledEvent(r, actor(t), "token.ratelimited", "", "reveals and acks over "+strconv.Itoa(revealsPerHour)+" an hour", false)
 	apiError(w, http.StatusTooManyRequests, "too many reveals and acks from this token (the limit is "+strconv.Itoa(revealsPerHour)+" an hour); try again later")
 	return false
+}
+
+// limitedError is the answer to a token the key is limited away from. It
+// names only the asking token, never the ones allowed.
+func limitedError(w http.ResponseWriter, t store.Token, ref string) {
+	apiError(w, http.StatusForbidden, ref+" is limited to other agents; ask the admin to allow "+t.Name+" on it, and don't try to get it another way")
 }
 
 // writeAllowed applies the per-token limit on puts and requests, which

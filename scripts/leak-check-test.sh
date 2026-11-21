@@ -15,11 +15,11 @@ git add config.txt
 git commit -q -m init
 
 fails=0
-expect() { # expect WANT-EXIT DESCRIPTION PATTERNS [ARGS]
+expect() { # expect WANT-EXIT DESCRIPTION PATTERNS [ARGS]; $required is passed on
   want=$1 desc=$2 pats=$3
   shift 3
   rc=0
-  KEYDROP_LEAK_PATTERNS=$pats sh "$script" "$@" >out 2>&1 || rc=$?
+  KEYDROP_LEAK_REQUIRED=${required:-} KEYDROP_LEAK_PATTERNS=$pats sh "$script" "$@" >out 2>&1 || rc=$?
   if [ "$rc" != "$want" ]; then
     echo "FAIL: $desc: exit $rc, want $want"
     sed 's/^/    /' out
@@ -46,6 +46,16 @@ if ! grep -q "did NOT run" out; then
   echo "FAIL: skipping didn't warn"
   fails=1
 fi
+expect 0 "unset patterns skip in --history" '' --history
+required=1
+expect 2 "unset patterns fail when required" ''
+expect 2 "unset patterns fail when required, in --history" '' --history
+expect 2 "only whitespace lines fail when required" "$(printf '  \n')"
+expect 1 "required still finds a match" '192\.168\.1\.50'
+expect 0 "required passes a clean tree" 'nothing-like-this'
+required=0
+expect 0 "only 1 means required" ''
+required=
 if KEYDROP_LEAK_PATTERNS='a(b' sh "$script" 2>&1 | grep -q "No matches"; then
   echo "FAIL: a broken pattern printed No matches"
   fails=1
