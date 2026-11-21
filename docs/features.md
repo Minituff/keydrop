@@ -167,9 +167,9 @@ So one agent can't flood you or the server:
 
 | What | Limit |
 |---|---|
-| A flag's reason or link | 500 characters, links http(s) only |
-| A note | 2,000 characters |
-| A variable an agent stores | 2,000 characters, on one line |
+| A flag's reason or link | 500 bytes, links http(s) only |
+| A note | 2,000 bytes |
+| A variable an agent stores | 2,000 bytes, on one line |
 | Open flags | One per token per key, and 20 per token |
 | Open requests | 20 per token |
 | Flags, statuses and notes | 60 per token an hour |

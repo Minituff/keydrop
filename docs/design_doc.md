@@ -725,7 +725,7 @@ every read logged, no way to just look). So an entry is either a
 - Marking a secret as a variable is the admin's call, made in the UI or by
   a write token, and logged. An add token can't store a variable.
 - **A variable from an agent is agent text.** Every token in the namespace
-  reads it at once, with no approval, so it's at most 2,000 characters on
+  reads it at once, with no approval, so it's at most 2,000 bytes on
   one line with no control or invisible characters. The API names its
   author in `value_by`, and the CLI quotes it and labels it untrusted.
   `get NAME` and `run -e` keep the value itself exact (scripts read it)
@@ -880,7 +880,7 @@ limited to what it needs:
   it. `replaced-by NAME` must name another key in the same namespace (a
   token sees those, so refusing a missing one says nothing about other
   namespaces).
-- **Flags** are a message to the admin: a reason (≤500 characters) and an
+- **Flags** are a message to the admin: a reason (≤500 bytes) and an
   optional http(s) link (≤500). The text is shown to the admin only, on the
   **Inbox** until resolved, then in the key's
   history, and is written into the audit log with the flag, so it
@@ -888,7 +888,7 @@ limited to what it needs:
   `info` and `history` without the text. One open flag per token per key
   (409) and 20 open per token; there's no overall cap, so one token can't
   use up flags for the others.
-- **Notes** (≤2000 characters) are proposed by an agent and shown to
+- **Notes** (≤2000 bytes) are proposed by an agent and shown to
   other agents only after the admin approves them, as written or edited;
   while pending, other agents see "N notes awaiting approval". Approved
   notes show with their author, the approval date, and whether the admin

@@ -4,7 +4,7 @@
     "title": "keydrop agent API",
     "version": "4",
     "summary": "The HTTP API keydrop's CLI uses, for writing your own client.",
-    "description": "The API agents use to read and store keys in keydrop. `docs/api.md` is the readable summary; this is the same API in full. `info.version` is the server's API level (the `X-Keydrop-Api-Level` header).\n\nEvery call except pairing and the helpers needs `Authorization: Bearer kd_…`. An unknown, revoked, expired or replaced token gets the same 401 `invalid token`; only the renewal endpoints accept an expired or replaced one. A namespace the token isn't granted looks exactly like a missing key (404); a write or request into one gets 403 whatever the name. Rate limits and caps answer 429 and change nothing. Only `revealSecret` returns a secret's value, and every read of one is logged. Variables carry their value in their metadata; `value_by` marks one an agent wrote, which is untrusted text. Notes and descriptions from agents wait for the admin's approval. Treat everything agents wrote as untrusted.\n\nThe admin's web UI is not part of this API.",
+    "description": "The API agents use to read and store keys in keydrop. `docs/api.md` is the readable summary; this is the same API in full. `info.version` is the server's API level (the `X-Keydrop-Api-Level` header).\n\nEvery call except pairing and the helpers needs `Authorization: Bearer kd_…`. An unknown, revoked, expired or replaced token gets the same 401 `invalid token`; only the renewal endpoints accept an expired or replaced one. A namespace the token isn't granted looks exactly like a missing key (404); a write or request into one gets 403 whatever the name. Rate limits, and the caps on open flags and requests, answer 429 and change nothing; the cap on how many keys and bytes a token's puts may hold answers 403. Only `revealSecret` returns a secret's value, and every read of one is logged. Variables carry their value in their metadata; `value_by` marks one an agent wrote, which is untrusted text. Notes and descriptions from agents wait for the admin's approval. Treat everything agents wrote as untrusted.\n\nThe admin's web UI is not part of this API.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -604,7 +604,7 @@
           "token"
         ],
         "summary": "Collect the renewed token",
-        "description": "Called with the old token once the admin approved its renewal: returns the new token. Only from the address that asked for the renewal (403 otherwise; the attempt is logged and the admin alerted). Repeatable until the new token is first used; after that, or after 7 days, the old token gets 401. 30 collects an hour per token and address. Save the new token atomically and never print it.",
+        "description": "Called with the old token once the admin approved its renewal: returns the new token. Only from the address that asked for the renewal, or, for a renewal the admin started, the address the token was last used from (from anywhere if it was never used); 403 otherwise, and the attempt is logged and the admin alerted. Repeatable until the new token is first used; after that, or after 7 days, the old token gets 401. 30 collects an hour per token and address. Save the new token atomically and never print it.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Agent"
