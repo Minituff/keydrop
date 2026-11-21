@@ -181,6 +181,23 @@ func cmdDowngradeData(args []string) error {
 	if err != nil {
 		return err
 	}
+	if st.FormatV7() {
+		// One step at a time, newest first: back to the release before
+		// per-key limits (v0.1.3).
+		keys, _, err := st.DowngradeV7()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			fmt.Printf("keys no longer limited (now usable by every agent with their namespace): %s\n", strings.Join(keys, ", "))
+		} else {
+			fmt.Printf("keydrop.json: no key was limited\n")
+		}
+		fmt.Printf("keydrop.json: key check back to the format before per-key limits\n")
+		fmt.Printf("Done: the release before per-key limits (v0.1.3) can read this data directory; this release still can, and starts using the new fields again as soon as they're set.\n")
+		fmt.Printf("Run downgrade-data again to go back to a release before token expiry and canaries.\n")
+		return nil
+	}
 	if st.FormatV4() {
 		// One step at a time: back to the release before token expiry and
 		// canaries. Running it again goes back further.
@@ -390,6 +407,7 @@ func cmdServer(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go srv.RunBackground(ctx) // the expiry check; stops with ctx
 	errc := make(chan error, 1)
 	go func() {
 		log.Printf("keydrop %s listening on %s", version, listen)

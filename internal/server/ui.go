@@ -53,6 +53,7 @@ var funcs = template.FuncMap{
 		}
 		return t.UTC().Format("2006-01-02")
 	},
+	"ago": func(t time.Time) string { return humanAgo(time.Since(t)) },
 	"since": func(t *time.Time) string {
 		if t == nil {
 			return "never"
@@ -100,7 +101,7 @@ func init() {
 var flashes = map[string]string{
 	"saved":          "Saved.",
 	"details":        "Details saved.",
-	"rolledback":     "Rolled back to the previous value.",
+	"restored":       "Restored. The value it replaced is now the newest older value.",
 	"deleted":        "Deleted.",
 	"revoked":        "Token revoked.",
 	"theme":          "Appearance saved for this browser.",
@@ -123,6 +124,7 @@ var flashes = map[string]string{
 	"renewed":        "Approved. The agent picks up its new token the next time it runs keydrop; the old token now only works for that.",
 	"declined":       "Declined. The agent keeps its current token until it runs out.",
 	"canary":         "Canary setting saved.",
+	"limit":          "Saved which agents may use it.",
 	"newns":          "Saved in a new namespace. No agent can read it yet: tick the namespace for an agent on the Agents page.",
 	"namespaces":     "Namespaces saved.",
 	"dismissed":      "Canary alert dismissed. The audit log keeps the read.",
@@ -130,6 +132,8 @@ var flashes = map[string]string{
 	"alerttest":      "Test alert delivered: the webhook accepted it. Look for it in the channel below.",
 	"webhookset":     "Webhook saved. Send a test alert to check it.",
 	"webhookremoved": "Webhook removed.",
+	"alertinbox":     "Inbox alerts setting saved.",
+	"alertexpiry":    "Expiry alerts setting saved.",
 }
 
 type page map[string]any
@@ -692,7 +696,7 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		conflict()
 		return
 	} else if err != nil {
-		s.renderNew(w, r, se, http.StatusInternalServerError, err.Error())
+		s.renderNew(w, r, se, refusedStatus(err, http.StatusInternalServerError), err.Error())
 		return
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, "")
@@ -733,9 +737,16 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 		v, _ := s.store.VariableValue(ns, name)
 		value = string(v)
 	}
+	// Readers are the agents that can actually use it; Granted, every agent
+	// with the namespace, ticked when it's on the key's limit.
 	var readers []string
+	var granted []nsOpt
 	for _, t := range s.store.ListTokens() {
-		if t.Allows(ns) {
+		if !t.Allows(ns) {
+			continue
+		}
+		granted = append(granted, nsOpt{t.Name, sec.Limit != nil && slices.Contains(sec.Limit.Tokens, t.Name)})
+		if sec.UsableBy(t.Name) {
 			readers = append(readers, t.Name)
 		}
 	}
@@ -744,8 +755,8 @@ func (s *Server) renderSecretWith(w http.ResponseWriter, r *http.Request, se *se
 		ext = *sec.Ext
 	}
 	s.render(w, r, "secret", status, se, page{
-		"Title": sec.Ref(), "S": sec, "HasPrevious": len(sec.Previous) > 0,
-		"Readers": readers, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
+		"Title": sec.Ref(), "S": sec, "Versions": s.store.Versions(ns, name), "MaxVersions": store.MaxVersions,
+		"Readers": readers, "Granted": granted, "Error": errMsg, "Value": value, "X": ext, "AlertsConfigured": s.alerts.configured(),
 		"GroupList": s.store.Groups(ns), "InGroup": s.store.GroupAssignments()[sec.Ref()],
 		"History": s.store.History(func(ev store.Event) bool { return ev.Namespace == ns && ev.Name == name }, 50),
 	})
@@ -801,7 +812,7 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 	// Anything but an explicit "variable" is a secret, whatever the key was.
 	variable := r.PostFormValue("kind") == "variable"
 	if err := s.store.SetValue(ns, name, val, variable); err != nil {
-		s.renderSecret(w, r, se, http.StatusInternalServerError, err.Error())
+		s.renderSecret(w, r, se, refusedStatus(err, http.StatusInternalServerError), err.Error())
 		return
 	}
 	if sec.HasValue() && sec.Variable != variable {
@@ -819,6 +830,15 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 	s.back(w, r, "saved")
 }
 
+// refusedStatus is 400 for a change the store refuses as asked (a limited
+// key can't become a variable), def for anything else.
+func refusedStatus(err error, def int) int {
+	if errors.Is(err, store.ErrLimitVariable) {
+		return http.StatusBadRequest
+	}
+	return def
+}
+
 func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	meta, err := formMeta(r)
 	if err != nil {
@@ -828,7 +848,7 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	old, _ := s.store.GetSecret(ns, name)
 	if err := s.store.UpdateMeta(ns, name, meta); err != nil {
-		s.renderSecret(w, r, se, http.StatusNotFound, err.Error())
+		s.renderSecret(w, r, se, refusedStatus(err, http.StatusNotFound), err.Error())
 		return
 	}
 	if old.Variable != meta.Variable {
@@ -838,18 +858,48 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 	s.back(w, r, "details")
 }
 
+// handleRollback restores the newest older value: the route from before
+// the history, kept so nothing that posts to it breaks.
 func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.restore(w, r, se, "")
+}
+
+// handleRestore restores the older value named by its ID, never by its
+// place in the list, so a page that's out of date can't restore another.
+// The value isn't shown: Show value, logged as ever, does that.
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request, _ string, se *session) {
+	s.restore(w, r, se, r.PathValue("id"))
+}
+
+func (s *Server) restore(w http.ResponseWriter, r *http.Request, se *session, id string) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	old, _ := s.store.GetSecret(ns, name)
-	if err := s.store.Rollback(ns, name); err != nil {
+	v, of, err := s.store.Restore(ns, name, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
+		return
+	case errors.Is(err, store.ErrNoVersion):
+		s.renderSecret(w, r, se, http.StatusConflict, err.Error())
+		return
+	case err != nil:
 		s.renderSecret(w, r, se, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.event(r, "admin", "secret.rollback", ns+"/"+name, "")
+	// Which one, by age and what's known of it; never anything about the
+	// value.
+	detail := fmt.Sprintf("older value %d of %d, a %s", v.Age, of, v.Kind())
+	if !v.ReplacedAt.IsZero() {
+		detail += ", replaced " + v.ReplacedAt.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	if v.By != "" {
+		detail += ", saved by " + v.By
+	}
+	s.event(r, "admin", "secret.rollback", ns+"/"+name, detail)
 	if now, _ := s.store.GetSecret(ns, name); now.Variable != old.Variable {
 		s.event(r, "admin", "secret.kind", ns+"/"+name, kindChange(now.Variable))
 	}
-	s.back(w, r, "rolledback")
+	s.back(w, r, "restored")
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, _ string, se *session) {
@@ -1110,7 +1160,12 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, se *sess
 	data["AlertNtfyHint"] = format == formatDiscord && (s.cfg.AlertFormat == "" || s.cfg.AlertFormat == formatAuto)
 	data["AlertSource"], data["AlertSetAt"] = s.alertSource()
 	data["AlertEnv"] = s.cfg.AlertWebhook != ""
-	data["AlertInbox"] = s.cfg.AlertInbox
+	on, chosen := s.inboxAlertsOn()
+	data["InboxOn"], data["InboxEnv"], data["InboxChoice"] = on, s.cfg.AlertInbox, "default"
+	if chosen {
+		data["InboxChoice"] = onOff(on)
+	}
+	data["ExpiryDays"], data["ExpiryChoices"] = s.store.ExpiryAlertDays(), store.ExpiryAlertChoices
 	data["RevokeOnCanary"] = s.store.RevokeOnCanary()
 	s.render(w, r, "settings", status, se, data)
 }

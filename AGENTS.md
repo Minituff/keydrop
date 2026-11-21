@@ -38,7 +38,8 @@ made-up data.
   POST with the CSRF token), never in a list, a URL or a redirect. Agents
   get secrets only from `POST /api/v1/secrets/{ns}/{name}/reveal` with a
   token. Both are audit-logged, and those are the only two ways a secret
-  leaves the server. A view that can't be written to the audit log fails:
+  leaves the server. Older values (the history) are never shown: the admin
+  restores one, then presses "Show value". A view that can't be written to the audit log fails:
   no record, no value (`audit.Record`). **Variables** (`Secret.Variable`) are the deliberate
   exception: their values appear in lists and API responses, reads aren't
   logged, and `run` doesn't mask them. Any code that shows a value must
@@ -92,16 +93,21 @@ made-up data.
   format), `mac2` covers `v2View()` (the 265e513 format, which checks
   `mac2` over everything it parses), `mac3` covers
   `v3View()` (the 5f2f64e format), `mac4` covers `v4View()` (the 631f015
-  format), `mac5` covers `v5View()` (the 8acec14 format) and `mac6` covers
-  everything. A new optional field goes outside every older view. This
-  release checks `mac6` over all it parses, so once it has shipped, the
-  next new field needs a `v6View` that zeroes it and a seventh MAC, the
-  same way `v5View`/`mac6` were added. Never add a plain new field an existing
+  format), `mac5` covers `v5View()` (the 8acec14 format), `mac6` covers
+  `v6View()` (the 903db72 format: v0.1.3) and `mac7` covers
+  everything. A new optional field goes outside every older view. Until a
+  release that checks `mac7` has shipped, a new field joins `mac7`: zero
+  it in `v6View` and name it in `hasNewer7`. Once one has, the next new
+  field needs a `v7View` that zeroes it and an eighth MAC, the same way
+  `v6View`/`mac7` were added. Never add a plain new field an existing
   MAC covers. A field that restricts access (like expiry, rotations,
   canaries) must not be strippable: tie it to a sealed key check the way
-  `keyCheckV4` does, so only `downgrade-data` can remove it. Each gets a case in
+  `keyCheckV4` does, so only `downgrade-data` can remove it. Per-key
+  limits (`limit`, under `mac7`) are tied to `keyCheckV7`, which implies
+  v4; a save checks v7 before v4 so it never writes v4 over it, and
+  `DowngradeV4`/`Downgrade` refuse until `DowngradeV7` has run. Each gets a case in
   `TestOlderReleaseReadsNewerFile`. The e2e suite starts the older
-  releases (`rollbackCommit` through `v5RollbackCommit`) on data this one wrote. A fix-up of data the
+  releases (`rollbackCommit` through `v6RollbackCommit`) on data this one wrote. A fix-up of data the
   previous release wrote goes in `Store.fixup` (bump `fixupVersion`), runs
   only on a file whose MAC verified, and may change only what that
   release could also have written, or `ext`.
@@ -217,9 +223,10 @@ Every behaviour change needs a test. `internal/server/server_test.go` has a
 - Error messages and UI text: plain English, say what to do next.
 - **CLI compatibility:** when you change the agent API, decide whether the
   CLI depends on it and raise `APILevel` / `MinCLILevel` in
-  `internal/server/compat.go` as its comment says. Raising `MinCLILevel`
-  refuses every older CLI, so it needs a reason in the commit message and a
-  new entry in `cliLevelCommits` (`e2e/compat_test.go`).
+  `internal/server/compat.go` as its comment says, and update
+  `docs/openapi.json` in the same change (`TestOpenAPI*` checks it).
+  Raising `MinCLILevel` refuses every older CLI, so it needs a reason in the
+  commit message and a new entry in `cliLevelCommits` (`e2e/compat_test.go`).
 - UI: follow [docs/ui.md](docs/ui.md), and update it when you add a palette
   variable or component.
 

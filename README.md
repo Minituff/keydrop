@@ -77,7 +77,7 @@ sequenceDiagram
 |---|---|
 | 🙈 **Agents use keys, never see them** | `keydrop run` hands a value to one command and masks it in the output. |
 | 📱 **Phone-first web page** | Paste a key from your phone. No JavaScript, no third-party assets, strict CSP. |
-| 🗂️ **Namespaces and per-agent tokens** | Each agent sees only its namespaces, with read, add or write permission. |
+| 🗂️ **Namespaces and per-agent tokens** | Each agent sees only its namespaces, with read, add or write permission. One key can be limited to some of those agents. |
 | 🤝 **Pairing, not pasting tokens** | `keydrop pair` prints a link; you check the code and approve on your phone. |
 | 📬 **Agents can ask** | `keydrop request NAME` puts a request in your Inbox; the agent waits until you fill it in. |
 | 🐤 **Canaries** | Decoy keys no agent should touch. A read shows in your Inbox and can alert Discord, Slack or ntfy. |

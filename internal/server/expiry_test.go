@@ -143,7 +143,9 @@ func authed(method, u, tok string) *http.Request {
 // webhook is a local alert receiver.
 type webhook struct {
 	mu     sync.Mutex
-	bodies []string
+	bodies []string // delivered
+	posts  int      // every POST, failed ones included
+	fail   bool     // answer 502 and deliver nothing
 }
 
 func (h *harness) webhook() *webhook {
@@ -151,8 +153,16 @@ func (h *harness) webhook() *webhook {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		wh.mu.Lock()
-		wh.bodies = append(wh.bodies, string(b))
+		wh.posts++
+		fail := wh.fail
+		if !fail {
+			wh.bodies = append(wh.bodies, string(b))
+		}
 		wh.mu.Unlock()
+		if fail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	h.t.Cleanup(ts.Close)

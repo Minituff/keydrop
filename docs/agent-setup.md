@@ -330,6 +330,8 @@ never need to see them.
   shell). `-e VAR=NAME` sets it under another name.
 - `keydrop secrets` / `keydrop info NAME` show what exists and what each key
   is for. Follow the description: it says what to do with the key.
+- A key marked "limited to other agents" isn't yours to use: don't try to
+  get it another way; tell the user if the task needs it.
 - Non-secret settings (URLs, account IDs) are variables: `keydrop vars`
   lists them with values, `keydrop get NAME` prints one, and `run -e NAME`
   takes them like secrets.
@@ -345,6 +347,9 @@ never need to see them.
   then retry); that only replaces keydrop's own binary, from the paired
   server, so tell the user it ran. With self-upgrade off it says not to
   update it yourself: don't, by any route, and tell the user instead.
+- If a keydrop command fails and its message doesn't say what to do, run
+  `keydrop doctor` and follow what it says. Never work around it (no
+  disabling the pin, no pasted tokens).
 - Never run `keydrop get --raw`, `env`, `printenv`, or anything else that
   prints a value. If output shows `[keydrop:NAME]`, that's the mask working.
   Don't try to recover the value.
@@ -477,6 +482,36 @@ The guard is a guard-rail for honest mistakes, not a security boundary (see
 the [threat model](security.md)): an agent set on getting a value can
 write a script that prints it. Masking in `keydrop run` still applies to
 whatever the guard lets through.
+
+## MCP
+
+The CLI does everything an agent needs; MCP is optional. `keydrop mcp` is
+an [MCP](https://modelcontextprotocol.io) server that makes listing,
+requesting and checking keys discoverable as tools: `keydrop_secrets`,
+`keydrop_vars`, `keydrop_info`, `keydrop_history`, `keydrop_request` and
+`keydrop_whoami`. It uses the machine's pairing, so pair first.
+
+No tool returns a secret's value: a tool result goes into the transcript.
+The agent still uses a key with `keydrop run -e NAME -- CMD` in the shell.
+Variables do come with their values, as in `keydrop vars`.
+
+To register it in Claude Code for one project, put this in the project's
+`.mcp.json` (the same file is in the repository as
+[`examples/claude-code/mcp.json`](https://github.com/Minituff/keydrop/blob/main/examples/claude-code/mcp.json)):
+
+```json
+{
+  "mcpServers": {
+    "keydrop": { "command": "keydrop", "args": ["mcp"] }
+  }
+}
+```
+
+If `keydrop` isn't on the `PATH` Claude Code starts it with, use its full
+path, such as `~/.local/bin/keydrop`. To label its calls in the audit
+log, add `"env": {"KEYDROP_AGENT": "claude"}`. Other MCP clients take the
+same command and argument. Changing state (`flag`, `status`, `note`) and
+waiting (`wait`) stay CLI commands for now.
 
 ## Health checks
 

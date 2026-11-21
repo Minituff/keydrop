@@ -18,7 +18,7 @@ replacement for Vault or Infisical in a team.
 
 | | |
 |---|---|
-| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name, so values can't be swapped between records. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
+| At rest | Each value is encrypted with AES-256-GCM. The AAD binds the ciphertext to the secret's name and its place (current, previous or an older value), so values can't be swapped between records or slots. The TLS private key is sealed the same way, and `keydrop.json` carries an HMAC (key derived from the master key), so edits made without the master key stop keydrop from starting. The master key comes from a file (Docker secret) and is never stored in the data directory. See [what the master key protects](#what-the-master-key-protects). |
 | Agent tokens | 256-bit random, stored as SHA-256 hashes, shown once. They start with `kd_` so they're easy to grep for if they leak. Each can be limited to allowed source addresses, and is replaced on a schedule (unless set to never). |
 | Renewal | Approved by the admin only. Approval replaces the token; the new one is kept sealed with the master key until the agent collects it with the old token, from the address that asked, within 7 days. The Inbox flags a request made from an address other than the token's last one; a collect from another address is refused, logged and alerted. |
 | Pairing | The admin approves each machine in the UI. The token is handed over once, only to the address that asked, and a token approved but never collected is revoked after 10 minutes, even across a restart. Pairing and renewal are the only ways a token is handed to an agent. |
@@ -33,7 +33,8 @@ replacement for Vault or Infisical in a team.
 
 Someone with a copy of `data/` but not the master key can't:
 
-- read any secret or variable value, or the authenticator seed;
+- read any secret or variable value, current or older, or the
+  authenticator seed;
 - read the TLS private key (`tls.key` is sealed), so they can't pose as
   the server that agents have pinned. **The exception** is a copy made after
   `keydrop downgrade-data`, or before `keydrop upgrade-data`, which holds
@@ -51,7 +52,12 @@ They **can** still see metadata: secret and variable names, descriptions,
 namespaces, token names, the admin password's PBKDF2 hash, and the audit
 log. And someone who can write to `data/` can put back an **older complete
 copy** of it in the current format (a backup verifies fine, bringing
-back revoked tokens or an old password), or delete it. Protect `data/` like any other backup, just not like the key.
+back revoked tokens or an old password), or delete it. On data where no
+key is limited, they can also remove the newest settings together with
+their HMAC: the alert choices made in Settings go back to their defaults,
+older values beyond the previous one go, and agents' variables are
+labelled from the change log again, but nothing that grants or limits
+access can be removed this way. Protect `data/` like any other backup, just not like the key.
 
 Limitations, by design for now:
 
@@ -59,6 +65,41 @@ Limitations, by design for now:
   re-entering the values.
 - **One server per data directory.** There's no lock file: two instances
   on one volume would overwrite each other's changes. Run one.
+
+## What limiting a key does
+
+A key limited to some agents (on its page) is enforced by the server, per
+token: a token off the list gets 403 and no value, whatever it asks, and
+the refused read is logged. What it doesn't do:
+
+- **It's per token, not per program.** Two agents that share one token, or
+  one machine where both can read the token file, are one agent to keydrop.
+  Give the agent that should have the key its own token, under its own
+  Unix user.
+- **It doesn't hide the key.** Agents with the namespace still see its name,
+  description, status and history. They can still flag it and report it
+  leaked, expired or revoked (not mark it replaced by another key). Put a key in a namespace of its own if
+  its name is the secret.
+- **It doesn't take back what was read.** An agent that read the value
+  before the limit may still have it; replace the value too.
+- **Older releases ignore it,** so they refuse to start on the data until
+  `keydrop downgrade-data` removes the limits, which then apply to nobody.
+  As with every rollback, someone who can write `data/` can put back an
+  older copy from before the limit.
+
+## What a canary hides
+
+To an agent a canary looks like any other secret in every response: the
+same status, headers, body and fields, whether the call works or is
+refused. What can differ is time. A refused call on a canary (a write by
+a read-only agent, a call over a rate limit, a read by an agent the key
+is limited away from) records the touch before it answers, and the same
+refused call on an ordinary secret records nothing, so it can answer a
+little sooner. Timing that is itself a touch: by the time an agent has
+its answer, the touch is in the audit log and the Inbox, and the alert
+is queued to be sent (or, past the alert rate limit, counted for the
+summary). A repeat by the same token on the same canary within 10
+minutes is neither sent nor counted: the first alert already said it.
 
 ## What masking catches
 

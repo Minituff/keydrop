@@ -7,7 +7,7 @@
 //	go test -tags e2e ./e2e/...
 //
 // It builds the binary once, and for the upgrade and rollback tests the
-// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit, v3RollbackCommit, v4RollbackCommit and v5RollbackCommit (needs git history;
+// releases at oldFormatCommit, rollbackCommit, v2RollbackCommit, v3RollbackCommit, v4RollbackCommit, v5RollbackCommit and v6RollbackCommit (needs git history;
 // skipped in a shallow clone).
 package e2e
 
@@ -49,6 +49,13 @@ const v4RollbackCommit = "631f015"
 // v5RollbackCommit is the release before an agent could be allowed to
 // upgrade its own CLI. It opens data with that on, ignoring it.
 const v5RollbackCommit = "8acec14"
+
+// v6RollbackCommit is the release before Inbox alerts could be turned on
+// or off in Settings: the code released as v0.1.3 (the tag is on a
+// Dockerfile-only commit on main after it, not on this history). It checks
+// mac6 over everything it parses, and opens data with the setting,
+// ignoring it.
+const v6RollbackCommit = "903db72"
 
 var (
 	binary   string // the keydrop under test, built by TestMain

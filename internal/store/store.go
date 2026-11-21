@@ -75,6 +75,15 @@ const (
 	// before MAC4 doesn't know this key check, so it refuses the file
 	// until that's run.
 	keyCheckV4 = "keydrop-key-check:v4"
+	// keyCheckV7 says MAC7 is required too, and everything keyCheckV4
+	// says. A key's limit (see limits.go) restricts access the same way,
+	// so it's written the first time a key is limited, and only
+	// `keydrop downgrade-data` (DowngradeV7) takes it back, to keyCheckV4.
+	// The release with MAC6 (v0.1.3) doesn't know it and refuses the file.
+	// Every MAC covers the key check, so an older one can't be swapped in
+	// on its own; putting back a whole older copy of the data still works,
+	// as nothing can stop.
+	keyCheckV7 = "keydrop-key-check:v7"
 	// TokenPrefix makes leaked tokens easy to recognise and grep for.
 	TokenPrefix = "kd_"
 )
@@ -137,6 +146,13 @@ type Secret struct {
 	// came after Group and is outside v3View (see there). Only secrets
 	// can be canaries: it's cleared when the entry becomes a variable.
 	Canary bool `json:"canary,omitempty"`
+	// Versions is the value history beyond Previous, which stays the
+	// newest older value (see versions.go). Outside v6View, under MAC7.
+	// Admin-only: it never leaves the store (see copySecret).
+	Versions *ValueHistory `json:"versions,omitempty"`
+	// Limit, when set, names the only tokens that may use the key (see
+	// limits.go). Outside v6View, under MAC7, tied to keyCheckV7.
+	Limit *UseLimit `json:"limit,omitempty"`
 }
 
 // Ref is the "namespace/name" form used everywhere outside the store.
@@ -149,8 +165,8 @@ func (s Secret) HasValue() bool { return len(s.Value) > 0 }
 // changed since it last acknowledged it. Before any agent acknowledges a
 // change it's new to all of them; after that, only to those that haven't.
 func (s Secret) NewFor(tok string) bool {
-	if !s.HasValue() {
-		return false
+	if !s.HasValue() || !s.UsableBy(tok) {
+		return false // a value it may not read is never new to it
 	}
 	return s.New || (len(s.AckedBy) > 0 && !slices.Contains(s.AckedBy, tok))
 }
@@ -326,6 +342,11 @@ type state struct {
 	// Each token's SelfUpgrade came in the release after MAC5, and MAC6
 	// covers it; see v5View.
 	MAC6 []byte `json:"mac6,omitempty"`
+	// Notify (the notification settings chosen in Settings) came in the
+	// release after MAC6 (v0.1.3), which checks MAC6 over everything it
+	// parses, so MAC7 covers it; see v6View and notify.go.
+	Notify *NotifySettings `json:"notify,omitempty"`
+	MAC7   []byte          `json:"mac7,omitempty"`
 }
 
 // legacyView is the state as a release from before the newer fields sees
@@ -366,11 +387,11 @@ func (st *state) v2View() state {
 func (st *state) v3View() state {
 	c := st.v4View()
 	c.MAC4, c.Canary = nil, nil
-	c.Secrets = make(map[string]*Secret, len(st.Secrets))
-	for k, v := range st.Secrets {
-		cp := *v
-		cp.Canary = false
-		c.Secrets[k] = &cp
+	if c.Secrets == nil {
+		c.Secrets = map[string]*Secret{} // as this view always made its own copy
+	}
+	for _, v := range c.Secrets {
+		v.Canary = false // a copy, made by v6View
 	}
 	tokens := c.Tokens // v5View's copies, without SelfUpgrade
 	c.Tokens = make(map[string]*Token, len(tokens))
@@ -395,13 +416,13 @@ func (st *state) v4View() state {
 // v5View is the state as the release with MAC5 (and without self-upgrade)
 // sees it: each token's SelfUpgrade and MAC6 dropped, the MACs empty.
 // Marshalled, it's byte-for-byte what that release marshals for its MAC5.
-// The token map is a copy; everything else is shared with st: don't write
-// through it.
+// The token map is a copy, the secrets v6View's copies; everything else is
+// shared with st: don't write through it.
 func (st *state) v5View() state {
-	c := *st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
-	c.Tokens = make(map[string]*Token, len(st.Tokens))
-	for k, v := range st.Tokens {
+	c := st.v6View()
+	tokens := c.Tokens // st's map: v6View copies only the secrets
+	c.Tokens = make(map[string]*Token, len(tokens))
+	for k, v := range tokens {
 		cp := *v
 		cp.SelfUpgrade = false
 		c.Tokens[k] = &cp
@@ -409,7 +430,47 @@ func (st *state) v5View() state {
 	return c
 }
 
-// hasNewer6 reports whether any field outside v5View is set.
+// v6View is the state as the release with MAC6 (v0.1.3) sees it: the
+// fields after it and MAC7 dropped, the MACs empty. Marshalled, it's
+// byte-for-byte what that release marshals for its MAC6, so it still
+// verifies a file this one wrote. It's the innermost view: every older one
+// starts from it. The secrets map and the secrets in it are copies, so a
+// view can zero a per-secret field; every other map and pointer is shared
+// with st: don't write through them.
+//
+// A field added before MAC7 has shipped is zeroed here and named in
+// hasNewer7. Once a release that checks MAC7 has shipped, the next field
+// needs a v7View inside this one and an eighth MAC instead.
+func (st *state) v6View() state {
+	c := *st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	c.Notify = nil
+	if st.Secrets != nil {
+		c.Secrets = make(map[string]*Secret, len(st.Secrets))
+		for k, v := range st.Secrets {
+			cp := *v
+			cp.Versions, cp.Limit = nil, nil
+			c.Secrets[k] = &cp
+		}
+	}
+	return c
+}
+
+// hasNewer7 reports whether any field outside v6View is set.
+func (st *state) hasNewer7() bool {
+	if st.Notify != nil {
+		return true
+	}
+	for _, v := range st.Secrets {
+		if v.Versions != nil || v.Limit != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNewer6 reports whether any field outside v5View, and inside v6View,
+// is set.
 func (st *state) hasNewer6() bool {
 	for _, v := range st.Tokens {
 		if v.SelfUpgrade {
@@ -491,6 +552,10 @@ func (st *state) clone() state {
 			c.Groups[k] = &cp
 		}
 	}
+	if st.Notify != nil {
+		n := st.Notify.clone()
+		c.Notify = &n
+	}
 	return c
 }
 
@@ -510,6 +575,7 @@ type Store struct {
 	mac4Key []byte
 	mac5Key []byte
 	mac6Key []byte
+	mac7Key []byte
 	// legacy: the state file is in the format before the integrity check
 	// (only ever loaded by OpenExisting).
 	legacy bool
@@ -517,6 +583,10 @@ type Store struct {
 	// file holds. Set the first time a MAC4 field is written; only
 	// DowngradeV4 clears it.
 	v4 bool
+	// v7: the key check says MAC7 is required (keyCheckV7), and MAC4 with
+	// it (v4 is set too). Set the first time a key is limited; only
+	// DowngradeV7 clears it.
+	v7 bool
 	// recentFrom is the last few distinct addresses each token was used
 	// from, newest last. Memory only: it backs a warning, not a decision,
 	// so it needs no place in the file and a restart just forgets it.
@@ -663,6 +733,7 @@ func newStore(dir string, key []byte) (*Store, error) {
 	s.mac4Key = s.DeriveKey("state mac v4")
 	s.mac5Key = s.DeriveKey("state mac v5")
 	s.mac6Key = s.DeriveKey("state mac v6")
+	s.mac7Key = s.DeriveKey("state mac v7")
 	return s, nil
 }
 
@@ -673,11 +744,12 @@ func (s *Store) load(data []byte) error {
 		return fmt.Errorf("reading %s: %w", s.path, err)
 	}
 	pt, err := s.open(s.st.KeyCheck, "keycheck")
-	if err != nil || (string(pt) != keyCheckV1 && string(pt) != keyCheckMAC && string(pt) != keyCheckV4) {
+	if err != nil || !slices.Contains([]string{keyCheckV1, keyCheckMAC, keyCheckV4, keyCheckV7}, string(pt)) {
 		return errors.New("master key does not match this data directory")
 	}
 	s.legacy = string(pt) == keyCheckV1
-	s.v4 = string(pt) == keyCheckV4
+	s.v7 = string(pt) == keyCheckV7
+	s.v4 = string(pt) == keyCheckV4 || s.v7
 	if !s.legacy {
 		if !hmac.Equal(s.st.MAC, s.mac()) {
 			return ErrIntegrity
@@ -701,6 +773,10 @@ func (s *Store) load(data []byte) error {
 		}
 		// And for self-upgrade, under MAC6.
 		if (s.st.hasNewer6() || s.st.MAC6 != nil) && !hmac.Equal(s.st.MAC6, s.mac6()) {
+			return ErrIntegrity
+		}
+		// And for the fields after MAC6, under MAC7.
+		if (s.v7 || s.st.hasNewer7() || s.st.MAC7 != nil) && !hmac.Equal(s.st.MAC7, s.mac7()) {
 			return ErrIntegrity
 		}
 	}
@@ -771,11 +847,17 @@ func (s *Store) mac5() []byte {
 	return macOf(s.mac5Key, &c)
 }
 
-// mac6 is the HMAC of the whole state with the MAC fields empty.
+// mac6 is the HMAC of v6View: everything the release with MAC6 knows.
 func (s *Store) mac6() []byte {
-	c := s.st
-	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6 = nil, nil, nil, nil, nil, nil
+	c := s.st.v6View()
 	return macOf(s.mac6Key, &c)
+}
+
+// mac7 is the HMAC of the whole state with the MAC fields empty.
+func (s *Store) mac7() []byte {
+	c := s.st
+	c.MAC, c.MAC2, c.MAC3, c.MAC4, c.MAC5, c.MAC6, c.MAC7 = nil, nil, nil, nil, nil, nil, nil
+	return macOf(s.mac7Key, &c)
 }
 
 func macOf(key []byte, st *state) []byte {
@@ -800,7 +882,7 @@ func (s *Store) Downgrade() (bool, error) {
 		return false, nil
 	}
 	if s.v4 {
-		return false, errors.New("downgrade the token expiry and canary fields first (DowngradeV4)")
+		return false, errors.New("downgrade the per-key limits, token expiry and canary fields first (DowngradeV7, DowngradeV4)")
 	}
 	snap := s.st.clone()
 	s.st.KeyCheck = s.seal([]byte(keyCheckV1), "keycheck")
@@ -858,23 +940,35 @@ func (s *Store) commit(snap state) error {
 }
 
 func (s *Store) save() error {
+	if !s.legacy && !s.v7 && s.st.hasLimits() {
+		// From now on MAC7 (and MAC4) is required (see keyCheckV7). Checked
+		// first, and never undone here: once v7, a save can't go back to v4.
+		old := s.st.KeyCheck
+		s.st.KeyCheck = s.seal([]byte(keyCheckV7), "keycheck")
+		if err := s.write(true, true); err != nil {
+			s.st.KeyCheck = old
+			return err
+		}
+		s.v4, s.v7 = true, true
+		return nil
+	}
 	if !s.legacy && !s.v4 && s.st.hasNewer4() {
 		// From now on MAC4 is required (see keyCheckV4). s.v4 is set only
 		// once that's on disk: a failed save restores the old key check.
 		old := s.st.KeyCheck
 		s.st.KeyCheck = s.seal([]byte(keyCheckV4), "keycheck")
-		if err := s.write(true); err != nil {
+		if err := s.write(true, false); err != nil {
 			s.st.KeyCheck = old
 			return err
 		}
 		s.v4 = true
 		return nil
 	}
-	return s.write(s.v4)
+	return s.write(s.v4, s.v7)
 }
 
-func (s *Store) write(v4 bool) error {
-	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6 = s.mac(), nil, nil, nil, nil, nil
+func (s *Store) write(v4, v7 bool) error {
+	s.st.MAC, s.st.MAC2, s.st.MAC3, s.st.MAC4, s.st.MAC5, s.st.MAC6, s.st.MAC7 = s.mac(), nil, nil, nil, nil, nil, nil
 	if s.st.hasNewer() {
 		s.st.MAC2 = s.mac2()
 	}
@@ -889,6 +983,9 @@ func (s *Store) write(v4 bool) error {
 	}
 	if s.st.hasNewer6() {
 		s.st.MAC6 = s.mac6()
+	}
+	if v7 || s.st.hasNewer7() {
+		s.st.MAC7 = s.mac7()
 	}
 	data, err := json.MarshalIndent(&s.st, "", "  ")
 	if err != nil {
@@ -928,7 +1025,7 @@ func key(ns, name string) string { return ns + "/" + name }
 
 func copySecret(sec *Secret) Secret {
 	c := *sec
-	c.Value, c.Previous = nil, nil // ciphertext never leaves the store
+	c.Value, c.Previous, c.Versions = nil, nil, nil // ciphertext never leaves the store
 	if len(sec.Value) > 0 {
 		c.Value = []byte{1} // keeps HasValue() meaningful on copies
 	}
@@ -936,6 +1033,9 @@ func copySecret(sec *Secret) Secret {
 		c.Previous = []byte{1}
 	}
 	c.AckedBy = slices.Clone(sec.AckedBy)
+	if sec.Limit != nil {
+		c.Limit = &UseLimit{Tokens: slices.Clone(sec.Limit.Tokens)}
+	}
 	if sec.Ext != nil {
 		e := sec.Ext.clone()
 		c.Ext = &e
@@ -1060,8 +1160,9 @@ func (s *Store) GetSecret(ns, name string) (Secret, bool) {
 	return copySecret(sec), true
 }
 
-// PutValue creates or replaces a secret's value. The old value is kept as
-// Previous so a bad paste can be rolled back. meta is applied if non-nil.
+// PutValue creates or replaces a secret's value. The old value is kept in
+// the history (as Previous, the newest older value) so a bad paste can be
+// rolled back. meta is applied if non-nil.
 func (s *Store) PutValue(ns, name string, value []byte, meta *Meta) error {
 	_, err := s.putValue(ns, name, value, meta, true, nil)
 	return err
@@ -1154,15 +1255,49 @@ func (s *Store) agentPut(ns, name string, value []byte, p AgentPut) (PutResult, 
 	return s.putValue(ns, name, value, nil, p.Overwrite, &p)
 }
 
-// ValueAuthor names the token that wrote a key's current value, or "" if
-// the admin did. Variables from an agent are labelled with it.
+// UnknownAuthor is ValueAuthor's answer when nobody can say who saved a
+// value. Token names can't contain parentheses, so it never names one.
+const UnknownAuthor = "(unknown)"
+
+// ValueAuthor names the token that wrote a key's current value, "" if the
+// admin did, or UnknownAuthor if that isn't known. Variables from an agent,
+// or from nobody known, are labelled with it: unknown fails safe, as
+// untrusted text.
+//
+// The saver stored with the value (Versions.By, under MAC7) decides: every
+// save records it, and a restore brings back the restored value's, so the
+// label stays for as long as the value is current, however many events are
+// written after it. A restored value whose saver was never known (one an
+// older release wrote) stays unknown until someone saves over it. Only a
+// value with no saver stored (saved before this release, or after the
+// release with MAC6 rewrote the file and dropped Versions) is worked out
+// from the change log as before, which a token can age out by writing
+// enough events; a rollback there is unknown too, since the log doesn't
+// say whose value it brought back. With nothing stored and nothing in the
+// log it's the admin's: since this release every token save stores its
+// saver, and the log keeps the admin's events ahead of agents'.
 func (s *Store) ValueAuthor(ns, name string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	author := func(by string) string {
+		if by == "" {
+			return UnknownAuthor
+		}
+		return strings.TrimPrefix(strings.TrimPrefix(by, "admin"), "token:")
+	}
+	if sec, ok := s.st.Secrets[key(ns, name)]; ok && sec.Versions != nil {
+		return author(sec.Versions.By)
+	}
 	for i := len(s.st.History) - 1; i >= 0; i-- {
 		ev := s.st.History[i]
-		if ev.Namespace == ns && ev.Name == name && (ev.Action == "created" || ev.Action == "replaced") {
-			return strings.TrimPrefix(strings.TrimPrefix(ev.Actor, "admin"), "token:")
+		if ev.Namespace != ns || ev.Name != name {
+			continue
+		}
+		switch ev.Action {
+		case "created", "replaced":
+			return author(ev.Actor)
+		case "rolled back":
+			return UnknownAuthor
 		}
 	}
 	// Aged out of the history: the creator is the best that's left.
@@ -1180,7 +1315,7 @@ func (s *Store) checkTokenCaps(name string, newKey bool, size int) error {
 	for _, sec := range s.st.Secrets {
 		if sec.creator() == name && len(sec.Value) > 0 {
 			keys++
-			bytes += len(sec.Value) + len(sec.Previous)
+			bytes += len(sec.Value) + len(sec.Previous) + sec.olderBytes()
 		}
 	}
 	if newKey && keys >= MaxKeysPerToken || bytes > MaxBytesPerToken {
@@ -1215,6 +1350,9 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 	now := s.now().UTC()
 	sec, ok := s.st.Secrets[key(ns, name)]
 	res = PutResult{Existed: ok && len(sec.Value) > 0, WasVariable: ok && sec.Variable}
+	if ap != nil && ok && !sec.UsableBy(ap.Token.Name) {
+		return res, ErrLimited // whatever its permission, and before ErrExists
+	}
 	if res.Existed && !overwrite {
 		return res, ErrExists
 	}
@@ -1237,19 +1375,24 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 			}
 		}
 	}
-	var prev []byte
-	if res.Existed {
-		var err error
-		if prev, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
-			return res, err
-		}
-	}
 	if !ok {
 		sec = &Secret{Namespace: ns, Name: name, CreatedAt: now}
 		s.st.Secrets[key(ns, name)] = sec
 	}
-	if prev != nil {
-		sec.Previous, sec.PreviousVariable = prev, sec.Variable
+	// The current value, if any, becomes the newest older one, with its
+	// own kind; the oldest drops off past MaxVersions. A token's value
+	// always records who saved it, even with no history yet, so its label
+	// can't age out of the change log (see ValueAuthor). The admin's
+	// first value doesn't: a key nobody but the admin has saved is stored
+	// as the release with MAC6 stores it.
+	list := s.withCurrent(sec, sec.olderValues(), now)
+	if ap != nil {
+		list = newestPerAgent(list)
+	}
+	if len(list) > 0 || sec.Versions != nil || ap != nil {
+		if err := s.setOlder(sec, list, actor); err != nil {
+			return res, err
+		}
 	}
 	sec.Value = s.seal(value, aad(ns, name, "value"))
 	sec.Pending, sec.New, sec.AckedBy, sec.UpdatedAt = false, true, nil, now
@@ -1293,6 +1436,9 @@ func (s *Store) putLocked(ns, name string, value []byte, meta *Meta, kind *bool,
 		}
 		sec.setExt(e)
 	}
+	if err := sec.limitVariable(); err != nil {
+		return res, err
+	}
 	if ap == nil {
 		sec.dropCanaryIfVariable()
 	} else if sec.Canary {
@@ -1318,9 +1464,21 @@ func aad(ns, name, field string) string { return field + ":" + key(ns, name) }
 func (s *Store) reseal(ct []byte, ns, name, from, to string) ([]byte, error) {
 	pt, err := s.open(ct, aad(ns, name, from))
 	if err != nil {
-		return nil, fmt.Errorf("decrypting %s %s: %w", from, key(ns, name), err)
+		return nil, undecryptable(ns, name, from, err)
 	}
 	return s.seal(pt, aad(ns, name, to)), nil
+}
+
+// undecryptable is the error for a stored value of ns/name (field is its
+// AAD field) that won't decrypt: damaged, or sealed under another master
+// key. Whatever needed it fails and changes nothing; the way out is to
+// start the key again.
+func undecryptable(ns, name, field string, err error) error {
+	what := "its stored value"
+	if field != "value" {
+		what = "one of its previous values"
+	}
+	return fmt.Errorf("%s: %s can't be decrypted (%w), so nothing was changed. To fix it, the admin deletes the key and adds it again", key(ns, name), what, err)
 }
 
 // sameText compares text from a form with stored text, ignoring the CRLF
@@ -1355,6 +1513,10 @@ func (s *Store) UpdateMeta(ns, name string, m Meta) error {
 	}
 	same := sameText(sec.Description, m.Description) && sameText(sec.Usage, m.Usage)
 	applyMeta(sec, m)
+	if err := sec.limitVariable(); err != nil {
+		s.st = snap
+		return err
+	}
 	sec.UpdatedAt = s.now().UTC()
 	if !same && sec.Ext != nil && sec.Ext.DescriptionBy != "" {
 		e := sec.ext()
@@ -1432,37 +1594,6 @@ func (s *Store) Delete(ns, name string) error {
 	return s.commit(snap)
 }
 
-// Rollback swaps the current and previous values.
-func (s *Store) Rollback(ns, name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := s.st.clone()
-	sec, ok := s.st.Secrets[key(ns, name)]
-	if !ok {
-		return ErrNotFound
-	}
-	if len(sec.Previous) == 0 {
-		return ErrNoPrevious
-	}
-	var cur []byte
-	if len(sec.Value) > 0 {
-		var err error
-		if cur, err = s.reseal(sec.Value, ns, name, "value", "previous"); err != nil {
-			return err
-		}
-	}
-	old, err := s.reseal(sec.Previous, ns, name, "previous", "value")
-	if err != nil {
-		return err
-	}
-	sec.Value, sec.Previous = old, cur
-	sec.Variable, sec.PreviousVariable = sec.PreviousVariable, sec.Variable
-	sec.dropCanaryIfVariable()
-	sec.New, sec.AckedBy, sec.UpdatedAt = true, nil, s.now().UTC()
-	s.record(Event{Namespace: ns, Name: name, Action: "rolled back", Actor: "admin", Detail: sec.Kind()})
-	return s.commit(snap)
-}
-
 // Reveal decrypts a value for the admin and, for a secret, records the
 // read. variable is the kind read under the same lock as the value, so
 // callers deciding whether to audit or mask can't be fooled by a kind
@@ -1477,7 +1608,11 @@ func (s *Store) Reveal(ns, name, by string) (value []byte, variable bool, err er
 // (hit is set) in the same write as any other read, so it takes as long,
 // and returns the value as usual.
 func (s *Store) AgentReveal(ns, name, tok, ip string) (value []byte, variable bool, hit *CanaryTouch, err error) {
-	return s.revealHit(ns, name, tok, tok, ip)
+	value, variable, hit, err = s.revealHit(ns, name, tok, tok, ip)
+	if errors.Is(err, ErrLimited) {
+		hit = s.AgentTouch(ns, name, AgentCtx{tok, ip}, "reveal") // a refused call, as for the rate limit
+	}
+	return value, variable, hit, err
 }
 
 func (s *Store) reveal(ns, name, by, tok string) (value []byte, variable bool, err error) {
@@ -1493,12 +1628,15 @@ func (s *Store) revealHit(ns, name, by, tok, ip string) (value []byte, variable 
 	if !ok {
 		return nil, false, nil, ErrNotFound
 	}
+	if tok != "" && !sec.UsableBy(tok) {
+		return nil, false, nil, ErrLimited
+	}
 	if len(sec.Value) == 0 {
 		return nil, sec.Variable, nil, ErrNoValue
 	}
 	pt, err := s.open(sec.Value, aad(ns, name, "value"))
 	if err != nil {
-		return nil, false, nil, fmt.Errorf("decrypting %s: %w", key(ns, name), err)
+		return nil, false, nil, undecryptable(ns, name, "value", err)
 	}
 	changed := false
 	if tok != "" && (sec.New || !slices.Contains(sec.AckedBy, tok)) {
@@ -1556,6 +1694,9 @@ func (s *Store) Ack(ns, name, by string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if !sec.UsableBy(by) {
+		return ErrLimited // it can't read the value, so it can't mark it seen
+	}
 	if !slices.Contains(sec.AckedBy, by) {
 		sec.AckedBy = append(slices.Clone(sec.AckedBy), by)
 	}
@@ -1565,7 +1706,9 @@ func (s *Store) Ack(ns, name, by string) error {
 
 // AgentAck is Ack by the token in a, which counts as a touch on a canary.
 func (s *Store) AgentAck(ns, name string, a AgentCtx) (*CanaryTouch, error) {
-	if err := s.Ack(ns, name, a.Token); err != nil {
+	if err := s.Ack(ns, name, a.Token); errors.Is(err, ErrLimited) {
+		return s.AgentTouch(ns, name, a, "ack"), err
+	} else if err != nil {
 		return nil, err
 	}
 	return s.AgentTouch(ns, name, a, "ack"), nil
@@ -1580,6 +1723,9 @@ func (s *Store) AgentAck(ns, name string, a AgentCtx) (*CanaryTouch, error) {
 // and its open flags, which stay for the admin but are marked so they
 // don't count against, or block, the new token. Call with s.mu held.
 func (s *Store) forgetToken(tok string) {
+	// And its place on any key's limit: a new token with the name isn't
+	// the one the admin allowed.
+	s.dropFromLimits(tok, func(string) bool { return true })
 	for _, sec := range s.st.Secrets {
 		if i := slices.Index(sec.AckedBy, tok); i >= 0 {
 			sec.AckedBy = slices.Delete(slices.Clone(sec.AckedBy), i, i+1)
@@ -1817,7 +1963,7 @@ func (s *Store) AddressesOtherThan(name, ip string) []string {
 	all = append(all, s.recentFrom[name]...)
 	slices.Sort(all)
 	all = slices.Compact(all)
-	return slices.DeleteFunc(all, func(a string) bool { return a == ip })
+	return slices.DeleteFunc(all, func(a string) bool { return sameAddress(a, ip) })
 }
 
 func (s *Store) lookupToken(plain, ip string, renewal bool) (Token, error) {
@@ -1939,6 +2085,10 @@ func (s *Store) SetTokenNamespaces(name string, namespaces []string) error {
 		return ErrNotFound
 	}
 	t.Namespaces = append([]string(nil), namespaces...)
+	// Off the limits in the namespaces it lost, so a list names only
+	// tokens that have the key's namespace; granting it again doesn't
+	// bring the place back.
+	s.dropFromLimits(name, func(ns string) bool { return !t.Allows(ns) })
 	return s.commit(snap)
 }
 

@@ -350,6 +350,7 @@ func TestGroupFieldsIntegrity(t *testing.T) {
 }
 
 func stripGroups(raw map[string]any) {
+	stripV7(raw)
 	delete(raw, "mac3")
 	delete(raw, "groups")
 	delete(raw, "settings")

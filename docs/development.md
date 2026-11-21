@@ -150,8 +150,3 @@ change too.
 - Passkeys (WebAuthn) for admin login
 - Trusted proxy-header auth (Authelia, Authentik), left out so far because a
   misconfigured proxy would bypass the login
-- An MCP server exposing **metadata only** (`secrets`, `vars`, `history`, `request`). A
-  tool that returns values would put them straight into the transcript.
-- Optional per-secret allowlists inside a namespace
-- Version history beyond one previous value
-- An OpenAPI description of the agent API

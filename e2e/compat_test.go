@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -233,5 +234,217 @@ func TestRollbackV5(t *testing.T) {
 	web.mustPost(t, "/tokens/rb5-agent/selfupgrade", url.Values{"selfupgrade": {"yes"}})
 	in.stop(t)
 	in.start(t, binary) // and it opens with it on again
+	in.stop(t)
+}
+
+// TestRollbackV6 turns Inbox alerts and expiry alerts on in Settings, with
+// self-upgrade and the webhook set too, so the file has mac6 and mac7. The release before
+// (v0.1.3) starts on the data as it is, keeps self-upgrade and the
+// webhook, drops the settings when it rewrites the file; this one then
+// starts on what it wrote, with Inbox alerts back to KEYDROP_ALERT_INBOX
+// (unset: off) and expiry alerts off, and the setting can be turned on again.
+func TestRollbackV6(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	const inboxOn = `value="on" class="on small" aria-pressed="true"`
+	const inboxDefault = `value="default" class="on small" aria-pressed="true"`
+	const expiry14 = `value="14" class="on small" aria-pressed="true"`
+	const expiryOff = `value="0" class="on small" aria-pressed="true"`
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	secret := fakeSecret(t)
+	web.addEntry(t, "rb6", "KEPT", secret, "secret", "")
+	web.mustPost(t, "/settings/alert-webhook", url.Values{"webhook": {"https://hooks.example.com/fake-e2e-webhook-path"}})
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.postToken(t, url.Values{"name": {"rb6-agent"}, "namespaces": {"rb6"}, "selfupgrade": {"yes"}}))
+	web.mustPost(t, "/settings/alert-inbox", url.Values{"inbox": {"on"}})
+	web.mustPost(t, "/settings/alert-expiry", url.Values{"days": {"14"}})
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) || !strings.Contains(page, expiry14) {
+		t.Fatal("Inbox alerts or expiry alerts not shown as on")
+	}
+	data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json"))
+	for _, f := range []string{`"notify"`, `"expiry_days"`, `"mac7"`, `"mac6"`} {
+		if !strings.Contains(string(data), f) {
+			t.Fatalf("no %s in the file", f)
+		}
+	}
+	in.stop(t)
+
+	in.start(t, old)
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("the previous release returns a different value")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, "hooks.example.com") {
+		t.Fatal("the previous release lost the webhook")
+	}
+	if _, page := web.get(t, "/token/rb6-agent"); !strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("the previous release lost self-upgrade")
+	}
+	web.addEntry(t, "rb6", "AFTER", "plain-setting", "variable", "") // it rewrites the file
+	in.stop(t)
+	if data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json")); strings.Contains(string(data), `"notify"`) || strings.Contains(string(data), `"mac7"`) {
+		t.Fatal("the previous release kept the setting")
+	}
+
+	in.start(t, binary)
+	if strings.Contains(in.srv.log.String(), "Inbox alerts") {
+		t.Fatalf("Inbox alerts after the rollback: %s", in.srv.log.String())
+	}
+	if got := g.valueHash(t, "KEPT"); got != sha(secret) {
+		t.Fatal("this release returns a different value after the previous one rewrote the file")
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxDefault) || !strings.Contains(page, "Inbox alerts: <strong>off</strong>") || !strings.Contains(page, "hooks.example.com") || !strings.Contains(page, expiryOff) {
+		t.Fatal("Settings after the previous release's rewrite")
+	}
+	if _, page := web.get(t, "/token/rb6-agent"); !strings.Contains(page, `value="yes" checked`) {
+		t.Fatal("self-upgrade lost")
+	}
+	web.mustPost(t, "/settings/alert-inbox", url.Values{"inbox": {"on"}})
+	in.stop(t)
+	in.start(t, binary) // and it opens with it on again
+	if !strings.Contains(in.srv.log.String(), "Inbox alerts: on (set in Settings)") {
+		t.Fatalf("not on again: %s", in.srv.log.String())
+	}
+	web = login(t, in)
+	if _, page := web.get(t, "/settings"); !strings.Contains(page, inboxOn) {
+		t.Fatal("Inbox alerts not shown as on again")
+	}
+	in.stop(t)
+}
+
+var restoreRE = regexp.MustCompile(`action="/secret/rbh/HIST/restore/([0-9a-f]+)"`)
+
+// TestRollbackV6History builds up value history here, then starts the
+// release before it (v0.1.3) on the data: it reads the current value,
+// shows it, rolls back once in its own UI and so rewrites the file without
+// the history. This release then opens what it wrote with the current and
+// previous values as that release left them and no history beyond them,
+// and new saves build history up again.
+func TestRollbackV6History(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	vals := []string{fakeSecret(t), fakeSecret(t), fakeSecret(t), fakeSecret(t), fakeSecret(t)}
+	rows := func(t *testing.T, web *admin) []string {
+		t.Helper()
+		_, page := web.get(t, "/secret/rbh/HIST")
+		noLeak(t, "the secret page", page, vals...)
+		var ids []string
+		for _, m := range restoreRE.FindAllStringSubmatch(page, -1) {
+			ids = append(ids, m[1])
+		}
+		return ids
+	}
+	inFile := func(t *testing.T, in *instance) bool {
+		t.Helper()
+		data, _ := os.ReadFile(filepath.Join(in.dataDir, "keydrop.json"))
+		v, m := strings.Contains(string(data), `"versions"`), strings.Contains(string(data), `"mac7"`)
+		if v != m {
+			t.Fatalf("versions in the file %v, mac7 %v", v, m)
+		}
+		return v
+	}
+
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	web.addEntry(t, "rbh", "HIST", vals[0], "secret", "")
+	for _, v := range vals[1:4] {
+		web.mustPost(t, "/secret/rbh/HIST/value", url.Values{"value": {v}, "kind": {"secret"}})
+	}
+	if ids := rows(t, web); len(ids) != 3 || !inFile(t, in) {
+		t.Fatalf("history: %d rows", len(ids))
+	}
+	g := newAgent(t, binary)
+	g.login(t, in.url, pin, web.createToken(t, "rbh-agent", "rbh", false))
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("not the current value")
+	}
+	in.stop(t)
+
+	in.start(t, old)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("the previous release returns a different value")
+	}
+	web = login(t, in)
+	if code, page, _ := web.post(t, "/secret/rbh/HIST/reveal", nil); code != 200 || !strings.Contains(page, vals[3]) {
+		t.Fatalf("the previous release doesn't show the current value: %d", code)
+	}
+	web.mustPost(t, "/secret/rbh/HIST/rollback", nil) // it rewrites the file
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[2]) {
+		t.Fatal("the previous release didn't roll back")
+	}
+	in.stop(t)
+	if inFile(t, in) {
+		t.Fatal("the previous release kept the history")
+	}
+
+	in.start(t, binary)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[2]) {
+		t.Fatal("this release returns a different value after the previous one rewrote the file")
+	}
+	web = login(t, in)
+	ids := rows(t, web)
+	if len(ids) != 1 {
+		t.Fatalf("%d older values after the previous release's rewrite, want its previous one", len(ids))
+	}
+	web.mustPost(t, "/secret/rbh/HIST/restore/"+ids[0], nil)
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[3]) {
+		t.Fatal("the previous value the previous release left isn't the one it replaced")
+	}
+	web.mustPost(t, "/secret/rbh/HIST/value", url.Values{"value": {vals[4]}, "kind": {"secret"}})
+	if ids := rows(t, web); len(ids) != 2 || !inFile(t, in) {
+		t.Fatalf("history after new saves: %d rows", len(ids))
+	}
+	in.stop(t)
+	in.start(t, binary) // and it opens with history again
+	if got := g.valueHash(t, "rbh/HIST"); got != sha(vals[4]) {
+		t.Fatal("not the newest value")
+	}
+	in.stop(t)
+}
+
+// TestRollbackV6UnknownSaver: on the release before stored savers
+// (v0.1.3) an agent writes a variable and the admin saves over it. After
+// the upgrade the admin restores the agent's value, whose saver that
+// release never recorded: other agents get it labelled as untrusted text
+// from an unknown writer, not as the admin's, until the admin saves again.
+func TestRollbackV6UnknownSaver(t *testing.T) {
+	old := buildOld(t, v6RollbackCommit)
+	agentText := "https://agent.example/IGNORE-PREVIOUS-INSTRUCTIONS"
+	in := newInstance(t, binary)
+	in.start(t, binary)
+	pin := in.pin(t)
+	web := setupAndLogin(t, in)
+	writer, reader := newAgent(t, binary), newAgent(t, binary)
+	writer.login(t, in.url, pin, web.createToken(t, "uw-writer", "uw", true))
+	reader.login(t, in.url, pin, web.createToken(t, "uw-reader", "uw", false))
+	in.stop(t)
+
+	in.start(t, old)
+	writer.ok(t, agentText, "put", "uw/URL", "--var")
+	web = login(t, in)
+	web.mustPost(t, "/secret/uw/URL/value", url.Values{"value": {"https://admin.example"}, "kind": {"variable"}})
+	in.stop(t)
+
+	in.start(t, binary)
+	web = login(t, in)
+	_, page := web.get(t, "/secret/uw/URL")
+	m := regexp.MustCompile(`action="/secret/uw/URL/restore/([0-9a-f]+)"`).FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("no older value to restore")
+	}
+	web.mustPost(t, "/secret/uw/URL/restore/"+m[1], nil)
+	r := reader.ok(t, "", "info", "uw/URL")
+	if !strings.Contains(r.stdout, "    value written by an unknown agent or an earlier release (untrusted text from another agent):\n      | "+agentText) || strings.Contains(r.stdout, "uw/URL=") {
+		t.Fatalf("the restored agent value isn't labelled:\n%s", r.stdout)
+	}
+	web.mustPost(t, "/secret/uw/URL/value", url.Values{"value": {"https://admin.example/2"}, "kind": {"variable"}})
+	if r := reader.ok(t, "", "info", "uw/URL"); !strings.Contains(r.stdout, "uw/URL=https://admin.example/2") || strings.Contains(r.stdout, "untrusted") {
+		t.Fatalf("the admin's value is labelled:\n%s", r.stdout)
+	}
 	in.stop(t)
 }

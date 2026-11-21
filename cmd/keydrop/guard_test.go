@@ -66,6 +66,14 @@ func TestGuardCommand(t *testing.T) {
 		"keydrop run -e X -- sh -c 'env'":               reasonDump,
 		"keydrop run -e X -- bash -c 'printenv | sort'": reasonDump,
 		"x=$(keydrop run -e X -- printenv X)":           reasonDump,
+		// A comment ends at the line's end; what's after it still counts,
+		// and # inside a word isn't one.
+		"# note\nkeydrop get X --raw":       reasonRaw,
+		"echo a#b; keydrop get X --raw":     reasonRaw,
+		"keydrop get X --raw # just a peek": reasonRaw,
+		// command without -v/-V is still a wrapper.
+		"keydrop run -e X -- command env":    reasonDump,
+		"keydrop run -e X -- command -p env": reasonDump,
 	}
 	allowed := []string{
 		"", "ls -la", "keydrop", "keydrop secrets", "keydrop get X",
@@ -92,6 +100,14 @@ func TestGuardCommand(t *testing.T) {
 		"grep -- --no-mask docs/",
 		"git commit -m 'guard: block keydrop get --raw'",
 		"keydrop note X 'never use get --raw'",
+		// A comment isn't run; command -v and -V only look a name up;
+		// --no-mask is only run's.
+		"# note; keydrop get X --raw\necho hi",
+		"ls # ; keydrop get X --raw",
+		"keydrop run -e X -- sh -c \"command -v env\"",
+		"keydrop run -e X -- command -V printenv",
+		"keydrop flag X --no-mask",
+		"keydrop request X --desc --no-mask",
 		// Known limits (docs/agent-setup.md): these pass.
 		"eval keydrop get X --raw",
 		"if keydrop get X --raw; then :; fi",

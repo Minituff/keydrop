@@ -67,7 +67,17 @@
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <button class="secondary">Remove this webhook</button>
   </form>
-{{end}}  <p><small class="muted">Inbox alerts: <strong>{{if .AlertInbox}}on{{else}}off{{end}}</strong>{{if and .AlertInbox (not .AlertsConfigured)}}, but they need a webhook{{end}}. When on, the webhook also gets a short notice when an agent asks to pair, asks for a key or a new token, or flags a key. Set with KEYDROP_ALERT_INBOX in keydrop's container.</small></p>
+{{end}}  <p>Inbox alerts: <strong>{{if .InboxOn}}on{{else}}off{{end}}</strong>{{if and .InboxOn (not .AlertsConfigured)}}, but they need a webhook{{end}}. When on, the webhook also gets a short notice when an agent asks to pair, asks for a key or a new token, or flags a key.</p>
+  <form method="post" action="/settings/alert-inbox" class="seg" aria-label="Inbox alerts">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{$c := .InboxChoice}}<button name="inbox" value="on" class="{{if eq $c "on"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "on"}}">On</button><button name="inbox" value="off" class="{{if eq $c "off"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "off"}}">Off</button><button name="inbox" value="default" class="{{if eq $c "default"}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $c "default"}}">Default ({{if .InboxEnv}}on{{else}}off{{end}})</button>
+  </form>
+  <p><small class="muted">Default follows KEYDROP_ALERT_INBOX in keydrop's container{{if ne $c "default"}}; your choice here wins over it{{end}}.</small></p>
+  <p>Warn me before a key expires: <strong>{{if .ExpiryDays}}{{.ExpiryDays}} days ahead{{else}}off{{end}}</strong>{{if and .ExpiryDays (not .AlertsConfigured)}}, but it needs a webhook{{end}}. When on, the webhook gets one message when keys come within that many days of their expiry date, and one more when they pass it. It names the keys and their dates, nothing else.</p>
+  <form method="post" action="/settings/alert-expiry" class="seg" aria-label="Expiry alerts">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{$d := .ExpiryDays}}<button name="days" value="0" class="{{if eq $d 0}}on{{else}}secondary{{end}} small" aria-pressed="{{eq $d 0}}">Off</button>{{range .ExpiryChoices}}<button name="days" value="{{.}}" class="{{if eq . $d}}on{{else}}secondary{{end}} small" aria-pressed="{{eq . $d}}">{{.}} days</button>{{end}}
+  </form>
 </div>
 <form method="post" action="/settings/canary" class="card">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

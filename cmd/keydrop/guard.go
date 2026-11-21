@@ -137,6 +137,9 @@ func (p *shParser) run() {
 		case c == '\\' && p.i+1 < len(p.s) && p.s[p.i+1] == '\n':
 			p.i++ // joins lines
 			continue
+		case c == '#' && !inWord: // a comment, to the end of the line
+			p.i = upto(p.s, p.i, '\n') - 1
+			continue
 		case strings.IndexByte(";&|()\n", c) >= 0:
 			endCommand()
 			if c == ')' && p.sub {
@@ -176,6 +179,8 @@ func (p *shParser) run() {
 	endCommand()
 }
 
+var backtickUnescape = strings.NewReplacer("\\`", "`", "\\\\", "\\", "\\$", "$")
+
 // substitution parses the $(...) or `...` at p.i into commands (unless
 // that's too deep), keeps it in the word as written, and leaves p.i on its
 // last byte. Any other $ is just text.
@@ -184,8 +189,7 @@ func (p *shParser) substitution(w *strings.Builder) {
 	if p.s[p.i] == '`' {
 		end := upto(p.s, p.i+1, '`')
 		if deeper {
-			inner := strings.NewReplacer("\\`", "`", "\\\\", "\\", "\\$", "$").Replace(p.s[p.i+1 : end])
-			p.out = append(p.out, parseShell(inner, p.depth+1)...)
+			p.out = append(p.out, parseShell(backtickUnescape.Replace(p.s[p.i+1:end]), p.depth+1)...)
 		}
 		p.i = end
 	} else if deeper && strings.HasPrefix(p.s[p.i:], "$(") {
@@ -250,7 +254,12 @@ func stripWrappers(words []string) (rest []string, envOnly bool) {
 		switch commandName(words[0]) {
 		case "env":
 			env = true
-		case "sudo", "command", "exec", "nohup", "time":
+		case "command":
+			if len(words) > 1 && (words[1] == "-v" || words[1] == "-V") {
+				return words, false // a lookup: it runs nothing
+			}
+			env = false
+		case "sudo", "exec", "nohup", "time":
 			env = false
 		default:
 			return words, false
@@ -280,7 +289,7 @@ func checkKeydrop(args []string, depth int) string {
 		switch {
 		case name == "raw" && args[0] == "get" && on:
 			return reasonRaw
-		case name == "no-mask" && on:
+		case name == "no-mask" && on && args[0] == "run": // only run has it
 			return reasonNoMask
 		case !hasVal && (name == "e" || name == "env" || name == "stdin" || name == "to-file"):
 			k++ // its value
