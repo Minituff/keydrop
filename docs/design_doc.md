@@ -386,7 +386,33 @@ log, not for access control.
   at `run -e`. `get --to-file` (0600) covers config files; with `--force`
   it writes a new 0600 file and renames it into place, so it never keeps a
   looser mode or writes through a symlink. `get --raw` exists for the rare
-  pipe, and is easy to block with an agent hook.
+  pipe, and `keydrop guard` blocks it in an agent's session.
+- **`keydrop guard`** is a Claude Code `PreToolUse` hook (or, with
+  `--command`, a check any agent's wrapper can call). It's a subcommand
+  rather than a script because the CLI is already on every agent machine,
+  at the server's version, and keeps itself current with `keydrop
+  upgrade`; a script would need its own way there, its own version, and
+  python or jq to read the hook's JSON. It reads at most 1 MiB, needs no
+  token, config or network, and never builds the API client, so it's fast
+  and works before pairing. It blocks `get --raw`, `--no-mask`, and `run
+  -- env` or `run -- printenv`. It's kept small on purpose (one file, a
+  few minutes to read): a tokeniser that minds quotes and backslashes,
+  splits on `;`, `&`, `|`, newlines and parentheses, follows `$(…)`,
+  backticks and `sh -c` strings, and skips `VAR=x` and a short list of
+  wrappers (`sudo`, `env`, `command`, `exec`, `nohup`, `time`). So a
+  mention in an argument (`echo "… --raw"`, `git commit -m`) passes while
+  an invocation anywhere in the command doesn't. `$(…)`, backticks and
+  `sh -c` share one nesting cap of four, which keeps a 1 MiB command
+  quick. Everything a real shell would be needed for is left out and
+  listed in [agent-setup.md](agent-setup.md#claude-code-hooks): heredocs
+  (whose bodies it reads as commands, so it can block a quoted one),
+  `eval`, shell keywords, `echo $NAME` and other ways to print a value.
+  Masking already covers the output; the guard only catches the obvious
+  mistakes before they run. It fails open: bad JSON, too much input or
+  another tool passes, since a guard that broke would block every shell
+  command in the session, and it's a guard-rail for honest mistakes, not a
+  boundary. Its reason is fixed text and never repeats the command, which
+  may hold a pasted value.
 - Everything the CLI prints that came from the server (descriptions,
   usage, variable values on a terminal, names, error messages) has control
   characters, terminal escapes and bidirectional overrides shown as

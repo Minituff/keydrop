@@ -75,6 +75,11 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
                                          (checked against its SHA256SUMS; the old binary is
                                          kept as .<version>.bak). Run it when keydrop says
                                          the server is a different build
+  guard [--command 'CMD']               a Claude Code PreToolUse hook: reads the hook's JSON
+                                         on stdin and exits 2 (blocking the call) when a
+                                         shell command would print a value: get --raw,
+                                         --no-mask, run -- env or printenv. Needs no token
+                                         or network; --command checks CMD instead
 
 Server commands:
   server                                run the server (configured by KEYDROP_* env vars)
@@ -155,6 +160,8 @@ func main() {
 		err = cmdRenew(args)
 	case "upgrade":
 		err = cmdUpgrade(args)
+	case "guard":
+		err = cmdGuard(args)
 	case "version", "--version", "-v":
 		fmt.Println("keydrop", version)
 	case "help", "--help", "-h":

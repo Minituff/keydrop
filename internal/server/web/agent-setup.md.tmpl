@@ -363,18 +363,30 @@ never need to see them.
 Recommended: run `keydrop history --since 72h --quiet` at the start of
 every session. It prints the keys created, replaced or marked in the last
 three days, and nothing when nothing changed, so each session starts
-knowing what changed. In Claude Code, ask the person before adding this
-hook to `.claude/settings.json`:
+knowing what changed. In Claude Code, also run `keydrop guard` before each
+shell command: it blocks one that would print a value (`keydrop get
+--raw`, `--no-mask`, `keydrop run -- env`) and says what to do instead. It
+needs no network or token. Ask the person before adding these hooks to
+`.claude/settings.json`:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "keydrop history --since 72h --quiet" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "keydrop guard" } ] }
     ]
   }
 }
 ```
+
+Before adding the guard, check that this CLI has it: `keydrop guard
+--command ls` must print nothing and exit 0. A keydrop from before the
+guard exits 2 there, and as a hook that would block every command, so
+leave the guard out until `keydrop upgrade`. If `keydrop` isn't on the
+`PATH` Claude Code runs hooks with, use its full path in both commands.
 
 Several agents running as the same user on one machine share its token.
 To tell them apart in keydrop's log, each can set its own label, for
@@ -385,4 +397,4 @@ environment. It's a label, not a permission.
 
 Tell the person what's set up: the server's address, the name, namespaces
 and permission they approved for you, and whether you added the
-instructions and the session hook.
+instructions and the hooks.

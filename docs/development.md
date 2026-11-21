@@ -147,8 +147,6 @@ change too.
 
 ## Roadmap
 
-- Ship the example hook scripts from [agent-setup.md](agent-setup.md) (the
-  session-start history, the `--raw` guard) as files rather than docs
 - Passkeys (WebAuthn) for admin login
 - Trusted proxy-header auth (Authelia, Authentik), left out so far because a
   misconfigured proxy would bypass the login

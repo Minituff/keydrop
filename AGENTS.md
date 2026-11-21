@@ -155,6 +155,7 @@ releases for the ones that ship; see "Updates and releases" in
 | `internal/qr` | QR encoder for the authenticator setup (stdlib only). |
 | `internal/audit` | Audit log. |
 | `e2e` | End-to-end tests of the built binary (build tag `e2e`). |
+| `examples` | Ready-to-copy agent config (Claude Code hooks), described in `docs/agent-setup.md`. |
 
 ## Build and test
 
