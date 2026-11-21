@@ -1226,7 +1226,16 @@ keyed with `HKDF(master key, "state mac vN")`, took over the whole state.
   IPv6 zone dropped and `::ffff:1.2.3.4` read as `1.2.3.4`: a zone is free
   text the client may have written, and one address spelled several ways
   mustn't look like several clients to the limits. The direct peer's
-  address is used as the kernel reports it.
+  address is used as the kernel reports it. Addresses stored before this
+  (a renewal's, a token's last use) are compared by address, not text:
+  `::ffff:10.0.0.5` is `10.0.0.5`, and a zone on one side only is
+  ignored, so the same client still collects its renewal and isn't
+  "used from elsewhere" after the upgrade. Two different zones still
+  differ. Ignoring a one-sided zone could match two machines with the
+  same link-local address, one seen directly and one only through the
+  proxy; the one off the renewal's link would still need the old token,
+  and being on the network with a chosen link-local address is already
+  enough to spoof one, so the address check guards nothing more there.
 - Turning the authenticator on or off, and changing the password, all
   need the current password, so an unattended logged-in browser isn't
   enough.

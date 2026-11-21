@@ -1963,7 +1963,7 @@ func (s *Store) AddressesOtherThan(name, ip string) []string {
 	all = append(all, s.recentFrom[name]...)
 	slices.Sort(all)
 	all = slices.Compact(all)
-	return slices.DeleteFunc(all, func(a string) bool { return a == ip })
+	return slices.DeleteFunc(all, func(a string) bool { return sameAddress(a, ip) })
 }
 
 func (s *Store) lookupToken(plain, ip string, renewal bool) (Token, error) {
