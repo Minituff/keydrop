@@ -555,3 +555,27 @@ func TestDuplicates(t *testing.T) {
 		t.Fatalf("U1: %+v", d)
 	}
 }
+
+// A renewal recorded under an older release's spelling of an address
+// (before the server canonicalised forwarded ones) still matches the
+// same client; a different address or link never does.
+func TestSameAddress(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"10.0.0.1", "10.0.0.1", true},
+		{"10.0.0.1", "::ffff:10.0.0.1", true},
+		{"2001:db8::5", "2001:DB8:0:0:0:0:0:5", true},
+		{"10.0.0.1", "10.0.0.2", false},
+		{"fe80::1%eth0", "fe80::1%eth0", true},
+		{"fe80::1%eth0", "fe80::1%eth1", false},
+		{"fe80::1", "fe80::1%<!channel>", false},
+		{"unknown", "unknown", true},
+		{"10.0.0.1", "10.0.0.1x", false},
+	} {
+		if got := sameAddress(c.a, c.b); got != c.want {
+			t.Errorf("sameAddress(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

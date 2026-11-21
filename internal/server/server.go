@@ -368,10 +368,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// clientIP is the remote address, or the first untrusted hop in
-// X-Forwarded-For when the request came through a trusted proxy. Every
-// X-Forwarded-For line counts: a proxy that adds its own line rather than
-// appending to the client's must not let the client's line decide.
 // noisyEvent records an event that an unauthenticated request can cause
 // (a bad token, a pairing request, a failed login): at most one a minute
 // per address (IPv6: per /64) and action, and 60 a minute overall. What's
@@ -445,6 +441,17 @@ func (s *Server) throttledEvent(r *http.Request, actor, action, target, detail s
 	s.audit.Add(audit.Event{Actor: actor, Action: action, Target: target, Detail: detail, IP: s.clientIP(r), Unauthenticated: unauth})
 }
 
+// clientIP is the remote address, or the first untrusted hop in
+// X-Forwarded-For when the request came through a trusted proxy. Every
+// X-Forwarded-For line counts: a proxy that adds its own line rather than
+// appending to the client's must not let the client's line decide.
+//
+// A hop comes back in canonical form (lower case, compressed, IPv4-mapped
+// unmapped) with any zone dropped: the hop is text the client may have
+// written, an IPv6 zone is free text (fe80::1%<anything>) and means nothing
+// on another host, and one address spelled several ways mustn't count as
+// several clients. The direct peer is left as the kernel gave it: already
+// canonical, and its zone, if any, is the real interface.
 func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -461,8 +468,9 @@ func (s *Server) clientIP(r *http.Request) string {
 		if err != nil {
 			break
 		}
+		a = a.Unmap().WithZone("")
 		if !s.trusted(a) {
-			return hop
+			return a.String()
 		}
 	}
 	return host

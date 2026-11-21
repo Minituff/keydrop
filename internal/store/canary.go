@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"sort"
 	"time"
@@ -172,6 +173,19 @@ func (s *Store) RotateToken(name string, days int) (Rotation, error) {
 	return out, s.commit(snap)
 }
 
+// sameAddress reports whether a and b name the same address, however each
+// is spelled: a renewal recorded before the server canonicalised forwarded
+// addresses (::ffff:1.2.3.4, upper-case hex) must still match the same
+// client after it. The zone still counts, so fe80::1 on two links differs.
+func sameAddress(a, b string) bool {
+	x, errX := netip.ParseAddr(a)
+	y, errY := netip.ParseAddr(b)
+	if errX != nil || errY != nil {
+		return a == b
+	}
+	return x.Unmap() == y.Unmap()
+}
+
 // CollectRotation hands over the new token that replaced old. old is the
 // token as LookupTokenForRenewal returned it for the old token (its
 // Rotation set); ip is the caller's address, which must be the one the
@@ -187,7 +201,7 @@ func (s *Store) CollectRotation(old Token, ip string) (plain string, t Token, er
 		return "", Token{}, ErrNotFound
 	}
 	rot := cur.Rotation
-	if rot.IP != "" && ip != rot.IP {
+	if rot.IP != "" && !sameAddress(ip, rot.IP) {
 		return "", *cur, ErrCollectIP
 	}
 	pt, err := s.open(rot.Sealed, rotationAAD(cur.Name, cur.Hash))
