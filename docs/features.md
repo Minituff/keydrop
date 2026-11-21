@@ -188,6 +188,28 @@ you add one, or press **Make it a canary** on a secret's page.
   It's off by default, because the revocation tells whoever holds the token
   which secret was the canary.
 
+## Inbox alerts
+
+An agent that asks for something waits for you, but nothing tells you it's
+asking. Set `KEYDROP_ALERT_INBOX=true` and the alert webhook also gets a short
+notice when a machine asks to pair, an agent asks for a key (`keydrop
+request`) or a new token, or an agent flags a key. For example: ``keydrop:
+`deploy-bot` is asking for `lab/CLOUDFLARE_TOKEN`. Fill it in:
+https://secrets.example.com/inbox``.
+
+- **Off by default,** and it needs an alert webhook (Settings or
+  `KEYDROP_ALERT_WEBHOOK`). Settings shows whether it's on.
+- **Quiet:** one notice per agent (per address, for pairing) every 10
+  minutes; the Inbox shows the rest. Notices have their own small rate limit,
+  separate from canary alerts, so a flood of pairing requests can't hold up a
+  canary alert. What's over it comes later as one line saying how many more
+  things are waiting.
+- **Names only:** the agent's name, the key's name, the address. Never a
+  value, a token, or anything an agent wrote (a description, a flag's
+  reason). A pairing notice doesn't carry the code: check it on the page
+  against the agent's terminal. The link is there only when
+  `KEYDROP_PUBLIC_URL` is set, and it opens a page that needs you to log in.
+
 ## Duplicate values
 
 When you save a value in the web page, keydrop compares it with every other

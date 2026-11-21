@@ -180,6 +180,7 @@ func (s *Server) apiRenew(w http.ResponseWriter, r *http.Request, t store.Token)
 	}
 	if created {
 		s.event(r, actor(t), "token.renewal.request", t.Name, "expires "+expiresHeader(t.ExpiresAt))
+		s.noticeRenewal(t.Name)
 	}
 	cur, _ := tokenNamed(s.store.ListTokens(), t.Name)
 	out := renewState(cur, s.now())

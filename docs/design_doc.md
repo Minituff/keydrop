@@ -280,12 +280,56 @@ which are the places keydrop exists to keep secrets out of. So a machine
   alert per canary and token every 10 minutes, and a global budget of 5
   at once then one a minute. What's over the budget is counted and sent
   as one summary later. A 429 is waited out for its `Retry-After`, at
-  most 30 seconds and twice. Refused token collects use the same path.
+  most 30 seconds and twice. Refused token collects use the same path;
+  [Inbox alerts](#inbox-alerts) use it too, on a budget of their own.
 - **Revoke on read** (Settings, off by default) revokes a token the moment
   it touches a canary. It stops a stolen token at once, but it also
   tells whoever holds the token that the secret was a trap (their next
   call fails) and lets anyone who can make an agent read a name revoke
   that agent. Off, the canary stays quiet and the admin decides.
+
+### Inbox alerts
+An agent that asks (pairing, `request` then `wait`, renewal, a flag) blocks
+on a human who has no reason to look at the Inbox. With
+`KEYDROP_ALERT_INBOX=true` the alerter also posts a notice when a pairing,
+a key request (single or batch), a renewal request (only when a new one is
+created) or a flag is stored. Not notes or description proposals: nothing
+waits on them.
+
+- **Opt-in, and an env var for now.** A Settings toggle would be a new
+  field in the state file, so a new MAC view and a migration story, for
+  something that grants nothing. Settings shows whether it's on, read-only.
+  The webhook can be added or removed in Settings at runtime, so whether
+  one is configured is checked at send time; the startup log says when the
+  variable is on without one.
+- **Notices can't cost a security alert anything.** `/api/v1/pair` needs
+  no credential, so anyone on the network can cause notices. They go
+  through the one alerter but have their own budget (3 at once, then one
+  per 2 minutes), spent *instead of* the security budget, never as well,
+  and may fill at most half the 32-slot queue, so canary alerts always
+  have room. Notices over the budget are counted and sent as one summary
+  of their own, on the notice budget. Each kind is sent at most once per
+  key per 10 minutes: pairing by the address's source group (the same /64
+  grouping as the pairing caps), the others by kind and token name, so an
+  agent asking for five keys sends one notice. That map is bounded: past
+  10,000 keys, notices are dropped rather than grow it.
+- **Server-built text only.** A notice names the token, `ns/NAME`, a
+  count of keys, or the source address, and links to `/inbox` (or
+  `/pair/ID`) only when `KEYDROP_PUBLIC_URL` is configured, not guessed;
+  both need the admin's login. Never a value or token, and never agent
+  text: descriptions, usage and flag reasons and links are untrusted and
+  for the admin's pages, and a pairing's claimed host and user are
+  chosen by whoever asked. Not the pairing code either: the admin compares
+  the code on the page with the one on the agent's terminal, and the
+  webhook channel mustn't be a third place it comes from.
+- **Canaries stay indistinguishable.** A flag on a canary sends only the
+  canary alert (which already says it was flagged and by whom), not a
+  notice too. The agent sees no difference: both are sent in the
+  background after the flag is stored, and the response is the same. A
+  key request can't touch a canary: a name that has a value, canary or
+  not, is refused with the same 409 and sends nothing.
+- Refused calls send nothing, and notices add no audit entries: the
+  events they announce are already logged.
 
 ### Duplicate values
 - When the admin saves a secret whose value equals another secret's, the
@@ -539,7 +583,8 @@ every read logged, no way to just look). So an entry is either a
   padding passes. "Save it exactly as pasted" skips the check (and the
   trimming).
 - The only outgoing notifications are the alerts for canaries and refused
-  token collects (see [Canary secrets](#canary-secrets)). Everything else,
+  token collects (see [Canary secrets](#canary-secrets)) and, opt-in, the
+  [Inbox alerts](#inbox-alerts) saying something is waiting. Everything else,
   including telling a person what an agent did, is the job of
   whatever runs the agents, not of keydrop.
 

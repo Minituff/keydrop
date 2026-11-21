@@ -33,8 +33,19 @@ const (
 	// and sent as one summary when the budget allows.
 	alertBurst  = 5
 	alertRefill = time.Minute
-	// alertQueue is how many alerts may wait to be sent.
+	// noticeBurst and noticeRefill are the Inbox notices' own budget
+	// (KEYDROP_ALERT_INBOX), smaller and separate: pairing needs no
+	// credential, so anyone on the network can cause notices, and they
+	// mustn't spend what a canary alert needs.
+	noticeBurst  = 3
+	noticeRefill = 2 * time.Minute
+	// alertQueue is how many alerts may wait to be sent. Notices may fill
+	// only half of it, so security alerts always have room.
 	alertQueue = 32
+	// maxAlertKeys is how many keys the per-key limits hold before the
+	// old ones are dropped. Notices are refused past it rather than grow
+	// the map: their keys come from addresses anyone can pick.
+	maxAlertKeys = 10000
 	// alertRetries and maxRetryAfter bound how long a 429 is waited out.
 	alertRetries  = 2
 	maxRetryAfter = 30 * time.Second
@@ -51,14 +62,37 @@ type alerter struct {
 	once   sync.Once
 	wg     sync.WaitGroup // alerts queued and not yet sent, for tests
 
-	mu     sync.Mutex
-	url    string               // set with setURL; read with webhook
-	dest   alertDest            // where url posts, for Settings
-	last   map[string]time.Time // canary ref + token -> last alert
-	tokens float64              // the global budget
+	mu         sync.Mutex
+	url        string               // set with setURL; read with webhook
+	dest       alertDest            // where url posts, for Settings
+	last       map[string]time.Time // canary ref + token -> last alert
+	lastNotice map[string]time.Time // kind + token or address -> last notice
+	budget     bucket               // security alerts and Send test alert
+	notices    bucket               // Inbox notices, never the other way round
+	held       int                  // alerts over the budget, for the next summary
+	heldNotice int                  // notices over theirs, for their own summary
+	sleep      func(time.Duration)
+}
+
+// bucket is a token bucket: burst at once, then one per refill.
+type bucket struct {
+	burst  float64
+	refill time.Duration
+	tokens float64
 	filled time.Time
-	held   int // alerts over the budget, for the next summary
-	sleep  func(time.Duration)
+}
+
+// take spends one, if there is one. Needs the alerter's mu.
+func (b *bucket) take(now time.Time) bool {
+	if !b.filled.IsZero() {
+		b.tokens = min(b.burst, b.tokens+float64(now.Sub(b.filled))/float64(b.refill))
+	}
+	b.filled = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 func newAlerter(webhook string) *alerter {
@@ -70,11 +104,13 @@ func newAlerter(webhook string) *alerter {
 			// else; a webhook answers directly.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		now:    time.Now,
-		queue:  make(chan []byte, alertQueue),
-		last:   map[string]time.Time{},
-		tokens: alertBurst,
-		sleep:  time.Sleep,
+		now:        time.Now,
+		queue:      make(chan []byte, alertQueue),
+		last:       map[string]time.Time{},
+		lastNotice: map[string]time.Time{},
+		budget:     bucket{burst: alertBurst, refill: alertRefill, tokens: alertBurst},
+		notices:    bucket{burst: noticeBurst, refill: noticeRefill, tokens: noticeBurst},
+		sleep:      time.Sleep,
 	}
 }
 
@@ -110,32 +146,31 @@ func (a *alerter) setURL(u string) {
 // allow reports whether an alert for key may go out now (one per key per
 // alertEvery), and if so counts it.
 func (a *alerter) allow(key string, now time.Time) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if last, ok := a.last[key]; ok && now.Sub(last) < alertEvery {
-		return false
-	}
-	if len(a.last) > 10000 {
-		for k, t := range a.last {
-			if now.Sub(t) >= alertEvery {
-				delete(a.last, k)
-			}
-		}
-	}
-	a.last[key] = now
-	return true
+	return a.allowIn(a.last, key, now, false)
 }
 
-// take spends one from the global budget, if there is one. Needs a.mu.
-func (a *alerter) take(now time.Time) bool {
-	if !a.filled.IsZero() {
-		a.tokens = min(alertBurst, a.tokens+float64(now.Sub(a.filled))/float64(alertRefill))
-	}
-	a.filled = now
-	if a.tokens < 1 {
+// allowNotice is allow for Inbox notices, in a map of their own.
+func (a *alerter) allowNotice(key string, now time.Time) bool {
+	return a.allowIn(a.lastNotice, key, now, true)
+}
+
+func (a *alerter) allowIn(m map[string]time.Time, key string, now time.Time, bounded bool) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if last, ok := m[key]; ok && now.Sub(last) < alertEvery {
 		return false
 	}
-	a.tokens--
+	if len(m) > maxAlertKeys {
+		for k, t := range m {
+			if now.Sub(t) >= alertEvery {
+				delete(m, k)
+			}
+		}
+		if bounded && len(m) > maxAlertKeys {
+			return false
+		}
+	}
+	m[key] = now
 	return true
 }
 
@@ -148,10 +183,29 @@ func (a *alerter) send(content string) {
 	a.once.Do(func() { go a.run() })
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if !a.take(a.now()) || !a.enqueue(content) {
+	if !a.budget.take(a.now()) || !a.enqueue(content) {
 		a.held++
 	}
 }
+
+// notice queues an Inbox notice. It spends only the notices' budget and
+// fills at most half the queue, so no number of notices can delay or
+// crowd out a security alert. What's over is counted for one summary.
+func (a *alerter) notice(content string) {
+	if !a.configured() {
+		return
+	}
+	a.once.Do(func() { go a.run() })
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.noticeRoom() || !a.notices.take(a.now()) || !a.enqueue(content) {
+		a.heldNotice++
+	}
+}
+
+// noticeRoom reports whether a notice may be queued. Needs a.mu, which
+// every enqueue holds, so the queue can't grow between check and send.
+func (a *alerter) noticeRoom() bool { return len(a.queue) < alertQueue/2 }
 
 // enqueue queues one message without blocking. Needs a.mu.
 func (a *alerter) enqueue(content string) bool {
@@ -186,16 +240,23 @@ func (a *alerter) run() {
 	}
 }
 
-// flushHeld sends one summary of the alerts held back, if the budget has
-// room.
+// flushHeld sends one summary of the alerts held back, and one of the
+// notices held back, each when its own budget has room.
 func (a *alerter) flushHeld() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.held == 0 || !a.take(a.now()) {
-		return
-	}
-	if a.enqueue(fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)) {
+	now := a.now()
+	if a.held > 0 && a.budget.take(now) &&
+		a.enqueue(fmt.Sprintf("keydrop: %d more alerts were held back by the rate limit; see keydrop's Inbox and audit log.", a.held)) {
 		a.held = 0
+	}
+	things := "things are"
+	if a.heldNotice == 1 {
+		things = "thing is"
+	}
+	if a.heldNotice > 0 && a.noticeRoom() && a.notices.take(now) &&
+		a.enqueue(fmt.Sprintf("keydrop: %d more %s waiting for you; see keydrop's Inbox and Agents page.", a.heldNotice, things)) {
+		a.heldNotice = 0
 	}
 }
 

@@ -127,7 +127,7 @@ func (a *alerter) test(content string) error {
 		return errors.New("no webhook is configured")
 	}
 	a.mu.Lock()
-	ok := a.take(a.now())
+	ok := a.budget.take(a.now())
 	a.mu.Unlock()
 	if !ok {
 		return errAlertBudget
