@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -442,5 +443,45 @@ func TestMCPStdoutOnlyProtocol(t *testing.T) {
 		if text, isErr := toolText(t, r[i]); isErr || strings.Contains(text, "expires in") && i != 0 {
 			t.Errorf("call %d: %v %q", i+1, isErr, text)
 		}
+	}
+}
+
+// A tool call sent as a notification (no id) gets no reply, so it does
+// nothing either: no request appears in the Inbox unseen.
+func TestMCPNotificationDoesNothing(t *testing.T) {
+	m := newMCPServer(t)
+	connects := 0
+	connect := func() (*client.Client, error) { connects++; return m.connect() }
+	note, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "tools/call",
+		"params": map[string]any{"name": "keydrop_request", "arguments": map[string]any{"names": []string{"SILENT_KEY"}, "description": "d"}}})
+	r := mcpLines(t, connect, string(note), call(2, "keydrop_secrets", map[string]any{"pending": true}))
+	if len(r) != 1 || r[0]["id"] != 2.0 {
+		t.Fatalf("replies: %v", r)
+	}
+	if text, _ := toolText(t, r[0]); strings.Contains(text, "SILENT_KEY") || connects != 1 {
+		t.Fatalf("the notification ran the tool (%d connects): %q", connects, text)
+	}
+}
+
+// Whatever the tool path prints to os.Stdout goes to stderr: stdout holds
+// only replies.
+func TestMCPStrayStdoutToStderr(t *testing.T) {
+	m := newMCPServer(t)
+	old := mcpConnect
+	t.Cleanup(func() { mcpConnect = old })
+	mcpConnect = func() (*client.Client, error) {
+		fmt.Println("stray line on stdout")
+		return m.connect()
+	}
+	var stdout, stderr string
+	withStdin(t, call(1, "keydrop_whoami", nil)+"\n", func() {
+		stdout, stderr = captureStd(t, func() {
+			if err := cmdMCP(nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	if r := parseReplies(t, stdout); len(r) != 1 || strings.Contains(stdout, "stray") || !strings.Contains(stderr, "stray line on stdout") {
+		t.Fatalf("stdout %q, stderr %q", stdout, stderr)
 	}
 }

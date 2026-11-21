@@ -42,19 +42,21 @@ type report struct {
 	failed bool
 }
 
-// line prints one check; next, if any, is what to do about it.
+// line prints one check; next, if any, is what to do about it. next is
+// printed as given: an error's text may start with a file name from the
+// environment, which mustn't change case.
 func (r *report) line(status, check, detail, next string) {
 	fmt.Fprintf(r.w, "%-5s %-11s %s\n", status, check, detail)
 	if next != "" {
-		fmt.Fprintf(r.w, "      → %s\n", capitalise(next))
+		fmt.Fprintf(r.w, "      → %s\n", next)
 	}
 	r.failed = r.failed || status == "FAIL"
 }
 
-// capitalise upper-cases s's first letter: some of what doctor prints comes
-// from error messages, which start lower-case. By rune, so a message that
-// starts with a multi-byte character isn't cut in half; an invalid first
-// byte is left as it is.
+// capitalise upper-cases s's first letter, for a fixed sentence that starts
+// lower-case (the version notice). By rune, so a message that starts with
+// a multi-byte character isn't cut in half; an invalid first byte is left
+// as it is.
 func capitalise(s string) string {
 	c, n := utf8.DecodeRuneInString(s)
 	if c == utf8.RuneError {
@@ -110,8 +112,15 @@ func doctorConfig(r *report) *client.Client {
 	}
 	dir, dirErr := client.ConfigDir()
 	if dirErr != nil && !errors.Is(dirErr, client.ErrNoConfigDir) {
-		r.line("FAIL", "config", "the config directory can't be trusted", clean(dirErr.Error(), false))
-		return nil
+		// Commands read it only for what the environment doesn't set:
+		// fail exactly when they would.
+		c, err := client.FromEnv()
+		if err != nil {
+			r.line("FAIL", "config", "the config directory can't be trusted", clean(err.Error(), false))
+			return nil
+		}
+		r.line("warn", "config", "from the environment: "+strings.Join(env, ", ")+"; the config directory can't be trusted, and isn't read", clean(dirErr.Error(), false))
+		return c
 	}
 	has := func(name string) bool {
 		_, err := os.Stat(filepath.Join(dir, name))
@@ -133,7 +142,19 @@ func doctorConfig(r *report) *client.Client {
 		(os.Getenv("KEYDROP_TOKEN") == "" && os.Getenv("KEYDROP_TOKEN_FILE") == "" && !has("token")) {
 		next := "Pair this machine: `keydrop pair --url URL` (add `--pin sha256:…` for a self-signed server; the admin has both), and the admin approves it."
 		if has("pairing") {
-			next = "A pairing request was started: run `keydrop pair` to keep waiting for the admin to approve it."
+			// As cmdPair reads it: only a request it would go on with.
+			var p pendingPair
+			path := filepath.Join(dir, "pairing")
+			fi, _ := os.Stat(path)
+			b, err := os.ReadFile(path)
+			switch {
+			case client.TooOpen(fi.Mode()):
+				next = clean(path, false) + " is readable by other users: delete it and pair again with `keydrop pair --url URL`."
+			case err == nil && json.Unmarshal(b, &p) == nil && p.Poll != "" && clockNow().Before(p.Expires):
+				next = "A pairing request was started: run `keydrop pair` to keep waiting for the admin to approve it."
+			default:
+				next = "The pairing request started earlier has expired. " + next
+			}
 		}
 		r.line("FAIL", "config", "not paired: "+from, next)
 		return nil
@@ -174,8 +195,10 @@ func doctorServer(r *report, c *client.Client) bool {
 			status = fmt.Sprint(ae.Status)
 		}
 		r.line("FAIL", "server", u+" answers (HTTP "+status+" at /healthz), but not like keydrop", "Check the URL with the admin: the host, port or path is probably wrong (keydrop answers \"ok\" at /healthz). Then pair again with the right one.")
-	case errors.As(err, &rh):
+	case errors.Is(err, http.ErrSchemeMismatch):
 		r.line("FAIL", "server", u+" answers in plain http, not https", "Check the URL and port with the admin.")
+	case errors.As(err, &rh):
+		r.line("FAIL", "server", u+" doesn't speak TLS (something other than an https server answers there)", "Check the URL and port with the admin.")
 	case errors.As(err, &dns):
 		r.line("FAIL", "server", "can't find the host "+clean(dns.Name, false)+" (DNS)", "Check the host name in the URL, and this machine's network and DNS.")
 	case errors.Is(err, syscall.ECONNREFUSED):
@@ -214,7 +237,7 @@ func doctorServer(r *report, c *client.Client) bool {
 func doctorToken(r *report, c *client.Client) (http.Header, []byte, bool) {
 	h, body, err := c.Inspect("/api/v1/whoami", true)
 	if err != nil {
-		r.line(tokenProblem(c, err))
+		r.line(tokenProblem(c, h, err))
 		return nil, nil, false
 	}
 	exp, perr := time.Parse(time.RFC3339, h.Get("X-Keydrop-Token-Expires"))
@@ -232,10 +255,12 @@ func doctorToken(r *report, c *client.Client) (http.Header, []byte, bool) {
 	return h, body, true
 }
 
-// tokenProblem is the token line for a refused whoami. After a 401 it
-// asks the renewal status, which the server still answers for a token in
-// its renewal grace window or one replaced but not yet collected.
-func tokenProblem(c *client.Client, err error) (status, check, detail, next string) {
+// tokenProblem is the token line for a refused whoami (h, its headers).
+// After a 401 it asks the renewal status, which the server still answers
+// for a token in its renewal grace window or one replaced but not yet
+// collected. What to do next is always doctor's own words: the server's
+// text is shown only as what it said, never as an instruction.
+func tokenProblem(c *client.Client, h http.Header, err error) (status, check, detail, next string) {
 	var ae *client.APIError
 	if !errors.As(err, &ae) {
 		return "FAIL", "token", "no answer: " + clean(err.Error(), false), "The server answered a moment ago: try again, and check the network if it keeps failing."
@@ -255,7 +280,11 @@ func tokenProblem(c *client.Client, err error) (status, check, detail, next stri
 	case http.StatusForbidden:
 		return "FAIL", "token", "refused from this machine's address (403): " + clean(ae.Message, false), "Ask the admin to add this machine's address to the token's allowed sources under Agents, or use keydrop from an allowed machine."
 	case http.StatusUpgradeRequired:
-		return "FAIL", "token", "the server refuses this CLI as too old (426)", clean(ae.Message, false)
+		next := "Run `keydrop upgrade` to update this CLI to the server's build, then run `keydrop doctor` again."
+		if h.Get(server.HdrSelfUpgrade) == "off" {
+			next = "Self-upgrade is off for this agent, so don't update keydrop yourself: tell the user, who can upgrade it or turn self-upgrade on for this agent under Agents."
+		}
+		return "FAIL", "token", "the server refuses this CLI as too old (426); the server says: " + clean(ae.Message, false), next
 	}
 	return "FAIL", "token", fmt.Sprintf("the server answered HTTP %d: %s", ae.Status, clean(ae.Message, false)), "Try again in a minute; if it persists, ask the admin to check the server's log."
 }
@@ -300,7 +329,7 @@ func doctorVersion(r *report, h http.Header) {
 	d := fmt.Sprintf("this CLI is %s, the server is %s (API level %d; the server's is %s, minimum %s)", clean(client.Version, false), srv,
 		server.APILevel, clean(h.Get(server.HdrAPILevel), false), clean(h.Get(server.HdrMinCLI), false))
 	if n := client.VersionNotice(h); n != "" {
-		r.line("warn", "version", d, clean(n, false))
+		r.line("warn", "version", d, capitalise(clean(n, false)))
 		return
 	}
 	r.line("ok", "version", d, "")

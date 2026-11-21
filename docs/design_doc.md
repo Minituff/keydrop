@@ -952,7 +952,10 @@ limits, the audit log) applies unchanged and the server needs no change.
   `upgrade`, which change the machine's setup.
 - **Protocol:** JSON-RPC 2.0, one message per line, answering
   `initialize` (protocol versions 2025-06-18, 2025-03-26 and 2024-11-05),
-  `ping`, `tools/list` and `tools/call`, one request at a time. stdout
+  `ping`, `tools/list` and `tools/call`, one request at a time. A message
+  without an id is a notification, which gets no reply, so it isn't acted
+  on at all: a `tools/call` sent that way would otherwise make a request
+  nobody sees an answer to. stdout
   carries only replies: while it runs, anything else the CLI would print
   there goes to stderr, where its warnings (token expiry, a different
   server build) already go. A line over 1 MiB is answered with an error
@@ -974,8 +977,8 @@ doctor` runs fixed checks in order, one line each with a next step:
 where the configuration comes from (the config directory, and which
 `KEYDROP_*` variables are set, by name) and its ownership checks; the
 server's `/healthz`, unauthenticated, telling DNS, connection refused,
-timeouts, plain http on an https URL and "answers, but not like keydrop"
-apart; the certificate (pinned and matching, or not trusted); the token
+timeouts, plain http on an https URL, a port that doesn't speak TLS at
+all and "answers, but not like keydrop" apart; the certificate (pinned and matching, or not trusted); the token
 (`whoami`); its name, namespaces, permission and expiry; the version, with
 the same notice every command shows, worded by the self-upgrade setting;
 and the clock against the server's `Date`. A failed check skips the ones
@@ -986,6 +989,17 @@ that depend on it. Exit 1 if any failed.
   and a different build doesn't write the once-a-day `version-notice`
   stamp. It never lists, reads or reveals an entry, so canaries can't
   tell it ran.
+- **What to do next is doctor's own.** The setup guide tells agents to
+  follow it, so text the server sent (a 403's or 426's message) is shown
+  only in the check's own line, as the server's, and the step after it is a fixed
+  sentence; for a 426 it's `keydrop upgrade`, or, with self-upgrade off
+  for the token, to tell the user. A next step is printed as given, not
+  capitalised, so one that starts with a file name keeps its case.
+- **It fails where commands would.** An untrusted config directory is
+  a failure only when a command would read something from it; with the
+  URL, pin and token all in the environment, commands never do, so it's
+  a warning. A pairing request file is reported as one to keep waiting
+  on only while `keydrop pair` would go on with it (not expired).
 - **A 401 is reported as the server makes it.** Unknown, revoked, replaced
   and long-expired tokens get the same 401 on purpose. Doctor then asks
   the renewal status, which still answers in the renewal grace window or
