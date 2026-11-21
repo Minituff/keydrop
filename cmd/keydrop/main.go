@@ -27,6 +27,8 @@ Agent commands (pair the machine first: "keydrop pair --url URL"):
   run -e REF [-e VAR=REF]... -- CMD     run CMD with secrets/variables in its environment,
                                          secrets masked (-e NAME sets $NAME; VAR=REF renames;
                                          --no-mask turns masking off, and is logged)
+  run --stdin REF [-e REF]... -- CMD    also: pipe one value to CMD's stdin, exactly, no
+                                         newline (docker login --password-stdin)
   secrets [--new] [--pending]           list secrets this token can see (no values;
                                          --new: changed since this token last read it),
                                          under [namespace: group] headings

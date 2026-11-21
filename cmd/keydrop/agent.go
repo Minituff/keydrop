@@ -737,20 +737,30 @@ func childEnv(environ []string, binds []binding, values map[string]string) []str
 	return env
 }
 
+// errStdinFlag, like errEnvFlag, never echoes the flag.
+var errStdinFlag = errors.New("--stdin takes a secret's name (NAME or ns/NAME), never a value")
+
 func cmdRun(args []string) (int, error) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	var envs multiFlag
+	var envs, stdins multiFlag
 	fs.Var(&envs, "e", "NAME, ns/NAME or VAR=NAME: put a secret in the command's environment (repeatable)")
 	fs.Var(&envs, "env", "same as -e")
+	fs.Var(&stdins, "stdin", "NAME or ns/NAME: give a secret to the command on its stdin (once)")
 	noMask := fs.Bool("no-mask", false, "don't mask secret values in the command's output")
 	fs.Parse(args)
 	argv := fs.Args()
-	if len(argv) == 0 || len(envs) == 0 {
-		return 0, errors.New("usage: keydrop run -e NAME [-e VAR=NAME]... -- CMD [ARGS]")
+	if len(argv) == 0 || len(envs) == 0 && len(stdins) == 0 {
+		return 0, errors.New("usage: keydrop run [-e NAME] [-e VAR=NAME]... [--stdin NAME] -- CMD [ARGS]")
+	}
+	if len(stdins) > 1 {
+		// A command has one stdin; concatenating values would hand it
+		// something nobody stored.
+		return 0, errors.New("--stdin can be given only once: a command has one stdin")
 	}
 
 	var binds []binding
 	refs := map[string]bool{}
+	envRefs := map[string]bool{}
 	seen := map[string]bool{}
 	for _, e := range envs {
 		b, err := parseEnvFlag(e)
@@ -763,6 +773,16 @@ func cmdRun(args []string) (int, error) {
 		seen[b.envVar] = true
 		binds = append(binds, b)
 		refs[b.ref] = true
+		envRefs[b.ref] = true
+	}
+	stdinRef := ""
+	if len(stdins) == 1 {
+		b, err := parseEnvFlag(stdins[0])
+		if err != nil || strings.Contains(stdins[0], "=") {
+			return 0, errStdinFlag
+		}
+		stdinRef = b.ref
+		refs[stdinRef] = true
 	}
 
 	c, err := newClient()
@@ -784,8 +804,9 @@ func cmdRun(args []string) (int, error) {
 		}
 		v, variable := rv.Value, rv.Kind == "variable"
 		warnStatus(ref, rv.Status)
-		if strings.ContainsRune(v, 0) {
-			return 0, fmt.Errorf("%s: the value contains a NUL byte, which can't go in an environment variable; use get --to-file", ref)
+		// Only the environment can't hold a NUL; stdin is a byte stream.
+		if envRefs[ref] && strings.ContainsRune(v, 0) {
+			return 0, fmt.Errorf("%s: the value contains a NUL byte, which can't go in an environment variable; use run --stdin or get --to-file", ref)
 		}
 		values[ref] = v
 		if variable {
@@ -802,6 +823,20 @@ func cmdRun(args []string) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = childEnv(os.Environ(), binds, values)
 	cmd.Stdin = os.Stdin
+	var stdinW *os.File
+	if stdinRef != "" {
+		// Exactly the stored bytes, then EOF: no newline added (docker login
+		// --password-stdin and the like would take it as part of the
+		// password), and none of keydrop's own stdin after it. Both ends
+		// are close-on-exec; exec hands the read end to the command as fd 0.
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return 0, err
+		}
+		cmd.Stdin, stdinW = pr, pw
+		defer pr.Close()
+		defer pw.Close()
+	}
 	var flushers []*mask.Writer
 	if *noMask {
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
@@ -814,6 +849,21 @@ func cmdRun(args []string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
+	if stdinW != nil {
+		// Only the command holds the read end now, so it sees EOF once it
+		// has read the value. A command that exits (or closes stdin)
+		// without reading it makes the write fail with EPIPE, which Go
+		// returns rather than dying of SIGPIPE (it isn't fd 1 or 2); one
+		// whose descendants keep stdin open without reading would block it,
+		// so the write runs on its own and is cut off after the command
+		// exits.
+		cmd.Stdin.(*os.File).Close()
+		v := values[stdinRef]
+		go func() {
+			io.WriteString(stdinW, v)
+			stdinW.Close()
+		}()
+	}
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -823,6 +873,9 @@ func cmdRun(args []string) (int, error) {
 	}()
 	err = cmd.Wait()
 	signal.Stop(sigs)
+	if stdinW != nil {
+		stdinW.Close() // unblocks a write nobody will read
+	}
 	for _, f := range flushers {
 		f.Flush()
 	}

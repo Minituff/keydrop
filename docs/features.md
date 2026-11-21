@@ -54,6 +54,10 @@ directly, so you never copy a token around.
 - **`keydrop run -e NAME`** puts a secret into one command's environment under
   its own name, and masks it in the command's output. Names are env-var style
   (`CLOUDFLARE_API_TOKEN`), so nothing needs translating.
+- **`keydrop run --stdin NAME`** pipes one value to the command's stdin
+  instead, exactly as stored with no newline added, for tools that read a
+  credential there (`docker login --password-stdin`, `gh auth login
+  --with-token`). It's masked and logged the same way, and combines with `-e`.
 - **`secrets`, `info` and `history`** show descriptions, never values.
 - **It stays current.** The server hands out its own CLI build. When an
   agent's CLI is a different build, keydrop tells it what to do, at most once a

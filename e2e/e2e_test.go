@@ -296,6 +296,25 @@ func TestEndToEnd(t *testing.T) {
 		}
 		noLeak(t, "env", r.all(), secret)
 
+		// --stdin: the child reads exactly the value (no newline, none of
+		// keydrop's own stdin), it's masked, and the read is logged.
+		before, _ := in.auditLines(t)
+		r = g.ok(t, "keydrop's own stdin\n", "run", "--stdin", "API_TOKEN", "--", "sh", "-c",
+			`v=$(cat; echo .); v=${v%.}; printf '%s' "$v" | sha256sum; printf '%s\n' "$v"; printf '%s' "$v" | base64; printf '%s' "${API_TOKEN-unset}"`)
+		noLeak(t, "run --stdin", r.all(), secret)
+		want := sha(secret) + "  -\n[keydrop:API_TOKEN]\n"
+		if !strings.HasPrefix(r.stdout, want) || !strings.HasSuffix(r.stdout, "unset") || !strings.Contains(r.stdout, "[keydrop:API_TOKEN]\nunset") {
+			t.Fatalf("run --stdin: %q", r.stdout)
+		}
+		after, _ := in.auditLines(t)
+		if added := strings.TrimPrefix(after, before); !strings.Contains(added, `"secret.read"`) || !strings.Contains(added, "e2e/API_TOKEN") || !strings.Contains(added, "run sh") {
+			t.Fatalf("run --stdin's read isn't in the audit log:\n%s", added)
+		}
+		// A command that exits without reading stdin still passes its code.
+		if r := g.run(t, "", "run", "--stdin", "API_TOKEN", "--", "sh", "-c", "exit 9"); r.code != 9 {
+			t.Fatalf("run --stdin, stdin unread: exit %d, %q", r.code, r.stderr)
+		}
+
 		if got := agent1.valueHash(t, "API_TOKEN"); got != sha(secret) {
 			t.Fatal("the child got a different value than was stored")
 		}

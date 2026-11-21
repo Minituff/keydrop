@@ -320,6 +320,22 @@ log, not for access control.
   on the command line, so every read is logged per secret. There's no
   "inject everything" and no `{{NAME}}` substitution in arguments: argument
   values are visible in `/proc/<pid>/cmdline` to the same user.
+- `keydrop run --stdin NAME -- CMD` (at most once, with or without `-e`)
+  gives one value to the child on its stdin instead, for tools that read a
+  credential there (`docker login --password-stdin`). It's fetched, logged,
+  labelled and masked exactly like an `-e` value, and goes nowhere else (not
+  the environment unless it's also named with `-e`, not argv, not a file).
+  The child's stdin is a pipe that carries the stored bytes and then EOF:
+  no newline is added, because these tools take a trailing newline as part
+  of the password (or strip it, which a value ending in one would lose), and
+  keydrop's own stdin isn't forwarded after it, so nothing else can be
+  appended to the credential. The value is written from a goroutine; a
+  child that exits or closes stdin without reading it just ends the write
+  (EPIPE, which Go returns rather than raising SIGPIPE on a descriptor other
+  than 1 or 2), and the write is cut off once the child exits, so a
+  descendant that holds stdin open can't keep keydrop waiting on it. A NUL
+  byte, which `-e` refuses because an environment variable can't hold one,
+  is fine on stdin.
 - **Output masking:** the CLI wraps the child's stdout and stderr and
   replaces each value with `[keydrop:ref]`. That includes base64 and
   URL-encoded forms. Base64 is matched at all three alignments, because a

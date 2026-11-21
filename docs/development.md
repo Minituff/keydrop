@@ -154,7 +154,6 @@ change too.
   misconfigured proxy would bypass the login
 - An MCP server exposing **metadata only** (`secrets`, `vars`, `history`, `request`). A
   tool that returns values would put them straight into the transcript.
-- `--stdin-to CMD` (for example `docker login --password-stdin`)
 - Optional per-secret allowlists inside a namespace
 - Version history beyond one previous value
 - An OpenAPI description of the agent API
