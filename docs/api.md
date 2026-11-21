@@ -26,7 +26,9 @@ in lists, metadata and history, with one more field, `"usable": false`
 `… is limited to other agents; ask the admin to allow NAME on it`, naming
 only the asking token, with no value; a refused reveal counts towards the
 reveal limit and is logged as `secret.read.denied`. Flags, statuses, notes
-and requests work as before. A limited key holds only secrets, so a put
+and requests work as before, except that the status `replaced-by` gets the
+same 403: a token that can't use the key doesn't get to point the agents
+that can at another one. A limited key holds only secrets, so a put
 with `"variable": true` over one gets 403 from any token.
 
 | | |

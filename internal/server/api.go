@@ -754,6 +754,10 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request, t store.Token
 		if hit != nil {
 			s.canaryTouched(r, *hit)
 		}
+		if errors.Is(err, store.ErrLimited) { // replaced-by, from a token off the key's list
+			limitedError(w, t, sec.Ref())
+			return
+		}
 		annotationError(w, sec, err)
 		return
 	}

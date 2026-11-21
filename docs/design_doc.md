@@ -196,7 +196,11 @@ admin can limit a key to some of the tokens that have its namespace.
   namespace are visible by design, and hiding them would leak anyway: a
   409 on put or request would say a hidden name exists. Flag, status, note
   and request stay allowed: they carry no value, and flag and status are
-  how an agent reports a problem with a key it can see.
+  how an agent reports a problem with a key it can see. The one exception
+  is the status `replaced-by`, refused with the same 403: it points the
+  agents that may use the key at another one (they get a warning naming
+  it when they read the key), which is not a barred token's call to make.
+  `leaked`, `expired`, `revoked` and `ok` stay allowed.
 - **Agents can tell.** Metadata gains `"usable": false` only for a token off
   the list; for every other key and token the answer is byte-identical to
   before. `keydrop secrets`, `info` and the MCP tools say *limited to other
@@ -209,7 +213,9 @@ admin can limit a key to some of the tokens that have its namespace.
   lock as the value. So a refused reveal counts towards the reveal limit,
   can't be used to hammer, and is logged as `secret.read.denied` (with the
   agent's purpose) in the main log, like the read it replaces. A refused
-  put or ack isn't logged, like other refused writes.
+  put, ack or `replaced-by` isn't logged, like other refused writes; a
+  refused `replaced-by` counts towards the flag, status and note limit,
+  as any status does.
 - **An empty list means no agent, never everyone.** A revoked token comes
   off every list (forgetToken), so a new token given its name, by hand or by
   pairing again with *Replace*, doesn't inherit the access; a list left
@@ -226,13 +232,15 @@ admin can limit a key to some of the tokens that have its namespace.
   it's just a key.
 - **Canaries.** The check doesn't look at the canary flag, so a limited canary
   and a limited ordinary secret give every token the same status, headers
-  and body, and `usable` the same way. A refused reveal, put or ack on a
-  limited canary is a touch (Inbox, alert, audit), as every other refused
+  and body, and `usable` the same way. A refused reveal, put, ack or
+  `replaced-by` on a limited canary is a touch (Inbox, alert, audit), as every other refused
   call on one is. As for those, only the canary's refusal writes the touch
   to disk, so a refused call can differ in time (see
   [Canary secrets](#canary-secrets)).
 - **Admin only.** The form is on the key's page (CSRF, logged as
-  `secret.limit` with the token names). Like a canary it records no history
+  `secret.limit` with the token names). It must say `only=yes` or
+  `only=no`; anything else (a form that lost the choice) is a 400 that
+  changes nothing, so it can never lift a limit by accident. Like a canary it records no history
   entry and leaves `updated_at` alone: agents read the history.
 - **Not strippable.** See [Data format history](#data-format-history): the
   first limit seals `keydrop-key-check:v7`, so deleting the limits (with

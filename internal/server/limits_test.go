@@ -95,6 +95,10 @@ func TestLimitCanaryIndistinguishable(t *testing.T) {
 			{"ack", "POST", "/ack", nil, true, tok.reveal},
 			{"flag", "POST", "/flag", map[string]any{"reason": "looks odd"}, true, http.StatusCreated},
 			{"status", "POST", "/status", map[string]any{"status": "leaked"}, true, http.StatusOK},
+			// Pointing the agents that may use it at another key is theirs
+			// to do, not a barred token's; reporting it isn't.
+			{"replaced-by", "POST", "/status", map[string]any{"status": "replaced-by", "replaced_by": "OPEN"}, true, tok.reveal},
+			{"status after", "POST", "/status", map[string]any{"status": "expired"}, true, http.StatusOK},
 			{"note", "POST", "/notes", map[string]any{"text": "used for dns"}, true, http.StatusCreated},
 			{"put", "PUT", "", map[string]any{"value": "fake-limited-value", "overwrite": true}, true, tok.reveal},
 			{"put new", "PUT", "", map[string]any{"value": "fake-limited-value"}, true, map[bool]int{true: http.StatusForbidden, false: http.StatusConflict}[tok.name == "barred"]},
@@ -211,6 +215,18 @@ func TestLimitAPI(t *testing.T) {
 	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/MINE/status", barred, map[string]any{"status": "leaked"}); code != http.StatusOK {
 		t.Fatalf("status: %d", code)
 	}
+	// But not replaced-by: that would send the agents that may use it to
+	// a key of the barred token's choosing.
+	code, m, _ = h.api("POST", "/api/v1/secrets/lab/MINE/status", barred, map[string]any{"status": "replaced-by", "replaced_by": "OPEN"})
+	if msg, _ := m["error"].(string); code != http.StatusForbidden || !strings.Contains(msg, "lab/MINE is limited to other agents") {
+		t.Fatalf("replaced-by: %d %q", code, msg)
+	}
+	if sec, _ := h.st.GetSecret("lab", "MINE"); sec.StatusOf() == nil || sec.StatusOf().String() != "leaked" {
+		t.Fatalf("status after a refused replaced-by: %+v", sec.StatusOf())
+	}
+	if code, _, _ := h.api("POST", "/api/v1/secrets/lab/MINE/status", allowed, map[string]any{"status": "replaced-by", "replaced_by": "OPEN"}); code != http.StatusOK {
+		t.Fatalf("replaced-by from the allowed token: %d", code)
+	}
 	// Namespace isolation comes first: no namespace, 404 as ever.
 	other, _ := h.st.CreateToken("other", []string{"elsewhere"}, store.PermWrite, nil)
 	for _, p := range []string{"", "/reveal", "/ack"} {
@@ -266,6 +282,20 @@ func TestLimitAdminForm(t *testing.T) {
 	if !h.auditHas("secret.limit", "only: alpha") {
 		t.Fatal("not logged")
 	}
+	// The choice must be there and be one of the two: a form that lost it
+	// is refused, never read as "any agent", which would lift the limit.
+	for _, only := range [][]string{nil, {"YES"}, {""}, {"no-thanks"}} {
+		form := url.Values{"token": {"alpha"}}
+		if only != nil {
+			form["only"] = only
+		}
+		if code, page := h.form("/secret/lab/ROOT_KEY/limit", form); code != http.StatusBadRequest || !strings.Contains(page, "Nothing was changed") {
+			t.Fatalf("only=%q: %d", only, code)
+		}
+		if sec, _ := h.st.GetSecret("lab", "ROOT_KEY"); sec.Limit == nil || strings.Join(sec.Limit.Tokens, ",") != "alpha" {
+			t.Fatalf("only=%q changed the limit: %+v", only, sec.Limit)
+		}
+	}
 	if _, dash := h.get("/"); !strings.Contains(dash, `<span class="chip">limited</span>`) {
 		t.Fatal("no badge on the list")
 	}
@@ -291,5 +321,29 @@ func TestLimitAdminForm(t *testing.T) {
 	}
 	if sec, _ := h.st.GetSecret("lab", "ROOT_KEY"); sec.Limit != nil {
 		t.Fatal("logged out, but saved")
+	}
+}
+
+// A limited key can only hold a secret. The admin's three ways to make it
+// a variable (the value form, the details form, New with Replace) are
+// refused with 400 and the reason, and change nothing.
+func TestLimitAdminVariableRefused(t *testing.T) {
+	h, _, _ := limitHarness(t)
+	for _, c := range []struct {
+		name, path string
+		form       url.Values
+	}{
+		{"value", "/secret/lab/REAL1/value", url.Values{"value": {"plain"}, "kind": {"variable"}}},
+		{"details", "/secret/lab/REAL1/meta", url.Values{"kind": {"variable"}}},
+		{"new, replacing", "/secrets", url.Values{"namespace": {"lab"}, "name": {"REAL1"}, "value": {"plain"}, "kind": {"variable"}, "overwrite": {"yes"}}},
+	} {
+		code, page := h.form(c.path, c.form)
+		if code != http.StatusBadRequest || !strings.Contains(page, "can only hold a secret, not a variable") {
+			t.Fatalf("%s: %d", c.name, code)
+		}
+		sec, _ := h.st.GetSecret("lab", "REAL1")
+		if v, _, _ := h.st.Reveal("lab", "REAL1", "test"); sec.Variable || sec.Limit == nil || string(v) != "fake-limited-value" {
+			t.Fatalf("%s changed the key: %+v", c.name, sec)
+		}
 	}
 }

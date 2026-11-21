@@ -1559,7 +1559,7 @@
           "annotations"
         ],
         "summary": "Set a key's status",
-        "description": "Marks a key expired, revoked, leaked or replaced by another key in the same namespace; `ok` clears it. Flags, statuses and notes together are limited to 60 an hour per token. A namespace the token isn't granted returns 404, exactly like a missing key.",
+        "description": "Marks a key expired, revoked, leaked or replaced by another key in the same namespace; `ok` clears it. A token the key is limited away from can set every status but `replaced-by`. Flags, statuses and notes together are limited to 60 an hour per token. A namespace the token isn't granted returns 404, exactly like a missing key.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Namespace"
@@ -1618,7 +1618,7 @@
             }
           },
           "403": {
-            "description": "The admin set the current status, so only the admin can change it; or the token isn't an allowed source.",
+            "description": "The admin set the current status, so only the admin can change it; the status is `replaced-by` and the key is limited to other agents (the same answer reveal gives); or the token isn't an allowed source.",
             "content": {
               "application/json": {
                 "schema": {

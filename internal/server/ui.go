@@ -696,7 +696,7 @@ func (s *Server) handleCreateSecret(w http.ResponseWriter, r *http.Request, _ st
 		conflict()
 		return
 	} else if err != nil {
-		s.renderNew(w, r, se, http.StatusInternalServerError, err.Error())
+		s.renderNew(w, r, se, refusedStatus(err, http.StatusInternalServerError), err.Error())
 		return
 	}
 	s.event(r, "admin", "secret.set", ns+"/"+name, "")
@@ -812,7 +812,7 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 	// Anything but an explicit "variable" is a secret, whatever the key was.
 	variable := r.PostFormValue("kind") == "variable"
 	if err := s.store.SetValue(ns, name, val, variable); err != nil {
-		s.renderSecret(w, r, se, http.StatusInternalServerError, err.Error())
+		s.renderSecret(w, r, se, refusedStatus(err, http.StatusInternalServerError), err.Error())
 		return
 	}
 	if sec.HasValue() && sec.Variable != variable {
@@ -830,6 +830,15 @@ func (s *Server) handleSetValue(w http.ResponseWriter, r *http.Request, _ string
 	s.back(w, r, "saved")
 }
 
+// refusedStatus is 400 for a change the store refuses as asked (a limited
+// key can't become a variable), def for anything else.
+func refusedStatus(err error, def int) int {
+	if errors.Is(err, store.ErrLimitVariable) {
+		return http.StatusBadRequest
+	}
+	return def
+}
+
 func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	meta, err := formMeta(r)
 	if err != nil {
@@ -839,7 +848,7 @@ func (s *Server) handleSetMeta(w http.ResponseWriter, r *http.Request, _ string,
 	ns, name := r.PathValue("ns"), r.PathValue("name")
 	old, _ := s.store.GetSecret(ns, name)
 	if err := s.store.UpdateMeta(ns, name, meta); err != nil {
-		s.renderSecret(w, r, se, http.StatusNotFound, err.Error())
+		s.renderSecret(w, r, se, refusedStatus(err, http.StatusNotFound), err.Error())
 		return
 	}
 	if old.Variable != meta.Variable {

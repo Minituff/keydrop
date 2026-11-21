@@ -56,8 +56,9 @@ Each token has a permission:
 - **Limiting one key to some agents.** On a secret's page, **Agents that may
   use it** chooses between *any agent with the namespace* (the default) and
   *only* the agents you tick. The others still see the key's name and
-  details, and can still flag it or set its status, but can't read,
-  replace or acknowledge its value: `keydrop run` and `get` are refused
+  details, and can still flag it or report it leaked, expired or revoked,
+  but can't read, replace or acknowledge its value, or mark it replaced by
+  another key: `keydrop run` and `get` are refused
   with a message naming the agent, `keydrop secrets` marks it *limited to
   other agents*, and every refused read is in the audit log. So one
   sensitive key (a registrar key, a root cloud credential) can share a

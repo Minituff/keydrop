@@ -77,7 +77,8 @@ the refused read is logged. What it doesn't do:
   Give the agent that should have the key its own token, under its own
   Unix user.
 - **It doesn't hide the key.** Agents with the namespace still see its name,
-  description, status and history. Put a key in a namespace of its own if
+  description, status and history. They can still flag it and report it
+  leaked, expired or revoked (not mark it replaced by another key). Put a key in a namespace of its own if
   its name is the secret.
 - **It doesn't take back what was read.** An agent that read the value
   before the limit may still have it; replace the value too.

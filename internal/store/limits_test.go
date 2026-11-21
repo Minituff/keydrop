@@ -33,6 +33,26 @@ func limitOf(s *Store, ns, name string) *UseLimit {
 	return sec.Limit
 }
 
+// A limit is outside every view up to v6, so the release with MAC6 never
+// sees one, and taking the view leaves the state's limits alone.
+func TestLimitOutsideV6View(t *testing.T) {
+	s := limited(t, t.TempDir())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v6 := s.st.v6View()
+	for _, k := range []string{"lab/CF", "lab/NOBODY"} {
+		if v6.Secrets[k].Limit != nil {
+			t.Fatalf("%s: limit in the v6 view", k)
+		}
+		if s.st.Secrets[k].Limit == nil {
+			t.Fatalf("%s: taking the view lifted the limit", k)
+		}
+	}
+	if b, _ := json.Marshal(v6); strings.Contains(string(b), `"limit"`) {
+		t.Fatalf("v6 view: %s", b)
+	}
+}
+
 // The first limit makes the key check v7, which also requires MAC4; the
 // file reopens, and stays v7 after the last limit is lifted, the way v4
 // stays after the last MAC4 field goes.

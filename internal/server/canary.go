@@ -459,12 +459,20 @@ func (s *Server) handleSetCanary(w http.ResponseWriter, r *http.Request, _ strin
 }
 
 // handleSetLimit sets which agents may use a key: any agent with its
-// namespace ("only" not "yes"), or only the ticked ones, which must have
-// the namespace. The log names the agents, never anything about the value.
+// namespace ("only" is "no"), or only the ticked ones ("yes"), which must
+// have the namespace. Anything else changes nothing: a form that lost its
+// choice mustn't lift a limit. The log names the agents, never anything
+// about the value.
 func (s *Server) handleSetLimit(w http.ResponseWriter, r *http.Request, _ string, se *session) {
 	ns, name := r.PathValue("ns"), r.PathValue("name")
-	only := r.PostFormValue("only") == "yes"
-	switch err := s.store.SetLimit(ns, name, only, r.PostForm["token"]); {
+	only := r.PostFormValue("only")
+	var err error
+	if only != "yes" && only != "no" {
+		err = errors.New("choose which agents may use it: any agent with the namespace, or only the ones ticked. Nothing was changed")
+	} else {
+		err = s.store.SetLimit(ns, name, only == "yes", r.PostForm["token"])
+	}
+	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.message(w, r, http.StatusNotFound, "Not found", "There's no secret called "+ns+"/"+name+".")
 		return
