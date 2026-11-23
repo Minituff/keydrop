@@ -4,7 +4,7 @@
 # Build on the runner's own platform and cross-compile, so multi-arch
 # builds don't need emulation. This stage doesn't depend on the target, so
 # a multi-arch build runs it once and every image gets the same files.
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build
 ARG VERSION=dev
 # Where the build came from, for the version line in Settings: the full
 # commit hash, its commit time (RFC 3339) and the repository URL. Empty is fine.
